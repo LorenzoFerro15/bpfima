@@ -13,6 +13,7 @@
 #include <linux/tpm.h>
 #include <crypto/hash.h>
 #include <crypto/hash_info.h>
+#include <crypto/sha1_base.h>
 
 #define IMA_DIGEST_SIZE 20
 #define IMA_EVENT_NAME_LEN_MAX 255
@@ -37,6 +38,8 @@ __bpf_kfunc int bpf_ima_file_info(struct file *file, char *hash_buf, u32 buf_siz
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len);
 __bpf_kfunc int bpf_ima_get_measurement_count(void);
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size);
+__bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len);
+__bpf_kfunc int bpf_tpm_is_available(void);
 
 __bpf_kfunc_start_defs();
 
@@ -190,16 +193,121 @@ __bpf_kfunc int bpf_ima_get_measurement_count(void)
     return atomic_read(&measurement_count);
 }
 
-/* Simulate TPM PCR value based on measurement count */
+/* Get real TPM PCR value or simulate if TPM not available */
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
+    struct tpm_chip *chip;
+    struct tpm_digest digest;
+    int ret;
+    
     if (!pcr_buf || buf_size < 41)
         return -EINVAL;
-        
-    snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
-             TPM_PCR_INDEX, atomic_read(&measurement_count));
-             
+    
+    /* Try to get the default TPM chip */
+    chip = tpm_default_chip();
+    if (!chip) {
+        /* No TPM available, use simulation */
+        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
+                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        printk(KERN_INFO "TPM not available, using simulation\n");
+        return 0;
+    }
+    
+    /* Initialize digest structure for PCR read */
+    digest.alg_id = TPM_ALG_SHA1;
+    
+    /* Read actual PCR value from TPM */
+    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, &digest);
+    if (ret < 0) {
+        /* TPM read failed, use simulation */
+        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
+                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
+        tpm_put_ops(chip);
+        return ret;
+    }
+    
+    /* Format the real PCR value as hex string */
+    snprintf(pcr_buf, buf_size, "PCR%d_REAL:", TPM_PCR_INDEX);
+    for (int i = 0; i < SHA1_DIGEST_SIZE && strlen(pcr_buf) < buf_size - 3; i++) {
+        snprintf(pcr_buf + strlen(pcr_buf), buf_size - strlen(pcr_buf), 
+                 "%02x", digest.digest[i]);
+    }
+    
+    tpm_put_ops(chip);
     return 0;
+}
+
+/* Extend TPM PCR with measurement data */
+__bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
+{
+    struct tpm_chip *chip;
+    struct tpm_digest digest;
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    int ret;
+    
+    if (!data || data_len == 0)
+        return -EINVAL;
+    
+    /* Get the default TPM chip */
+    chip = tpm_default_chip();
+    if (!chip) {
+        printk(KERN_WARNING "No TPM chip available for PCR extend\n");
+        return -ENODEV;
+    }
+    
+    /* Calculate SHA1 hash of the data */
+    tfm = crypto_alloc_shash("sha1", 0, 0);
+    if (IS_ERR(tfm)) {
+        tpm_put_ops(chip);
+        return PTR_ERR(tfm);
+    }
+    
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    if (!desc) {
+        crypto_free_shash(tfm);
+        tpm_put_ops(chip);
+        return -ENOMEM;
+    }
+    
+    desc->tfm = tfm;
+    ret = crypto_shash_digest(desc, data, data_len, digest.digest);
+    kfree(desc);
+    crypto_free_shash(tfm);
+    
+    if (ret < 0) {
+        tpm_put_ops(chip);
+        return ret;
+    }
+    
+    /* Set up digest structure for TPM */
+    digest.alg_id = TPM_ALG_SHA1;
+    
+    /* Extend the PCR */
+    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, &digest);
+    if (ret < 0) {
+        printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+    } else {
+        printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", 
+               TPM_PCR_INDEX, data_len);
+    }
+    
+    tpm_put_ops(chip);
+    return ret;
+}
+
+/* Check if TPM is available */
+__bpf_kfunc int bpf_tpm_is_available(void)
+{
+    struct tpm_chip *chip;
+    
+    chip = tpm_default_chip();
+    if (!chip)
+        return 0; /* TPM not available */
+        
+    tpm_put_ops(chip);
+    return 1; /* TPM available */
 }
 
 __bpf_kfunc_end_defs();
@@ -213,6 +321,8 @@ BTF_ID_FLAGS(func, bpf_ima_file_info)
 BTF_ID_FLAGS(func, bpf_ima_extend_measurement)
 BTF_ID_FLAGS(func, bpf_ima_get_measurement_count)
 BTF_ID_FLAGS(func, bpf_ima_get_pcr_value)
+BTF_ID_FLAGS(func, bpf_tpm_extend_pcr)
+BTF_ID_FLAGS(func, bpf_tpm_is_available)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
