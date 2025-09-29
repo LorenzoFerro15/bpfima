@@ -42,7 +42,7 @@ Requirements:
 
 ```bash
 # Install dependencies (Fedora)
-sudo dnf install kernel-devel libbpf-devel elfutils-libelf-devel zlib-devel clang llvm
+sudo dnf install kernel-devel libbpf-devel elfutils-libelf-devel zlib-devel clang llvm dwarves
 
 # Build all components
 make all
@@ -100,8 +100,11 @@ sudo dmesg | tail -20
 ```bash
 # Install kernel debug info
 sudo dnf install kernel-debuginfo-$(uname -r)
-# Or create symlink to existing vmlinux
-sudo find /usr/lib/debug -name "vmlinux" -type f | head -1
+# If the previous command does not work, use
+sudo dnf debuginfo-install kernel
+
+# Then, create a symlink to the existing vmlinux
+echo "found vmlinux: $(sudo find /usr/lib/debug -name vmlinux -type f | head -1)"
 sudo ln -sf <found_vmlinux> /lib/modules/$(uname -r)/build/vmlinux
 ```
 
