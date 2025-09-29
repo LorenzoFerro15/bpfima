@@ -15,7 +15,7 @@ eBPF-based file integrity monitoring system with TPM hardware support for secure
 - `loader_tpm` - TPM-specific loader with hardware access
 
 ### Kernel Module
-- `hello.ko` - Provides custom kfuncs for TPM operations and measurement extension
+- `bpfima.ko` - Provides custom kfuncs for TPM operations and measurement extension
 
 ## TPM Features
 
@@ -67,7 +67,7 @@ Individual components can be run manually:
 make all
 
 # Load kernel module
-sudo insmod hello.ko
+sudo insmod bpfima.ko
 
 # Run simple eBPF monitor
 sudo ./loader_simple kfunc_simple.o &
@@ -88,7 +88,7 @@ sudo dmesg | tail -20
 
 - `kfunc_simple.c` - Basic eBPF program using standard helpers
 - `kfunc_tpm.c` - TPM-enhanced eBPF program with hardware integration
-- `hello.c` - Kernel module providing custom kfuncs
+- `bpfima.c` - Kernel module providing custom kfuncs
 - `loader.c`, `loader_simple.c` - User space loaders
 - `run_test.sh` - Automated test script
 
@@ -96,7 +96,7 @@ sudo dmesg | tail -20
 
 ### Build Errors
 
-**Missing BTF**: `Skipping BTF generation for hello.ko`
+**Missing BTF**: `Skipping BTF generation for bpfima.ko`
 ```bash
 # Install kernel debug info
 sudo dnf install kernel-debuginfo-$(uname -r)
@@ -137,5 +137,5 @@ sudo modprobe tpm_tis tpm_crb  # Load TPM modules
 **Module load failed**: Check kernel module dependencies
 ```bash
 sudo dmesg | tail -10  # Check error messages
-lsmod | grep hello     # Verify module loaded
+lsmod | grep bpfima     # Verify module loaded
 ```

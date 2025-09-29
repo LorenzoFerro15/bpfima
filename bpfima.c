@@ -334,32 +334,32 @@ static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
 };
 
 /* Initialize module and register kfuncs */
-static int __init hello_init(void)
+static int __init bpfima_init(void)
 {
     int ret;
 
-    printk(KERN_INFO "Hello, world!\n");
+    printk(KERN_INFO "BPF-IMA module initializing...\n");
     
     /* Register kfuncs for kprobe programs */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret) {
-        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set for kprobe\n");
+        pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
         return ret;
     }
     
     /* Register kfuncs for tracepoint programs */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
     if (ret) {
-        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set for tracepoint\n");
+        pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
         return ret;
     }
     
-    printk(KERN_INFO "bpf_kfunc_example: Module loaded successfully\n");
+    printk(KERN_INFO "bpfima: Module loaded successfully\n");
     return 0;
 }
 
 /* Clean up module and measurement list */
-static void __exit hello_exit(void)
+static void __exit bpfima_exit(void)
 {
     struct bpf_ima_template_entry *entry, *tmp;
     unsigned long flags;
@@ -373,13 +373,13 @@ static void __exit hello_exit(void)
 
     printk(KERN_INFO "IMA measurements cleaned up. Total measurements: %d\n", 
            atomic_read(&measurement_count));
-    printk(KERN_INFO "Goodbye, world!\n");
+    printk(KERN_INFO "BPF-IMA module unloaded.\n");
 }
 
-module_init(hello_init);
-module_exit(hello_exit);
+module_init(bpfima_init);
+module_exit(bpfima_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("IMA-like measurement system with eBPF kfuncs");
+MODULE_AUTHOR("Lorenzo Ferro");
+MODULE_DESCRIPTION("BPF-IMA: eBPF-enhanced Integrity Measurement Architecture with TPM integration");
 MODULE_VERSION("1.0");
