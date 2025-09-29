@@ -24,11 +24,12 @@ static void sig_int(int signo)
 
 int main(int argc, char **argv)
 {
-    struct bpf_link *link = NULL;
-    struct bpf_program *prog;
+    struct bpf_link *tracepoint_link = NULL;
+    struct bpf_link *kprobe_link = NULL;
+    struct bpf_program *tracepoint_prog, *kprobe_prog;
     struct bpf_object *obj;
     int err;
-    const char *filename = "kfunc.o"; 
+    const char *filename = "kfunc_tpm.o"; /* default filename */
 
     if (argc > 1) {
         filename = argv[1];
@@ -60,23 +61,37 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    /* Find the BPF program by section name */
-    prog = bpf_object__find_program_by_name(obj, "handle_kprobe");
-    if (!prog) {
-        fprintf(stderr, "ERROR: finding BPF program 'handle_kprobe' failed\n");
+    /* Find the tracepoint program */
+    tracepoint_prog = bpf_object__find_program_by_name(obj, "handle_unlinkat_tpm");
+    if (tracepoint_prog) {
+        tracepoint_link = bpf_program__attach(tracepoint_prog);
+        if (!libbpf_get_error(tracepoint_link)) {
+            printf("Successfully attached tracepoint program!\n");
+        } else {
+            fprintf(stderr, "ERROR: failed to attach tracepoint program\n");
+            tracepoint_link = NULL;
+        }
+    }
+
+    /* Find the kprobe program */
+    kprobe_prog = bpf_object__find_program_by_name(obj, "handle_vfs_unlink_tpm");
+    if (kprobe_prog) {
+        kprobe_link = bpf_program__attach(kprobe_prog);
+        if (!libbpf_get_error(kprobe_link)) {
+            printf("Successfully attached kprobe program!\n");
+        } else {
+            fprintf(stderr, "ERROR: failed to attach kprobe program\n");
+            kprobe_link = NULL;
+        }
+    }
+
+    if (!tracepoint_link && !kprobe_link) {
+        fprintf(stderr, "ERROR: failed to attach any programs\n");
         goto cleanup;
     }
 
-    /* Attach kprobe */
-    link = bpf_program__attach_kprobe(prog, false, "do_unlinkat");
-    if (libbpf_get_error(link)) {
-        fprintf(stderr, "ERROR: bpf_program__attach_kprobe failed\n");
-        link = NULL;
-        goto cleanup;
-    }
-
-    printf("Successfully loaded and attached BPF program!\n");
-    printf("Monitoring do_unlinkat() calls... Press Ctrl-C to stop.\n");
+    printf("TPM monitoring programs are running!\n");
+    printf("Check /sys/kernel/debug/tracing/trace_pipe for output.\n");
 
     /* Set up signal handler */
     if (signal(SIGINT, sig_int) == SIG_ERR) {
@@ -85,17 +100,19 @@ int main(int argc, char **argv)
     }
 
     /* Main loop */
-    printf("BPF program is running. Check /sys/kernel/debug/tracing/trace_pipe for output.\n");
-    printf("You can also run: sudo cat /sys/kernel/debug/tracing/trace_pipe\n");
-    
     while (!exiting) {
         sleep(1);
     }
 
-    printf("\nDetaching BPF program...\n");
+    printf("\nDetaching BPF programs...\n");
 
 cleanup:
-    bpf_link__destroy(link);
+    if (tracepoint_link) {
+        bpf_link__destroy(tracepoint_link);
+    }
+    if (kprobe_link) {
+        bpf_link__destroy(kprobe_link);
+    }
     bpf_object__close(obj);
-    return err < 0 ? -err : 0;
+    return 0;
 }

@@ -21,7 +21,7 @@ CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
 LIBS := -lbpf -lelf -lz
 
-all: modules kfunc.o loader kfunc_simple.o loader_simple kfunc_tpm.o kfunc_tpm_sim.o
+all: modules kfunc.o loader kfunc_simple.o loader_simple kfunc_tpm.o kfunc_tpm_sim.o loader_tpm
 
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
@@ -44,9 +44,13 @@ loader: loader.c
 loader_simple: loader_simple.c
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
 
+loader_tpm: loader_tpm.c
+	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
+
+
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm -f kfunc.o kfunc_simple.o kfunc_tpm.o kfunc_tpm_sim.o loader loader_simple
+	rm -f kfunc.o kfunc_simple.o kfunc_tpm.o kfunc_tpm_sim.o loader loader_simple loader_tpm
 
 test_simple: kfunc_simple.o loader_simple
 	chmod +x test_simple.sh

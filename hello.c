@@ -13,11 +13,11 @@
 #include <linux/tpm.h>
 #include <crypto/hash.h>
 #include <crypto/hash_info.h>
-#include <crypto/sha1_base.h>
+#include <crypto/sha2.h>
 
-#define IMA_DIGEST_SIZE 20
+#define IMA_DIGEST_SIZE 32
 #define IMA_EVENT_NAME_LEN_MAX 255
-#define TPM_PCR_INDEX 10
+#define TPM_PCR_INDEX 23
 
 struct bpf_ima_template_entry {
     struct list_head list;
@@ -197,10 +197,10 @@ __bpf_kfunc int bpf_ima_get_measurement_count(void)
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest;
+    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
     int ret;
     
-    if (!pcr_buf || buf_size < 41)
+    if (!pcr_buf || buf_size < 80)  /* Need more space for SHA256 hex string */
         return -EINVAL;
     
     /* Try to get the default TPM chip */
@@ -213,11 +213,12 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
         return 0;
     }
     
-    /* Initialize digest structure for PCR read */
-    digest.alg_id = TPM_ALG_SHA1;
+    /* Initialize digest array */
+    memset(digest, 0, sizeof(digest));
+    digest[0].alg_id = TPM_ALG_SHA256;
     
     /* Read actual PCR value from TPM */
-    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, &digest);
+    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
     if (ret < 0) {
         /* TPM read failed, use simulation */
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
@@ -229,9 +230,9 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     
     /* Format the real PCR value as hex string */
     snprintf(pcr_buf, buf_size, "PCR%d_REAL:", TPM_PCR_INDEX);
-    for (int i = 0; i < SHA1_DIGEST_SIZE && strlen(pcr_buf) < buf_size - 3; i++) {
+    for (int i = 0; i < SHA256_DIGEST_SIZE && strlen(pcr_buf) < buf_size - 3; i++) {
         snprintf(pcr_buf + strlen(pcr_buf), buf_size - strlen(pcr_buf), 
-                 "%02x", digest.digest[i]);
+                 "%02x", digest[0].digest[i]);
     }
     
     tpm_put_ops(chip);
@@ -242,7 +243,7 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest;
+    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
     struct crypto_shash *tfm;
     struct shash_desc *desc;
     int ret;
@@ -257,8 +258,14 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
         return -ENODEV;
     }
     
-    /* Calculate SHA1 hash of the data */
-    tfm = crypto_alloc_shash("sha1", 0, 0);
+    /* Initialize digest array */
+    memset(digest, 0, sizeof(digest));
+    
+    /* Set up for SHA256 (modern standard TPM hash) */
+    digest[0].alg_id = TPM_ALG_SHA256;
+    
+    /* Calculate SHA256 hash of the data */
+    tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm)) {
         tpm_put_ops(chip);
         return PTR_ERR(tfm);
@@ -272,7 +279,7 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
     }
     
     desc->tfm = tfm;
-    ret = crypto_shash_digest(desc, data, data_len, digest.digest);
+    ret = crypto_shash_digest(desc, data, data_len, digest[0].digest);
     kfree(desc);
     crypto_free_shash(tfm);
     
@@ -281,16 +288,12 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
         return ret;
     }
     
-    /* Set up digest structure for TPM */
-    digest.alg_id = TPM_ALG_SHA1;
-    
-    /* Extend the PCR */
-    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, &digest);
+    /* Use PCR 23 which is typically available for user applications */
+    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
     if (ret < 0) {
         printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
     } else {
-        printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", 
-               TPM_PCR_INDEX, data_len);
+        printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", TPM_PCR_INDEX, data_len);
     }
     
     tpm_put_ops(chip);
@@ -336,11 +339,21 @@ static int __init hello_init(void)
     int ret;
 
     printk(KERN_INFO "Hello, world!\n");
+    
+    /* Register kfuncs for kprobe programs */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret) {
-        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set\n");
+        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set for kprobe\n");
         return ret;
     }
+    
+    /* Register kfuncs for tracepoint programs */
+    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
+    if (ret) {
+        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set for tracepoint\n");
+        return ret;
+    }
+    
     printk(KERN_INFO "bpf_kfunc_example: Module loaded successfully\n");
     return 0;
 }
