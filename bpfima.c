@@ -28,6 +28,7 @@ struct bpf_ima_template_entry {
 
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
+static DEFINE_SPINLOCK(tpm_extend_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
 __bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz);
@@ -150,6 +151,31 @@ static int calculate_sha1_hash(const void *data, size_t len, u8 *digest)
     return ret;
 }
 
+/* Calculate SHA256 hash of data for TPM PCR extension */
+static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
+{
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    int ret;
+
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm))
+        return PTR_ERR(tfm);
+
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    if (!desc) {
+        crypto_free_shash(tfm);
+        return -ENOMEM;
+    }
+
+    desc->tfm = tfm;
+    ret = crypto_shash_digest(desc, data, len, digest);
+
+    kfree(desc);
+    crypto_free_shash(tfm);
+    return ret;
+}
+
 /* Add measurement to list and simulate PCR extension */
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
 {
@@ -197,16 +223,14 @@ __bpf_kfunc int bpf_ima_get_measurement_count(void)
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
+    struct tpm_digest digest[1]; 
     int ret;
     
-    if (!pcr_buf || buf_size < 80)  /* Need more space for SHA256 hex string */
+    if (!pcr_buf || buf_size < 80) 
         return -EINVAL;
     
-    /* Try to get the default TPM chip */
     chip = tpm_default_chip();
     if (!chip) {
-        /* No TPM available, use simulation */
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
                  TPM_PCR_INDEX, atomic_read(&measurement_count));
         printk(KERN_INFO "TPM not available, using simulation\n");
@@ -244,8 +268,7 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
 {
     struct tpm_chip *chip;
     struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
+    unsigned long flags;
     int ret;
     
     if (!data || data_len == 0)
@@ -264,29 +287,15 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
     /* Set up for SHA256 (modern standard TPM hash) */
     digest[0].alg_id = TPM_ALG_SHA256;
     
-    /* Calculate SHA256 hash of the data */
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
-        tpm_put_ops(chip);
-        return PTR_ERR(tfm);
-    }
-    
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc) {
-        crypto_free_shash(tfm);
-        tpm_put_ops(chip);
-        return -ENOMEM;
-    }
-    
-    desc->tfm = tfm;
-    ret = crypto_shash_digest(desc, data, data_len, digest[0].digest);
-    kfree(desc);
-    crypto_free_shash(tfm);
-    
+    /* Calculate SHA256 hash of the data using external function */
+    ret = calculate_sha256_hash(data, data_len, digest[0].digest);
     if (ret < 0) {
         tpm_put_ops(chip);
         return ret;
     }
+    
+    /* Lock TPM extend operations to ensure atomicity */
+    spin_lock_irqsave(&tpm_extend_lock, flags);
     
     /* Use PCR 23 which is typically available for user applications */
     ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
@@ -295,6 +304,8 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
     } else {
         printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", TPM_PCR_INDEX, data_len);
     }
+    
+    spin_unlock_irqrestore(&tpm_extend_lock, flags);
     
     tpm_put_ops(chip);
     return ret;
@@ -307,10 +318,10 @@ __bpf_kfunc int bpf_tpm_is_available(void)
     
     chip = tpm_default_chip();
     if (!chip)
-        return 0; /* TPM not available */
+        return 0; 
         
     tpm_put_ops(chip);
-    return 1; /* TPM available */
+    return 1; 
 }
 
 __bpf_kfunc_end_defs();
@@ -380,6 +391,6 @@ module_init(bpfima_init);
 module_exit(bpfima_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Lorenzo Ferro");
+MODULE_AUTHOR("TORSEC");
 MODULE_DESCRIPTION("BPF-IMA: eBPF-enhanced Integrity Measurement Architecture with TPM integration");
 MODULE_VERSION("1.0");
