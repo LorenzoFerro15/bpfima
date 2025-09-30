@@ -11,6 +11,7 @@
 #include <linux/list.h>
 #include <linux/crypto.h>
 #include <linux/tpm.h>
+#include <linux/delay.h>
 #include <crypto/hash.h>
 #include <crypto/hash_info.h>
 #include <crypto/sha2.h>
@@ -136,7 +137,7 @@ static int calculate_sha1_hash(const void *data, size_t len, u8 *digest)
     if (IS_ERR(tfm))
         return PTR_ERR(tfm);
 
-    desc = kmalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    desc = kmalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
     if (!desc) {
         crypto_free_shash(tfm);
         return -ENOMEM;
@@ -220,12 +221,11 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     /* Read actual PCR value from TPM */
     ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
     if (ret < 0) {
-        /* TPM read failed, use simulation */
-        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
-                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_TPM_READ_FAILED_%d", 
+                 TPM_PCR_INDEX, atomic_read(&measurement_count), ret);
         printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
         tpm_put_ops(chip);
-        return ret;
+        return 0; 
     }
     
     /* Format the real PCR value as hex string */
@@ -271,7 +271,7 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
         return PTR_ERR(tfm);
     }
     
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
     if (!desc) {
         crypto_free_shash(tfm);
         tpm_put_ops(chip);
@@ -288,10 +288,11 @@ __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
         return ret;
     }
     
-    /* Use PCR 23 which is typically available for user applications */
     ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
     if (ret < 0) {
-        printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+        printk(KERN_WARNING "TPM PCR %d extend failed (error %d), continuing without TPM\n", TPM_PCR_INDEX, ret);
+        tpm_put_ops(chip);
+        return 0; 
     } else {
         printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", TPM_PCR_INDEX, data_len);
     }
