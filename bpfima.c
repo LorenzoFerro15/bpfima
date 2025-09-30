@@ -32,7 +32,6 @@ static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
 __bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz);
-__bpf_kfunc int bpf_ima_is_enabled(void);
 __bpf_kfunc int bpf_get_file_path(struct file *file, char *buf, u32 buf_size);
 __bpf_kfunc int bpf_ima_measure_data(const char *event_label, const char *event_name, const char *data, u32 data_len);
 __bpf_kfunc int bpf_ima_file_info(struct file *file, char *hash_buf, u32 buf_size);
@@ -61,16 +60,6 @@ __bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32
             return i;
     }
     return -1;
-}
-
-/* Check if IMA is enabled in kernel configuration */
-__bpf_kfunc int bpf_ima_is_enabled(void)
-{
-#ifdef CONFIG_IMA
-    return 1;
-#else
-    return 0;
-#endif
 }
 
 /* Extract file path from file structure for monitoring */
@@ -151,6 +140,31 @@ static int calculate_sha1_hash(const void *data, size_t len, u8 *digest)
     return ret;
 }
 
+/* Calculate SHA256 hash of data for integrity measurements */
+static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
+{
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    int ret;
+
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm))
+        return PTR_ERR(tfm);
+
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
+    if (!desc) {
+        crypto_free_shash(tfm);
+        return -ENOMEM;
+    }
+
+    desc->tfm = tfm;
+    ret = crypto_shash_digest(desc, data, len, digest);
+
+    kfree(desc);
+    crypto_free_shash(tfm);
+    return ret;
+}
+
 /* Add measurement to list and simulate PCR extension */
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
 {
@@ -198,27 +212,23 @@ __bpf_kfunc int bpf_ima_get_measurement_count(void)
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
+    struct tpm_digest digest[1]; 
     int ret;
     
-    if (!pcr_buf || buf_size < 80)  /* Need more space for SHA256 hex string */
+    if (!pcr_buf || buf_size < 80)  
         return -EINVAL;
     
-    /* Try to get the default TPM chip */
     chip = tpm_default_chip();
     if (!chip) {
-        /* No TPM available, use simulation */
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
                  TPM_PCR_INDEX, atomic_read(&measurement_count));
         printk(KERN_INFO "TPM not available, using simulation\n");
         return 0;
     }
     
-    /* Initialize digest array */
     memset(digest, 0, sizeof(digest));
     digest[0].alg_id = TPM_ALG_SHA256;
     
-    /* Read actual PCR value from TPM */
     ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
     if (ret < 0) {
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_TPM_READ_FAILED_%d", 
@@ -228,7 +238,6 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
         return 0; 
     }
     
-    /* Format the real PCR value as hex string */
     snprintf(pcr_buf, buf_size, "PCR%d_REAL:", TPM_PCR_INDEX);
     for (int i = 0; i < SHA256_DIGEST_SIZE && strlen(pcr_buf) < buf_size - 3; i++) {
         snprintf(pcr_buf + strlen(pcr_buf), buf_size - strlen(pcr_buf), 
@@ -243,46 +252,22 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 __bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
+    struct tpm_digest digest[1]; 
     int ret;
     
     if (!data || data_len == 0)
         return -EINVAL;
     
-    /* Get the default TPM chip */
     chip = tpm_default_chip();
     if (!chip) {
         printk(KERN_WARNING "No TPM chip available for PCR extend\n");
         return -ENODEV;
     }
     
-    /* Initialize digest array */
     memset(digest, 0, sizeof(digest));
-    
-    /* Set up for SHA256 (modern standard TPM hash) */
     digest[0].alg_id = TPM_ALG_SHA256;
     
-    /* Calculate SHA256 hash of the data */
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
-        tpm_put_ops(chip);
-        return PTR_ERR(tfm);
-    }
-    
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
-    if (!desc) {
-        crypto_free_shash(tfm);
-        tpm_put_ops(chip);
-        return -ENOMEM;
-    }
-    
-    desc->tfm = tfm;
-    ret = crypto_shash_digest(desc, data, data_len, digest[0].digest);
-    kfree(desc);
-    crypto_free_shash(tfm);
-    
+    ret = calculate_sha256_hash(data, data_len, digest[0].digest);
     if (ret < 0) {
         tpm_put_ops(chip);
         return ret;
@@ -308,10 +293,10 @@ __bpf_kfunc int bpf_tpm_is_available(void)
     
     chip = tpm_default_chip();
     if (!chip)
-        return 0; /* TPM not available */
+        return 0; 
         
     tpm_put_ops(chip);
-    return 1; /* TPM available */
+    return 1; 
 }
 
 __bpf_kfunc_end_defs();
@@ -341,14 +326,12 @@ static int __init bpfima_init(void)
 
     printk(KERN_INFO "BPF-IMA module initializing...\n");
     
-    /* Register kfuncs for kprobe programs */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
         return ret;
     }
     
-    /* Register kfuncs for tracepoint programs */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
