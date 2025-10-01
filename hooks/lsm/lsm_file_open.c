@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 #define BPF_NO_GLOBAL_DATA
+#include "vmlinux.h"
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -166,7 +167,7 @@ int handle_lsm_file_open_tpm(struct file *file) {
         bpf_printk("Failed to build measurement data\n");
         return 0;
     }
-    
+
     /* Check if TPM is available */
     int tpm_available = bpf_tpm_is_available();
     bpf_printk("TPM Available: %s\n", tpm_available ? "YES" : "NO");
