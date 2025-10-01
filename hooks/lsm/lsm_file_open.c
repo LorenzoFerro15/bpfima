@@ -123,7 +123,7 @@ int handle_lsm_file_open_tpm(struct file *file) {
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
 
-    char full_path[64];  // truncated to fit BPF stack
+    char full_path[PATH_MAX];  
     if (bpf_d_path(&f_path, full_path, sizeof(full_path)) < 0) {
         bpf_printk("Failed to resolve file full path\n");
         return 0;
