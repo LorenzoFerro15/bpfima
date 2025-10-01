@@ -137,7 +137,7 @@ int handle_lsm_file_open_tpm(struct file *file) {
     bpf_get_current_comm(comm, sizeof(comm));
     
     bpf_printk("=== TPM FILE OPEN DETECTED ===\n");
-    bpf_printk("File name: %s", file->)
+    bpf_printk("File name: %s", fname);
     bpf_printk("Process: pid=%d uid=%d gid=%d comm=%s\n", pid, uid, gid, comm);
     bpf_printk("Timestamp: %llu ns\n", ts);
 
@@ -159,7 +159,14 @@ int handle_lsm_file_open_tpm(struct file *file) {
             return 0;
     }
 
-
+    char measurement_data[256] = {0};
+    int data_len = build_measurement_data(measurement_data, sizeof(measurement_data), comm, pid, uid, fname, ima_file_hash);
+    
+    if (data_len < 0) {
+        bpf_printk("Failed to build measurement data\n");
+        return 0;
+    }
+    
     /* Check if TPM is available */
     int tpm_available = bpf_tpm_is_available();
     bpf_printk("TPM Available: %s\n", tpm_available ? "YES" : "NO");
