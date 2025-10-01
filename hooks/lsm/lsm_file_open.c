@@ -120,11 +120,12 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 SEC("lsm/file_open")
 int handle_lsm_file_open_tpm(struct file *file) {
 
-    struct path f_path = file->f_path;
-    char *full_path = NULL;
-    
-    if (bpf_d_path(&f_path, full_path, PATH_MAX) < 0) {
-        bpf_printk("Failed to resolve file full path");
+    struct path f_path;
+    bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
+
+    char full_path[64];  // truncated to fit BPF stack
+    if (bpf_d_path(&f_path, full_path, sizeof(full_path)) < 0) {
+        bpf_printk("Failed to resolve file full path\n");
         return 0;
     }
 
