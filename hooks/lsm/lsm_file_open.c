@@ -4,6 +4,13 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#ifndef __u64
+typedef unsigned long long __u64;
+#endif
+#ifndef __u32
+typedef unsigned int __u32;
+#endif
+
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef int pid_t;
