@@ -121,9 +121,11 @@ SEC("lsm/file_open")
 int handle_lsm_file_open_tpm(struct file *file) {
 
     struct path f_path = file->f_path;
-    char *full_path = d_path(&f_path, path_buf, PATH_MAX);
-    if (!IS_ERR(full_path)) {
-        printk("Full path: %s\n", full_path);
+    char *full_path;
+    
+    if (bpf_d_path(&f_path, full_path, PATH_MAX) < 0) {
+        bpf_printk("Failed to resolve file full path");
+        return 0;
     }
 
     pid_t pid = bpf_get_current_pid_tgid() >> 32;
@@ -136,7 +138,7 @@ int handle_lsm_file_open_tpm(struct file *file) {
     bpf_get_current_comm(comm, sizeof(comm));
     
     bpf_printk("=== TPM FILE OPEN DETECTED ===\n");
-    bpf_printk("File name: %s", fname);
+    bpf_printk("File full path: %s", full_path);
     bpf_printk("Process: pid=%d uid=%d gid=%d comm=%s\n", pid, uid, gid, comm);
     bpf_printk("Timestamp: %llu ns\n", ts);
 
