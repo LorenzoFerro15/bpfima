@@ -12,7 +12,6 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 /* External kfuncs for TPM operations */
 extern int bpf_tpm_is_available(void) __ksym;
-extern int bpf_tpm_extend_pcr(const char *data, u32 data_len) __ksym;
 extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
 extern int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size) __ksym;
 
@@ -135,25 +134,16 @@ int handle_unlinkat_tpm(void *ctx)
     int ima_ret = bpf_ima_extend_measurement(event_name, measurement_data, data_len);
     bpf_printk("IMA measurement result: %d\n", ima_ret);
     
-    /* TPM operations if available */
-    if (tpm_available) {
-        int tpm_ret = bpf_tpm_extend_pcr(measurement_data, data_len);
-        bpf_printk("TPM PCR extend result: %d\n", tpm_ret);
-        
-        /* Get updated PCR value */
-        int pcr_ret = bpf_ima_get_pcr_value(pcr_buf, sizeof(pcr_buf));
-        if (pcr_ret == 0) {
-            bpf_printk("PCR Value: %s\n", pcr_buf);
+    /* Get PCR value (real or simulated based on TPM availability) */
+    int pcr_ret = bpf_ima_get_pcr_value(pcr_buf, sizeof(pcr_buf));
+    if (pcr_ret == 0) {
+        if (tpm_available) {
+            bpf_printk("Real PCR Value: %s\n", pcr_buf);
         } else {
-            bpf_printk("Failed to read PCR: %d\n", pcr_ret);
-        }
-    } else {
-        bpf_printk("TPM not available - using simulation only\n");
-        
-        int pcr_ret = bpf_ima_get_pcr_value(pcr_buf, sizeof(pcr_buf));
-        if (pcr_ret == 0) {
             bpf_printk("Simulated PCR: %s\n", pcr_buf);
         }
+    } else {
+        bpf_printk("Failed to read PCR: %d\n", pcr_ret);
     }
     
     bpf_printk("TPM-enhanced measurement completed\n");

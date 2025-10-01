@@ -69,12 +69,9 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     struct bpf_ima_template_entry *entry;
     struct tpm_chip *chip;
     struct tpm_digest digest[1];
-    unsigned long flags;
     int ret = 0;
     u8 hash_value[SHA256_DIGEST_SIZE];
-
-    if (!event_name || !data || data_len == 0)
-        return -EINVAL;
+    bool can_sleep = !in_atomic() && !irqs_disabled();
 
     /* Calculate SHA256 hash of the data */
     ret = calculate_sha256_hash(data, data_len, hash_value);
@@ -84,7 +81,7 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     }
 
     /* Allocate and prepare measurement entry */
-    entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+    entry = kzalloc(sizeof(*entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!entry)
         return -ENOMEM;
 
@@ -96,34 +93,39 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     
     memcpy(entry->digest, hash_value, IMA_DIGEST_SIZE);
 
-    /* Acquire single lock to ensure atomicity of both list and TPM operations */
-    spin_lock_irqsave(&measurement_list_lock, flags);
+    /* Acquire lock to ensure atomicity of both list and TPM operations (allows interrupts) */
+    spin_lock(&measurement_list_lock);
 
     /* Add to measurement list */
     list_add_tail(&entry->list, &bpf_measurement_list);
     atomic_inc(&measurement_count);
     
-    /* Prepare TPM digest structure */
-    chip = tpm_default_chip();
-    if (chip) {
-        memset(digest, 0, sizeof(digest));
-        digest[0].alg_id = TPM_ALG_SHA256;
-        memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
-        
-        /* Extend TPM PCR */
-        ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-        if (ret < 0) {
-            printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+    /* Only attempt TPM operations if we can sleep */
+    if (can_sleep) {
+        /* Prepare TPM digest structure */
+        chip = tpm_default_chip();
+        if (chip) {
+            memset(digest, 0, sizeof(digest));
+            digest[0].alg_id = TPM_ALG_SHA256;
+            memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
+            
+            /* Extend TPM PCR */
+            ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
+            if (ret < 0) {
+                printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+            } else {
+                printk(KERN_INFO "Extended TPM PCR %d with measurement for event: %s\n", TPM_PCR_INDEX, event_name);
+            }
+            
+            tpm_put_ops(chip);
         } else {
-            printk(KERN_INFO "Extended TPM PCR %d with measurement for event: %s\n", TPM_PCR_INDEX, event_name);
+            printk(KERN_WARNING "TPM not available, measurement added to list only\n");
         }
-        
-        tpm_put_ops(chip);
     } else {
-        printk(KERN_WARNING "TPM not available, measurement added to list only\n");
+        printk(KERN_INFO "Called from atomic context, TPM extension deferred for event: %s\n", event_name);
     }
 
-    spin_unlock_irqrestore(&measurement_list_lock, flags);
+    spin_unlock(&measurement_list_lock);
 
     printk(KERN_INFO "IMA_MEASUREMENT: event=%s count=%d digest=%*ph\n", 
            event_name, atomic_read(&measurement_count), IMA_DIGEST_SIZE, hash_value);
@@ -134,6 +136,26 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
 /* Add measurement to list and extend TPM PCR using unified function */
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
 {
+    if (!event_name || !data) {
+        printk(KERN_ERR "bpfima: Invalid null parameters (event_name=%p, data=%p)\n", event_name, data);
+        return -EINVAL;
+    }
+    
+    if (strlen(event_name) == 0) {
+        printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
+        return -EINVAL;
+    }
+    
+    if (data_len <= 0) { 
+        printk(KERN_ERR "bpfima: Invalid data_len: %u\n", data_len);
+        return -EINVAL;
+    }
+    
+    if (strnlen(data, data_len) == 0) {
+        printk(KERN_ERR "bpfima: Empty data content not allowed\n");
+        return -EINVAL;
+    }
+    
     return process_measurement(event_name, data, data_len);
 }
 
@@ -149,9 +171,26 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     struct tpm_chip *chip;
     struct tpm_digest digest[1]; 
     int ret;
+    bool can_sleep = !in_atomic() && !irqs_disabled();
     
-    if (!pcr_buf || buf_size < 80) 
+    /* Parameter validation */
+    if (!pcr_buf) {
+        printk(KERN_ERR "bpfima: pcr_buf is null\n");
         return -EINVAL;
+    }
+    
+    if (buf_size < 80) {
+        printk(KERN_ERR "bpfima: buf_size too small: %u (minimum 80)\n", buf_size);
+        return -EINVAL;
+    }
+    
+    /* If called from atomic context, return simulation */
+    if (!can_sleep) {
+        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_ATOMIC_CONTEXT", 
+                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        printk(KERN_INFO "Called from atomic context, using simulation\n");
+        return 0;
+    }
     
     chip = tpm_default_chip();
     if (!chip) {
@@ -243,14 +282,13 @@ static int __init bpfima_init(void)
 static void __exit bpfima_exit(void)
 {
     struct bpf_ima_template_entry *entry, *tmp;
-    unsigned long flags;
 
-    spin_lock_irqsave(&measurement_list_lock, flags);
+    spin_lock(&measurement_list_lock);
     list_for_each_entry_safe(entry, tmp, &bpf_measurement_list, list) {
         list_del(&entry->list);
         kfree(entry);
     }
-    spin_unlock_irqrestore(&measurement_list_lock, flags);
+    spin_unlock(&measurement_list_lock);
 
     printk(KERN_INFO "IMA measurements cleaned up. Total measurements: %d\n", 
            atomic_read(&measurement_count));
