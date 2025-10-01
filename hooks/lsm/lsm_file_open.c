@@ -4,7 +4,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <linux/hash_info.h>
-#include <linux/integrity.h>
 
 typedef unsigned int u32;
 typedef unsigned long long u64;
