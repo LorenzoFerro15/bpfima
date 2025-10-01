@@ -130,7 +130,6 @@ int handle_lsm_file_open_tpm(struct file *file) {
     u32 uid = uid_gid & 0xFFFFFFFF;
     u32 gid = uid_gid >> 32;
     char comm[16];
-    char pcr_buf[128];
     u64 ts = bpf_ktime_get_ns();
 
     bpf_get_current_comm(comm, sizeof(comm));
