@@ -3,13 +3,7 @@
 #include "../../vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-
-#ifndef __u64
-typedef unsigned long long __u64;
-#endif
-#ifndef __u32
-typedef unsigned int __u32;
-#endif
+#include <bpf/bpf_core_read.h>
 
 typedef unsigned int u32;
 typedef unsigned long long u64;
@@ -130,8 +124,9 @@ int handle_lsm_file_open_tpm(struct file *file) {
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
 
-    char full_path[PATH_MAX];  
-    if (bpf_d_path(&f_path, full_path, sizeof(full_path)) < 0) {
+    char full_path[PATH_MAX];
+    long read = bpf_d_path(&f_path, full_path, sizeof(full_path));  
+    if (read < 0) {
         bpf_printk("Failed to resolve file full path\n");
         return 0;
     }
