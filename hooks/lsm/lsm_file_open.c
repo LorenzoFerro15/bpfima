@@ -118,8 +118,8 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 }
 
 /* Monitor file open operations */
-SEC("lsm/file_alloc_security")
-int handle_lsm_file_alloc_security_tpm(struct file *file) {
+SEC("lsm/file_post_open")
+int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
 
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);

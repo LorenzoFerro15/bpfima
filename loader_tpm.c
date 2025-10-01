@@ -61,11 +61,11 @@ int main(int argc, char **argv)
     }
 
 
-    file_open_prog = bpf_object__find_program_by_name(obj, "handle_lsm_file_alloc_security_tpm");
+    file_open_prog = bpf_object__find_program_by_name(obj, "handle_lsm_file_post_open_tpm");
     if (file_open_prog) {
         file_open_link = bpf_program__attach(file_open_prog);
         if (!libbpf_get_error(file_open_link)) {
-            printf("Successfully attached file_open program\n");
+            printf("Successfully attached file_post_open program\n");
         } else {
             fprintf(stderr, "ERROR: failed to attach file_alloc_security program\n");
             file_open_link = NULL;
