@@ -109,7 +109,7 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 SEC("lsm/file_open")
 int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
 
-    struct path f_path;
+    //struct path f_path;
     //bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
 
     /*
