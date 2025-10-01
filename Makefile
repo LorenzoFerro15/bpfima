@@ -32,7 +32,7 @@ kfunc_tpm.o: kfunc_tpm.c
 loader_tpm: loader_tpm.c
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
 
-LSM_OBJ := hooks/lsm/lsm_file_open.o
+LSM_OBJ := lsm_file_open.o
 
 $(LSM_OBJ): hooks/lsm/lsm_file_open.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
