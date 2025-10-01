@@ -118,12 +118,13 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 }
 
 /* Monitor file open operations */
-SEC("lsm/file_post_open")
-int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
-
+SEC("lsm/inode_create")
+int handle_lsm_file_post_open_tpm(struct inode *dir, struct dentry *dentry,
+	 umode_t mode) {
+/*
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
-/*
+
     char full_path[PATH_MAX];
     long read = bpf_d_path(&f_path, full_path, sizeof(full_path));  
     if (read < 0) {
