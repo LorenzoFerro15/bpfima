@@ -14,6 +14,10 @@
 #include <crypto/hash.h>
 #include <crypto/hash_info.h>
 #include <crypto/sha2.h>
+#include <linux/security.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
+#include <linux/proc_fs.h>
 
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 #define IMA_EVENT_NAME_LEN_MAX 255
@@ -29,6 +33,12 @@ struct bpf_ima_template_entry {
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
+
+/* SecurityFS interface */
+static struct dentry *bpfima_dir = NULL;
+static struct dentry *measurements_file = NULL;
+static struct dentry *status_file = NULL;
+static char bpfima_dir_name[32] = "bpfima";
 
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len);
 __bpf_kfunc int bpf_ima_get_measurement_count(void);
@@ -381,6 +391,287 @@ __bpf_kfunc int bpf_ima_print_measurement_list(void)
 
 __bpf_kfunc_end_defs();
 
+/*
+ * SecurityFS implementation for exposing measurement list
+ */
+
+/* Iterator for seq_file operations on measurement list */
+
+/*
+ * measurements_seq_start - Start iterator for measurement list seq_file operations
+ * @s: seq_file structure for output formatting
+ * @pos: Position in the measurement list to start from
+ *
+ * Acquires the measurement list spinlock and returns the list element at the
+ * specified position. This function is called at the beginning of each read
+ * operation on the measurements securityfs file.
+ *
+ * The spinlock is held until measurements_seq_stop() is called to ensure
+ * consistent traversal of the measurement list.
+ *
+ * Returns: Pointer to list element at position @pos, or NULL if position is beyond list end
+ */
+static void *measurements_seq_start(struct seq_file *s, loff_t *pos)
+{
+    spin_lock(&measurement_list_lock);
+    return seq_list_start(&bpf_measurement_list, *pos);
+}
+
+/*
+ * measurements_seq_next - Get next element in measurement list iteration
+ * @s: seq_file structure for output formatting
+ * @v: Current list element pointer
+ * @pos: Current position in the list (updated by this function)
+ *
+ * Advances to the next element in the measurement list during seq_file iteration.
+ * This function is called repeatedly during a single read operation to traverse
+ * the entire measurement list.
+ *
+ * Returns: Pointer to next list element, or NULL if end of list is reached
+ */
+static void *measurements_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    return seq_list_next(v, &bpf_measurement_list, pos);
+}
+
+/*
+ * measurements_seq_stop - End measurement list iteration and release lock
+ * @s: seq_file structure for output formatting
+ * @v: Current list element pointer (may be NULL)
+ *
+ * Releases the measurement list spinlock that was acquired in measurements_seq_start().
+ * This function is called at the end of each read operation, regardless of whether
+ * the iteration completed successfully or was interrupted.
+ *
+ * Critical for preventing deadlocks - ensures the spinlock is always released.
+ */
+static void measurements_seq_stop(struct seq_file *s, void *v)
+{
+    spin_unlock(&measurement_list_lock);
+}
+
+/*
+ * measurements_seq_show - Format and output a single measurement entry
+ * @s: seq_file structure for output formatting
+ * @v: Pointer to current bpf_ima_template_entry
+ *
+ * Formats a single measurement entry for display in the securityfs measurements file.
+ * Output format is space-separated on a single line:
+ * "event_name event_data digest_hash\n"
+ *
+ * This format allows easy parsing by userspace tools while remaining human-readable.
+ * The digest is output as a continuous hexadecimal string without spaces.
+ *
+ * Returns: 0 on success
+ */
+static int measurements_seq_show(struct seq_file *s, void *v)
+{
+    struct bpf_ima_template_entry *entry;
+    int i;
+    
+    entry = list_entry(v, struct bpf_ima_template_entry, list);
+    
+    seq_printf(s, "%s %s ", entry->event_name, entry->event_data);
+    for (i = 0; i < IMA_DIGEST_SIZE; i++) {
+        seq_printf(s, "%02x", entry->digest[i]);
+    }
+    seq_printf(s, "\n");
+    
+    return 0;
+}
+
+static const struct seq_operations measurements_seq_ops = {
+    .start = measurements_seq_start,
+    .next = measurements_seq_next,
+    .stop = measurements_seq_stop,
+    .show = measurements_seq_show,
+};
+
+/*
+ * measurements_open - Open handler for measurements securityfs file
+ * @inode: inode of the measurements file
+ * @file: file structure being opened
+ *
+ * Initializes seq_file operations for the measurements file. This function
+ * is called when userspace opens /sys/kernel/security/bpfima/measurements.
+ *
+ * Associates the file with the measurements_seq_ops to enable sequential
+ * reading of the measurement list.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+static int measurements_open(struct inode *inode, struct file *file)
+{
+    return seq_open(file, &measurements_seq_ops);
+}
+
+static const struct file_operations measurements_fops = {
+    .owner = THIS_MODULE,
+    .open = measurements_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = seq_release,
+};
+
+/*
+ * status_show - Display module status information
+ * @s: seq_file structure for output formatting
+ * @unused: Unused parameter (required by single_open interface)
+ *
+ * Outputs current module status and configuration in key=value format:
+ * - module: Module name (bpfima)
+ * - measurement_count: Current number of recorded measurements
+ * - pcr_index: TPM PCR index used for measurements
+ * - tpm_available: Whether TPM hardware is available (yes/no)
+ * - digest_algorithm: Hash algorithm used (sha256)
+ *
+ * This information helps userspace tools understand the current state
+ * and capabilities of the BPF-IMA measurement system.
+ *
+ * Returns: 0 on success
+ */
+static int status_show(struct seq_file *s, void *unused)
+{
+    struct tpm_chip *chip;
+    bool tpm_available = false;
+    
+    chip = tpm_default_chip();
+    if (chip) {
+        tpm_available = true;
+        tpm_put_ops(chip);
+    }
+    
+    seq_printf(s, "module=bpfima\n");
+    seq_printf(s, "measurement_count=%d\n", atomic_read(&measurement_count));
+    seq_printf(s, "pcr_index=%d\n", TPM_PCR_INDEX);
+    seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
+    seq_printf(s, "digest_algorithm=sha256\n");
+    
+    return 0;
+}
+
+/*
+ * status_open - Open handler for status securityfs file
+ * @inode: inode of the status file
+ * @file: file structure being opened
+ *
+ * Initializes single-show seq_file operations for the status file.
+ * This function is called when userspace opens /sys/kernel/security/bpfima/status.
+ *
+ * Uses single_open() since the status file contains a single block of information
+ * rather than a list that needs iteration.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+static int status_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, status_show, NULL);
+}
+
+static const struct file_operations status_fops = {
+    .owner = THIS_MODULE,
+    .open = status_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+
+/*
+ * bpfima_securityfs_init - Initialize SecurityFS interface for BPF-IMA
+ *
+ * Creates the SecurityFS directory and files to expose BPF-IMA measurement
+ * data to userspace. The interface provides:
+ *
+ * /sys/kernel/security/bpfima/measurements - List of all measurements
+ * /sys/kernel/security/bpfima/status - Module status and configuration
+ *
+ * If the "bpfima" directory already exists (from previous module load),
+ * creates a unique directory name using the current process PID to avoid
+ * conflicts: "bpfima_<pid>"
+ *
+ * Files are created with read-only permissions (0444) for security.
+ * Proper cleanup on failure ensures no partial state is left behind.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+static int bpfima_securityfs_init(void)
+{
+    bpfima_dir = securityfs_create_dir("bpfima", NULL);
+    if (IS_ERR(bpfima_dir)) {
+        long err = PTR_ERR(bpfima_dir);
+        if (err == -EEXIST) {
+            snprintf(bpfima_dir_name, sizeof(bpfima_dir_name), "bpfima_%d", current->pid);
+            pr_info("bpfima: Directory exists, using unique name: %s\n", bpfima_dir_name);
+            bpfima_dir = securityfs_create_dir(bpfima_dir_name, NULL);
+            if (IS_ERR(bpfima_dir)) {
+                pr_err("bpfima: Failed to create unique securityfs directory: %ld\n", PTR_ERR(bpfima_dir));
+                return PTR_ERR(bpfima_dir);
+            }
+        } else {
+            pr_err("bpfima: Failed to create securityfs directory: %ld\n", err);
+            return err;
+        }
+    }
+    
+    measurements_file = securityfs_create_file("measurements", 0444,
+                                              bpfima_dir, NULL, &measurements_fops);
+    if (IS_ERR(measurements_file)) {
+        pr_err("bpfima: Failed to create measurements file: %ld\n", PTR_ERR(measurements_file));
+        securityfs_remove(bpfima_dir);
+        bpfima_dir = NULL;
+        return PTR_ERR(measurements_file);
+    }
+    
+    status_file = securityfs_create_file("status", 0444,
+                                        bpfima_dir, NULL, &status_fops);
+    if (IS_ERR(status_file)) {
+        pr_err("bpfima: Failed to create status file: %ld\n", PTR_ERR(status_file));
+        securityfs_remove(measurements_file);
+        securityfs_remove(bpfima_dir);
+        measurements_file = NULL;
+        bpfima_dir = NULL;
+        return PTR_ERR(status_file);
+    }
+    
+    pr_info("bpfima: SecurityFS interface created at /sys/kernel/security/%s/\n", bpfima_dir_name);
+    return 0;
+}
+
+/*
+ * bpfima_securityfs_cleanup - Clean up SecurityFS interface
+ *
+ * Removes all SecurityFS files and directories created by bpfima_securityfs_init().
+ * This function is called during module unload to ensure proper cleanup.
+ *
+ * Removal order:
+ * 1. Individual files (status, measurements)
+ * 2. Directory (using recursive remove to handle any remaining content)
+ *
+ * Uses securityfs_recursive_remove() for the directory to ensure complete
+ * cleanup even if files were somehow left behind. All global pointers are
+ * reset to NULL to prevent double-cleanup attempts.
+ *
+ * Safe to call multiple times or with partially initialized state.
+ */
+static void bpfima_securityfs_cleanup(void)
+{
+    if (status_file) {
+        securityfs_remove(status_file);
+        status_file = NULL;
+    }
+    if (measurements_file) {
+        securityfs_remove(measurements_file);
+        measurements_file = NULL;
+    }
+    
+    if (bpfima_dir) {
+        securityfs_recursive_remove(bpfima_dir);
+        bpfima_dir = NULL;
+    }
+    
+    pr_info("bpfima: SecurityFS interface removed\n");
+}
+
 BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
 BTF_ID_FLAGS(func, bpf_ima_extend_measurement)
 BTF_ID_FLAGS(func, bpf_ima_get_measurement_count)
@@ -426,6 +717,12 @@ static int __init bpfima_init(void)
         return ret;
     }
     
+    ret = bpfima_securityfs_init();
+    if (ret) {
+        pr_err("bpfima: Failed to initialize SecurityFS interface\n");
+        return ret;
+    }
+    
     printk(KERN_INFO "bpfima: Module loaded successfully\n");
     return 0;
 }
@@ -448,6 +745,8 @@ static void __exit bpfima_exit(void)
     struct bpf_ima_template_entry *entry, *tmp;
 
     printk(KERN_INFO "BPF-IMA module unloading...\n");
+    
+    bpfima_securityfs_cleanup();
     
     bpf_ima_print_measurement_list();
 

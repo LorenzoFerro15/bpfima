@@ -70,6 +70,10 @@ else
     exit 1
 fi
 
+echo " === LOADED SECURITYFS ==="
+cat /sys/kernel/security/bpfima/status
+cat /sys/kernel/security/bpfima/measurement
+
 echo ""
 echo "3. Clearing trace buffer..."
 echo > /sys/kernel/debug/tracing/trace
@@ -100,13 +104,23 @@ echo ""
 echo "5. Testing file operations..."
 echo "   Creating test file..."
 echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file.txt
+echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file1.txt
+echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file2.txt
 ls -la /tmp/ebpf_test_file.txt
+ls -la /tmp/ebpf_test_file1.txt
+ls -la /tmp/ebpf_test_file2.txt
 
 echo "   Removing test file..."
 rm -f /tmp/ebpf_test_file.txt
+rm -f /tmp/ebpf_test_file1.txt
+rm -f /tmp/ebpf_test_file2.txt
 
 echo "   Waiting for eBPF events to be processed..."
 sleep 2
+
+echo " === Retrieving measurement data ==="
+cat /sys/kernel/security/bpfima/status
+cat /sys/kernel/security/bpfima/measurements
 
 echo "   Checking for immediate kernel issues..."
 RECENT_ERRORS=$(dmesg | tail -5 | grep -iE "(oops|panic|segfault|warning)" | wc -l)
