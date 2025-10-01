@@ -18,6 +18,14 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
     
+    # Kill the ring buffer reader if it's running
+    if [ ! -z "$READER_PID" ] && kill -0 "$READER_PID" 2>/dev/null; then
+        echo "   Stopping ring buffer reader (PID: $READER_PID)..."
+        kill -TERM "$READER_PID" 2>/dev/null
+        wait "$READER_PID" 2>/dev/null
+        echo "   ✓ Ring buffer reader stopped"
+    fi
+    
     # Kill the specific loader process if we have its PID
     if [ ! -z "$LOADER_PID" ] && kill -0 "$LOADER_PID" 2>/dev/null; then
         echo "   Stopping loader_tpm (PID: $LOADER_PID)..."
@@ -26,8 +34,9 @@ cleanup() {
         echo "   ✓ Loader stopped"
     fi
     
-    # Kill any remaining loader processes as fallback
+    # Kill any remaining processes as fallback
     pkill -f "loader_tpm" 2>/dev/null || true
+    pkill -f "userspace_reader" 2>/dev/null || true
     
     # Remove kernel module if loaded
     if lsmod | grep -q "^bpfima "; then
@@ -37,12 +46,14 @@ cleanup() {
     
     # Clean up temporary files
     [ -f "$DMESG_BEFORE" ] && rm -f "$DMESG_BEFORE"
+    # Keep the ring buffer log file for analysis
     
     echo "Cleanup completed."
 }
 
-# Initialize LOADER_PID to empty (will be set when loader starts)
+# Initialize process PIDs to empty (will be set when processes start)
 LOADER_PID=""
+READER_PID=""
 
 # Capture initial dmesg state
 DMESG_BEFORE=$(mktemp)
@@ -131,18 +142,69 @@ else
 fi
 
 echo ""
-echo "6. Stopping loader..."
+echo "6. Testing ring buffer userspace reader..."
+echo "   Starting userspace_reader with ring buffer..."
+
+# Create a permanent log file for ring buffer output
+RING_BUFFER_LOG="/home/lo/ebpf_events_$(date +%Y%m%d_%H%M%S).log"
+
+# Start the ring buffer reader in background
+./userspace_reader "$RING_BUFFER_LOG" &
+READER_PID=$!
+
+# Wait for reader to initialize
+echo "   Waiting for ring buffer reader to initialize..."
+sleep 3
+
+# Check if reader is running
+if ! kill -0 "$READER_PID" 2>/dev/null; then
+    echo "   ✗ Ring buffer reader failed to start"
+else
+    echo "   ✓ Ring buffer reader started (PID: $READER_PID)"
+    
+    echo "   Performing file operations to trigger ring buffer events..."
+    # Create and delete files to trigger ring buffer events
+    echo "Ring buffer test data" > /tmp/ring_test_file1.txt
+    echo "Ring buffer test data" > /tmp/ring_test_file2.txt
+    rm -f /tmp/ring_test_file1.txt
+    rm -f /tmp/ring_test_file2.txt
+    
+    echo "   Waiting for ring buffer events to be processed..."
+    sleep 3
+    
+    echo "   Stopping ring buffer reader..."
+    kill $READER_PID 2>/dev/null
+    wait $READER_PID 2>/dev/null
+    
+    # Check if we got any ring buffer data
+    if [ -f "$RING_BUFFER_LOG" ] && [ -s "$RING_BUFFER_LOG" ]; then
+        echo "   ✓ Ring buffer data captured:"
+        echo "   ======== RING BUFFER OUTPUT ========"
+        head -10 "$RING_BUFFER_LOG"
+        echo "   ======== END RING BUFFER ========"
+        
+        # Count events
+        EVENT_COUNT=$(grep -c "|" "$RING_BUFFER_LOG" 2>/dev/null || echo "0")
+        echo "   ✓ Captured $EVENT_COUNT structured events via ring buffer"
+    else
+        echo "   ⚠ No ring buffer data captured - this may indicate an issue"
+    fi
+    
+fi
+
+echo ""
+echo "7. Stopping original loader..."
 kill $LOADER_PID 2>/dev/null
 wait $LOADER_PID 2>/dev/null
 
 echo ""
-echo "7. Displaying trace output (last 30 lines)..."
+echo "8. Displaying trace output (last 30 lines)..."
 echo "==================== TRACE OUTPUT ===================="
 tail -30 /sys/kernel/debug/tracing/trace
 echo "====================== END TRACE ======================"
 
 echo ""
-echo "8. Displaying kernel messages (dmesg)..."
+echo "9. Displaying kernel messages (dmesg)..."
 echo "==================== DMESG OUTPUT ===================="
 
 # Get timestamp when test started (approximately)
