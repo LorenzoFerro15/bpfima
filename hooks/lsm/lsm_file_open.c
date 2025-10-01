@@ -5,14 +5,10 @@
 #include <bpf/bpf_tracing.h>
 #include <linux/hash_info.h>
 #include <linux/integrity.h>
-#include <linux/hash_info.h>
-#include <linux/integrity.h>
 
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef int pid_t;
-
-#define IMA_MAX_DIGEST_SIZE 64
 
 #define IMA_MAX_DIGEST_SIZE 64
 
@@ -21,13 +17,8 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 /* External kfuncs for TPM operations */
 extern int bpf_tpm_is_available(void) __ksym;
 extern int bpf_tpm_extend_pcr(const char *data, u32 data_len) __ksym;
-extern int bpf_tpm_extend_pcr(const char *data, u32 data_len) __ksym;
 extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
 extern int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size) __ksym;
-
-typedef unsigned int u32;
-typedef unsigned long long u64;
-typedef int pid_t;
 
 typedef unsigned int u32;
 typedef unsigned long long u64;
@@ -83,9 +74,7 @@ static __always_inline int append_separator(char *buf, int *len, int max_len)
 }
 
 /* Build measurement data string: "comm_pid_uid_filename_filehash" */
-/* Build measurement data string: "comm_pid_uid_filename_filehash" */
 static __always_inline int build_measurement_data(char *measurement_data, int max_len, 
-                                                  const char *comm, pid_t pid, u32 uid, char* file_name, char* file_hash)
                                                   const char *comm, pid_t pid, u32 uid, char* file_name, char* file_hash)
 {
     int len = 0;
@@ -104,18 +93,6 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
     if (append_separator(measurement_data, &len, max_len) < 0)
         return -1;
     if (append_u32_to_buffer(measurement_data, &len, max_len, uid) < 0)
-        return -1;
-
-    /* Add separator and file name */
-    if (append_separator(measurement_data, &len, max_len) < 0)
-        return -1;
-    if (append_string_to_buffer(measurement_data, &len, max_len, file_name, 256) < 0)
-        return -1;
-
-    /* Add separator and file hash */
-    if (append_separator(measurement_data, &len, max_len) < 0)
-        return -1;
-    if(append_string_to_buffer(measurement_data, &len, max_len, file_hash, IMA_MAX_DIGEST_SIZE) < 0)
         return -1;
 
     /* Add separator and file name */
@@ -150,16 +127,6 @@ int handle_lsm_file_open_tpm(struct file *file) {
 
     bpf_probe_read_kernel_str(fname, sizeof(fname), d_name.name);
 
-/* Monitor file open operations */
-SEC("lsm/file_open")
-int handle_lsm_file_open_tpm(struct file *file) {
-
-    char fname[256];
-    struct dentry *dentry = file->f_path.dentry;
-    struct qstr d_name = dentry->d_name;
-
-    bpf_probe_read_kernel_str(fname, sizeof(fname), d_name.name);
-
     pid_t pid = bpf_get_current_pid_tgid() >> 32;
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = uid_gid & 0xFFFFFFFF;
@@ -168,35 +135,12 @@ int handle_lsm_file_open_tpm(struct file *file) {
     char pcr_buf[128];
     u64 ts = bpf_ktime_get_ns();
 
-
     bpf_get_current_comm(comm, sizeof(comm));
     
     bpf_printk("=== TPM FILE OPEN DETECTED ===\n");
     bpf_printk("File name: %s", file->)
-    bpf_printk("=== TPM FILE OPEN DETECTED ===\n");
-    bpf_printk("File name: %s", file->)
     bpf_printk("Process: pid=%d uid=%d gid=%d comm=%s\n", pid, uid, gid, comm);
     bpf_printk("Timestamp: %llu ns\n", ts);
-
-    char ima_file_hash[IMA_MAX_DIGEST_SIZE] = {0};
-    enum hash_algo algo = bpf_ima_file_hash(file, ima_file_hash, sizeof(ima_file_hash));
-    
-    switch(algo) {
-        case HASH_ALGO_SHA1: 
-            bpf_printk("Computed file hash: sha1:%s\n", ima_file_hash);
-            break;
-        case HASH_ALGO_SHA256:
-            bpf_printk("Computed file hash: sha256:%s\n", ima_file_hash);
-            break;
-        case HASH_ALGO_SHA512:
-            bpf_printk("Computed file hash: sha512:%s\n", ima_file_hash);
-            break;
-        default:
-            bpf_printk("Failed to compute file hash\n", ima_file_hash);
-            return 0;
-    }
-
-
 
     char ima_file_hash[IMA_MAX_DIGEST_SIZE] = {0};
     enum hash_algo algo = bpf_ima_file_hash(file, ima_file_hash, sizeof(ima_file_hash));
@@ -222,50 +166,8 @@ int handle_lsm_file_open_tpm(struct file *file) {
     bpf_printk("TPM Available: %s\n", tpm_available ? "YES" : "NO");
 
     char event_name[] = "file_open";
-
     int ima_ret = bpf_ima_extend_measurement(event_name, measurement_data, data_len);
     bpf_printk("IMA measurement result: %d\n", ima_ret);
-    
-    /* TPM operations if available */
-    if (tpm_available) {
-        int tpm_ret = bpf_tpm_extend_pcr(measurement_data, data_len);
-        bpf_printk("TPM PCR extend result: %d\n", tpm_ret);
-        
-        /* Get updated PCR value */
-        int pcr_ret = bpf_ima_get_pcr_value(pcr_buf, sizeof(pcr_buf));
-        if (pcr_ret == 0) {
-            bpf_printk("PCR Value: %s\n", pcr_buf);
-        } else {
-            bpf_printk("Failed to read PCR: %d\n", pcr_ret);
-        }
-    } else {
-        bpf_printk("TPM not available - using simulation only\n");
-        
-        int pcr_ret = bpf_ima_get_pcr_value(pcr_buf, sizeof(pcr_buf));
-        if (pcr_ret == 0) {
-            bpf_printk("Simulated PCR: %s\n", pcr_buf);
-        }
-    }
-    
-    bpf_printk("TPM-enhanced measurement completed\n");
-    
-    return 0;
-}
 
-/* VFS layer monitoring with TPM logging */
-SEC("kprobe/vfs_unlink")
-int handle_vfs_unlink_tpm(struct pt_regs *ctx)
-{
-    pid_t pid = bpf_get_current_pid_tgid() >> 32;
-    char comm[16];
-    
-    bpf_get_current_comm(comm, sizeof(comm));
-    
-    bpf_printk("VFS_UNLINK_TPM: pid=%d comm=%s\n", pid, comm);
-    
-    /* Quick TPM availability check */
-    int tpm_available = bpf_tpm_is_available();
-    bpf_printk("TPM Status: %s\n", tpm_available ? "READY" : "UNAVAILABLE");
-    
     return 0;
 }

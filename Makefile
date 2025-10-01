@@ -21,7 +21,7 @@ CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
 LIBS := -lbpf -lelf -lz
 
-all: modules kfunc_tpm.o loader_tpm
+all: modules kfunc_tpm.o loader_tpm $(LSM_OBJ)
 
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
@@ -32,9 +32,13 @@ kfunc_tpm.o: kfunc_tpm.c
 loader_tpm: loader_tpm.c
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
 
+LSM_OBJ := hooks/lsm/lsm_file_open.o
+
+$(LSM_OBJ): hooks/lsm/lsm_file_open.c
+	$(CLANG) $(CFLAGS) -c $< -o $@
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm -f kfunc_tpm.o loader_tpm
+	rm -f kfunc_tpm.o loader_tpm $(LSM_OBJ)
 
 .PHONY: all modules clean
