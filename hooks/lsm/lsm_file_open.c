@@ -9,6 +9,7 @@ typedef unsigned long long u64;
 typedef int pid_t;
 
 #define IMA_MAX_DIGEST_SIZE 64
+#define PATH_MAX 64
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -71,9 +72,9 @@ static __always_inline int append_separator(char *buf, int *len, int max_len)
     return 0;
 }
 
-/* Build measurement data string: "comm_pid_uid_filename_filehash" */
+/* Build measurement data string: "comm_pid_uid_full_path_filehash" */
 static __always_inline int build_measurement_data(char *measurement_data, int max_len, 
-                                                  const char *comm, pid_t pid, u32 uid, char* file_name, char* file_hash)
+                                                  const char *comm, pid_t pid, u32 uid, char* full_path, char* file_hash)
 {
     int len = 0;
     
@@ -96,7 +97,7 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
     /* Add separator and file name */
     if (append_separator(measurement_data, &len, max_len) < 0)
         return -1;
-    if (append_string_to_buffer(measurement_data, &len, max_len, file_name, 256) < 0)
+    if (append_string_to_buffer(measurement_data, &len, max_len, full_path, 256) < 0)
         return -1;
 
     /* Add separator and file hash */
@@ -119,11 +120,11 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 SEC("lsm/file_open")
 int handle_lsm_file_open_tpm(struct file *file) {
 
-    char fname[256];
-    struct dentry *dentry = file->f_path.dentry;
-    struct qstr d_name = dentry->d_name;
-
-    bpf_probe_read_kernel_str(fname, sizeof(fname), d_name.name);
+    struct path f_path = file->f_path;
+    char *full_path = d_path(&f_path, path_buf, PATH_MAX);
+    if (!IS_ERR(full_path)) {
+        printk("Full path: %s\n", full_path);
+    }
 
     pid_t pid = bpf_get_current_pid_tgid() >> 32;
     u64 uid_gid = bpf_get_current_uid_gid();
@@ -158,7 +159,7 @@ int handle_lsm_file_open_tpm(struct file *file) {
     }
 
     char measurement_data[256] = {0};
-    int data_len = build_measurement_data(measurement_data, sizeof(measurement_data), comm, pid, uid, fname, ima_file_hash);
+    int data_len = build_measurement_data(measurement_data, sizeof(measurement_data), comm, pid, uid, full_path, ima_file_hash);
     
     if (data_len < 0) {
         bpf_printk("Failed to build measurement data\n");
