@@ -123,14 +123,15 @@ int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
 
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
-
+/*
     char full_path[PATH_MAX];
     long read = bpf_d_path(&f_path, full_path, sizeof(full_path));  
     if (read < 0) {
         bpf_printk("Failed to resolve file full path\n");
         return 0;
     }
-
+*/
+    char full_path[] = "test";
     pid_t pid = bpf_get_current_pid_tgid() >> 32;
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = uid_gid & 0xFFFFFFFF;
