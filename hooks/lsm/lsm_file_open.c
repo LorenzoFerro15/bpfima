@@ -121,7 +121,7 @@ SEC("lsm/file_open")
 int handle_lsm_file_open_tpm(struct file *file) {
 
     struct path f_path = file->f_path;
-    char *full_path;
+    char *full_path = NULL;
     
     if (bpf_d_path(&f_path, full_path, PATH_MAX) < 0) {
         bpf_printk("Failed to resolve file full path");
