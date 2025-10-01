@@ -15,7 +15,7 @@
 #include <crypto/hash_info.h>
 #include <crypto/sha2.h>
 
-#define IMA_DIGEST_SIZE 32
+#define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 #define IMA_EVENT_NAME_LEN_MAX 255
 #define TPM_PCR_INDEX 23
 
@@ -28,128 +28,15 @@ struct bpf_ima_template_entry {
 
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
-static DEFINE_SPINLOCK(tpm_extend_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
-__bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz);
-__bpf_kfunc int bpf_ima_is_enabled(void);
-__bpf_kfunc int bpf_get_file_path(struct file *file, char *buf, u32 buf_size);
-__bpf_kfunc int bpf_ima_measure_data(const char *event_label, const char *event_name, const char *data, u32 data_len);
-__bpf_kfunc int bpf_ima_file_info(struct file *file, char *hash_buf, u32 buf_size);
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len);
 __bpf_kfunc int bpf_ima_get_measurement_count(void);
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size);
-__bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len);
 __bpf_kfunc int bpf_tpm_is_available(void);
 
 __bpf_kfunc_start_defs();
 
-/* String search functionality for eBPF programs */
-__bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz)
-{
-    if (substr__sz == 0)
-        return 0;
-    if (substr__sz > str__sz)
-        return -1;
-    
-    for (size_t i = 0; i <= str__sz - substr__sz; i++)
-    {
-        size_t j = 0;
-        while (j < substr__sz && str[i + j] == substr[j])
-            j++;
-        if (j == substr__sz)
-            return i;
-    }
-    return -1;
-}
-
-/* Check if IMA is enabled in kernel configuration */
-__bpf_kfunc int bpf_ima_is_enabled(void)
-{
-#ifdef CONFIG_IMA
-    return 1;
-#else
-    return 0;
-#endif
-}
-
-/* Extract file path from file structure for monitoring */
-__bpf_kfunc int bpf_get_file_path(struct file *file, char *buf, u32 buf_size)
-{
-    if (!file || !buf || buf_size == 0)
-        return -EINVAL;
-    
-    if (!file->f_path.dentry || !file->f_path.dentry->d_name.name)
-        return -ENOENT;
-    
-    const char *name = file->f_path.dentry->d_name.name;
-    u32 len = strlen(name);
-    
-    if (len >= buf_size)
-        len = buf_size - 1;
-    
-    memcpy(buf, name, len);
-    buf[len] = '\0';
-    
-    return len;
-}
-
-/* Log measurement data in IMA template format */
-__bpf_kfunc int bpf_ima_measure_data(const char *event_label, const char *event_name, const char *data, u32 data_len)
-{
-    if (!event_label || !event_name || !data || data_len == 0)
-        return -EINVAL;
-    
-    printk(KERN_INFO "IMA_TEMPLATE: label=%s name=%s data_len=%u data=%.32s%s\n", 
-           event_label, event_name, data_len, data, 
-           data_len > 32 ? "..." : "");
-    
-    return 0;
-}
-
-/* Generate file information string for IMA measurements */
-__bpf_kfunc int bpf_ima_file_info(struct file *file, char *hash_buf, u32 buf_size)
-{
-    if (!file || !hash_buf || buf_size == 0)
-        return -EINVAL;
-    
-    if (!file->f_path.dentry)
-        return -ENOENT;
-        
-    const char *filename = file->f_path.dentry->d_name.name;
-    u32 len = strlen(filename);
-    
-    snprintf(hash_buf, buf_size, "file:%s:ino:%lu", 
-             filename, file->f_inode ? file->f_inode->i_ino : 0);
-    
-    printk(KERN_INFO "IMA_FILE_INFO: %s\n", hash_buf);
-    return len;
-}
-
-/* Calculate SHA1 hash of data for integrity measurements */
-static int calculate_sha1_hash(const void *data, size_t len, u8 *digest)
-{
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
-    int ret;
-
-    tfm = crypto_alloc_shash("sha1", 0, 0);
-    if (IS_ERR(tfm))
-        return PTR_ERR(tfm);
-
-    desc = kmalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc) {
-        crypto_free_shash(tfm);
-        return -ENOMEM;
-    }
-
-    desc->tfm = tfm;
-    ret = crypto_shash_digest(desc, data, len, digest);
-
-    kfree(desc);
-    crypto_free_shash(tfm);
-    return ret;
-}
 
 /* Calculate SHA256 hash of data for TPM PCR extension */
 static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
@@ -176,16 +63,27 @@ static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
     return ret;
 }
 
-/* Add measurement to list and simulate PCR extension */
-__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
+/* Unified function to process measurement data: calculate SHA256, add to list, and extend TPM PCR */
+static int process_measurement(const char *event_name, const char *data, u32 data_len)
 {
     struct bpf_ima_template_entry *entry;
+    struct tpm_chip *chip;
+    struct tpm_digest digest[1];
     unsigned long flags;
     int ret = 0;
+    u8 hash_value[SHA256_DIGEST_SIZE];
 
     if (!event_name || !data || data_len == 0)
         return -EINVAL;
 
+    /* Calculate SHA256 hash of the data */
+    ret = calculate_sha256_hash(data, data_len, hash_value);
+    if (ret) {
+        printk(KERN_ERR "Failed to calculate SHA256 hash: %d\n", ret);
+        return ret;
+    }
+
+    /* Allocate and prepare measurement entry */
     entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
     if (!entry)
         return -ENOMEM;
@@ -195,22 +93,48 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *d
     
     strncpy(entry->event_data, data, min_t(u32, data_len, sizeof(entry->event_data) - 1));
     entry->event_data[sizeof(entry->event_data) - 1] = '\0';
+    
+    memcpy(entry->digest, hash_value, IMA_DIGEST_SIZE);
 
-    ret = calculate_sha1_hash(data, data_len, entry->digest);
-    if (ret) {
-        kfree(entry);
-        return ret;
-    }
-
+    /* Acquire single lock to ensure atomicity of both list and TPM operations */
     spin_lock_irqsave(&measurement_list_lock, flags);
+
+    /* Add to measurement list */
     list_add_tail(&entry->list, &bpf_measurement_list);
     atomic_inc(&measurement_count);
+    
+    /* Prepare TPM digest structure */
+    chip = tpm_default_chip();
+    if (chip) {
+        memset(digest, 0, sizeof(digest));
+        digest[0].alg_id = TPM_ALG_SHA256;
+        memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
+        
+        /* Extend TPM PCR */
+        ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
+        if (ret < 0) {
+            printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+        } else {
+            printk(KERN_INFO "Extended TPM PCR %d with measurement for event: %s\n", TPM_PCR_INDEX, event_name);
+        }
+        
+        tpm_put_ops(chip);
+    } else {
+        printk(KERN_WARNING "TPM not available, measurement added to list only\n");
+    }
+
     spin_unlock_irqrestore(&measurement_list_lock, flags);
 
-    printk(KERN_INFO "IMA_EXTEND: event=%s count=%d digest=%*ph\n", 
-           event_name, atomic_read(&measurement_count), IMA_DIGEST_SIZE, entry->digest);
+    printk(KERN_INFO "IMA_MEASUREMENT: event=%s count=%d digest=%*ph\n", 
+           event_name, atomic_read(&measurement_count), IMA_DIGEST_SIZE, hash_value);
     
     return atomic_read(&measurement_count);
+}
+
+/* Add measurement to list and extend TPM PCR using unified function */
+__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
+{
+    return process_measurement(event_name, data, data_len);
 }
 
 /* Return total number of measurements in the list */
@@ -263,54 +187,6 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     return 0;
 }
 
-/* Extend TPM PCR with measurement data */
-__bpf_kfunc int bpf_tpm_extend_pcr(const char *data, u32 data_len)
-{
-    struct tpm_chip *chip;
-    struct tpm_digest digest[1];  /* Only need one digest for SHA256 */
-    unsigned long flags;
-    int ret;
-    
-    if (!data || data_len == 0)
-        return -EINVAL;
-    
-    /* Get the default TPM chip */
-    chip = tpm_default_chip();
-    if (!chip) {
-        printk(KERN_WARNING "No TPM chip available for PCR extend\n");
-        return -ENODEV;
-    }
-    
-    /* Initialize digest array */
-    memset(digest, 0, sizeof(digest));
-    
-    /* Set up for SHA256 (modern standard TPM hash) */
-    digest[0].alg_id = TPM_ALG_SHA256;
-    
-    /* Calculate SHA256 hash of the data using external function */
-    ret = calculate_sha256_hash(data, data_len, digest[0].digest);
-    if (ret < 0) {
-        tpm_put_ops(chip);
-        return ret;
-    }
-    
-    /* Lock TPM extend operations to ensure atomicity */
-    spin_lock_irqsave(&tpm_extend_lock, flags);
-    
-    /* Use PCR 23 which is typically available for user applications */
-    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-    if (ret < 0) {
-        printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
-    } else {
-        printk(KERN_INFO "Extended TPM PCR %d with %u bytes of data\n", TPM_PCR_INDEX, data_len);
-    }
-    
-    spin_unlock_irqrestore(&tpm_extend_lock, flags);
-    
-    tpm_put_ops(chip);
-    return ret;
-}
-
 /* Check if TPM is available */
 __bpf_kfunc int bpf_tpm_is_available(void)
 {
@@ -327,15 +203,9 @@ __bpf_kfunc int bpf_tpm_is_available(void)
 __bpf_kfunc_end_defs();
 
 BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
-BTF_ID_FLAGS(func, bpf_strstr)
-BTF_ID_FLAGS(func, bpf_ima_is_enabled)
-BTF_ID_FLAGS(func, bpf_get_file_path)
-BTF_ID_FLAGS(func, bpf_ima_measure_data)
-BTF_ID_FLAGS(func, bpf_ima_file_info)
 BTF_ID_FLAGS(func, bpf_ima_extend_measurement)
 BTF_ID_FLAGS(func, bpf_ima_get_measurement_count)
 BTF_ID_FLAGS(func, bpf_ima_get_pcr_value)
-BTF_ID_FLAGS(func, bpf_tpm_extend_pcr)
 BTF_ID_FLAGS(func, bpf_tpm_is_available)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
