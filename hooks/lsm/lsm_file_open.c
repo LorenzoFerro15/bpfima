@@ -110,7 +110,7 @@ SEC("lsm/file_open")
 int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
 
     struct path f_path;
-    bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
+    //bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
 
     /*
     char full_path[PATH_MAX];
@@ -130,7 +130,6 @@ int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
     bpf_get_current_comm(comm, sizeof(comm));
     
     bpf_printk("=== TPM FILE OPEN DETECTED ===\n");
-    bpf_printk("File full path: %s", full_path);
     bpf_printk("Process: pid=%d uid=%d gid=%d comm=%s\n", pid, uid, gid, comm);
     bpf_printk("Timestamp: %llu ns\n", ts);
 
