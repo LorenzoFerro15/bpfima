@@ -75,7 +75,7 @@ static __always_inline int append_separator(char *buf, int *len, int max_len)
 
 /* Build measurement data string: "comm_pid_uid_full_path_filehash" */
 static __always_inline int build_measurement_data(char *measurement_data, int max_len, 
-                                                  const char *comm, pid_t pid, u32 uid, char* full_path, char* file_hash)
+                                                  const char *comm, pid_t pid, u32 uid)
 {
     int len = 0;
     
@@ -94,18 +94,6 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
         return -1;
     if (append_u32_to_buffer(measurement_data, &len, max_len, uid) < 0)
         return -1;
-
-    /* Add separator and file name */
-    if (append_separator(measurement_data, &len, max_len) < 0)
-        return -1;
-    if (append_string_to_buffer(measurement_data, &len, max_len, full_path, 256) < 0)
-        return -1;
-
-    /* Add separator and file hash */
-    if (append_separator(measurement_data, &len, max_len) < 0)
-        return -1;
-    if(append_string_to_buffer(measurement_data, &len, max_len, file_hash, IMA_MAX_DIGEST_SIZE) < 0)
-        return -1;
     
     /* Null terminate */
     if (len < max_len) {
@@ -118,20 +106,19 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 }
 
 /* Monitor file open operations */
-SEC("lsm/file_permission")
+SEC("lsm/file_open")
 int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
 
     struct path f_path;
     bpf_probe_read_kernel(&f_path, sizeof(f_path), &file->f_path);
-/*
+
     char full_path[PATH_MAX];
     long read = bpf_d_path(&f_path, full_path, sizeof(full_path));  
     if (read < 0) {
         bpf_printk("Failed to resolve file full path\n");
         return 0;
     }
-*/
-    char full_path[] = "test";
+
     pid_t pid = bpf_get_current_pid_tgid() >> 32;
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = uid_gid & 0xFFFFFFFF;
@@ -146,26 +133,8 @@ int handle_lsm_file_post_open_tpm(struct file *file, int mask) {
     bpf_printk("Process: pid=%d uid=%d gid=%d comm=%s\n", pid, uid, gid, comm);
     bpf_printk("Timestamp: %llu ns\n", ts);
 
-    char ima_file_hash[IMA_MAX_DIGEST_SIZE] = {0};
-    enum hash_algo algo = bpf_ima_file_hash(file, ima_file_hash, sizeof(ima_file_hash));
-    
-    switch(algo) {
-        case HASH_ALGO_SHA1: 
-            bpf_printk("Computed file hash: sha1:%s\n", ima_file_hash);
-            break;
-        case HASH_ALGO_SHA256:
-            bpf_printk("Computed file hash: sha256:%s\n", ima_file_hash);
-            break;
-        case HASH_ALGO_SHA512:
-            bpf_printk("Computed file hash: sha512:%s\n", ima_file_hash);
-            break;
-        default:
-            bpf_printk("Failed to compute file hash\n", ima_file_hash);
-            return 0;
-    }
-
     char measurement_data[256] = {0};
-    int data_len = build_measurement_data(measurement_data, sizeof(measurement_data), comm, pid, uid, full_path, ima_file_hash);
+    int data_len = build_measurement_data(measurement_data, sizeof(measurement_data), comm, pid, uid);
     
     if (data_len < 0) {
         bpf_printk("Failed to build measurement data\n");
