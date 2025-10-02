@@ -24,11 +24,11 @@ static void sig_int(int signo)
 
 int main(int argc, char **argv)
 {
-    struct bpf_link *file_mmap_link = NULL;
-    struct bpf_program *file_mmap_prog;
+    struct bpf_link *kretprobe_link = NULL;
+    struct bpf_program *kretprobe_prog;
     struct bpf_object *obj;
     int err;
-    const char *filename = "lsm_mmap_file.o"; 
+    const char *filename = "kprobe_file_open.o"; /* default filename */
 
     if (argc > 1) {
         filename = argv[1];
@@ -36,6 +36,7 @@ int main(int argc, char **argv)
 
     libbpf_set_print(libbpf_print_fn);
 
+    /* Increase RLIMIT_MEMLOCK for BPF */
     struct rlimit rlim_new = {
         .rlim_cur = RLIM_INFINITY,
         .rlim_max = RLIM_INFINITY,
@@ -60,43 +61,48 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-
-    file_mmap_prog= bpf_object__find_program_by_name(obj, "bpf_mmap_file");
-    if (file_mmap_prog) {
-        file_mmap_link = bpf_program__attach(file_mmap_prog);
-        if (!libbpf_get_error(file_mmap_link)) {
-            printf("Successfully attached bpf_mmap_file program\n");
-        } else {
-            fprintf(stderr, "ERROR: failed to attach file_mmapLSM program\n");
-            file_mmap_link= NULL;
-        }
-    }
-
-    if (!file_mmap_link) {
-        fprintf(stderr, "ERROR: failed to attach any programs\n");
+    /* Find the kretprobe program */
+    kretprobe_prog = bpf_object__find_program_by_name(obj, "kretprobe_file_open");
+    if (!kretprobe_prog) {
+        fprintf(stderr, "ERROR: finding kretprobe program failed\n");
         goto cleanup;
     }
 
-    printf("LSM monitoring programs are running!\n");
+    /* Set program as sleepable */
+    bpf_program__set_flags(kretprobe_prog, BPF_F_SLEEPABLE);
+
+    /* Attach kretprobe */
+    kretprobe_link = bpf_program__attach(kretprobe_prog);
+    if (libbpf_get_error(kretprobe_link)) {
+        fprintf(stderr, "ERROR: bpf_program__attach kretprobe failed\n");
+        kretprobe_link = NULL;
+        goto cleanup;
+    }
+
+    printf("Successfully attached kretprobe program (SLEEPABLE)\n");
+    printf("Kretprobe monitoring file opens with IMA file hash support!\n");
     printf("Check /sys/kernel/debug/tracing/trace_pipe for output.\n");
 
     /* Set up signal handler */
-    if (signal(SIGINT, sig_int) == SIG_ERR) {
-        fprintf(stderr, "can't set signal handler: %s\n", strerror(errno));
-        goto cleanup;
-    }
+    signal(SIGINT, sig_int);
+    signal(SIGTERM, sig_int);
+
+    printf("Press Ctrl-C to exit...\n");
 
     /* Main loop */
     while (!exiting) {
         sleep(1);
     }
 
-    printf("\nDetaching BPF programs...\n");
+    printf("\nDetaching programs...\n");
 
 cleanup:
-    if (file_mmap_link) {
-        bpf_link__destroy(file_mmap_link);
-    }
+    /* Clean up */
+    if (kretprobe_link)
+        bpf_link__destroy(kretprobe_link);
+
     bpf_object__close(obj);
-    return 0;
+    
+    printf("Cleanup completed.\n");
+    return err;
 }

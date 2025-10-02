@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "ctfs",
+			"path": "../ctfs"
+		}
+	],
+	"settings": {}
+}

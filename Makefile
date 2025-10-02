@@ -21,7 +21,10 @@ CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
 LIBS := -lbpf -lelf -lz
 
-all: modules kfunc_tpm.o loader_tpm
+# Our extra eBPF object (placed in current directory)
+LSM_OBJ := lsm_mmap_file.o
+
+all: modules kfunc_tpm.o loader_tpm $(LSM_OBJ)
 
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
@@ -32,9 +35,12 @@ kfunc_tpm.o: kfunc_tpm.c
 loader_tpm: loader_tpm.c
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
 
+# Compile hooks/lsm/lsm_mmap_file.c but output to current dir
+$(LSM_OBJ): hooks/lsm/lsm_mmap_file.c
+	$(CLANG) $(CFLAGS) -c $< -o $(LSM_OBJ)
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm -f kfunc_tpm.o loader_tpm
+	rm -f kfunc_tpm.o loader_tpm $(LSM_OBJ)
 
 .PHONY: all modules clean
