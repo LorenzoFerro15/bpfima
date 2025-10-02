@@ -111,7 +111,8 @@ static bool hash_exists(const u8 *hash_value)
     unsigned long flags;
     bool found = false;
     
-   hash_key = *(u32*)hash_value;
+    hash_key = *(u32*)hash_value;
+
     
     spin_lock_irqsave(&hash_table_lock, flags);
     
@@ -234,7 +235,6 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
         return ret;
     }
 
-    /* Check if this hash already exists (duplicate detection) */
     if (hash_exists(hash_value)) {
         printk(KERN_INFO "IMA_DUPLICATE: event=%s digest=%*ph (skipped)\n", 
                event_name, IMA_DIGEST_SIZE, hash_value);
@@ -877,7 +877,6 @@ static void __exit bpfima_exit(void)
     }
     spin_unlock(&measurement_list_lock);
 
-    /* Cleanup hash table for duplicate detection */
     cleanup_hash_table();
 
     printk(KERN_INFO "IMA measurements cleaned up. Total measurements: %d\n", 

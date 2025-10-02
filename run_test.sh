@@ -106,6 +106,7 @@ echo "   Creating test file..."
 echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file.txt
 echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file1.txt
 echo "Test data for eBPF monitoring" > /tmp/ebpf_test_file2.txt
+
 cat /tmp/ebpf_test_file.txt
 touch /tmp/new_file.txt
 ls -la /tmp/ebpf_test_file.txt
@@ -115,6 +116,11 @@ ls -la /tmp/ebpf_test_file2.txt
 cat /tmp/ebpf_test_file.txt > /dev/null
 cat /tmp/ebpf_test_file1.txt > /dev/null
 cat /tmp/ebpf_test_file2.txt > /dev/null
+
+ls -la /tmp/ebpf_test_file.txt
+ls -la /tmp/ebpf_test_file1.txt
+ls -la /tmp/ebpf_test_file2.txt
+
 
 echo "   Removing test file..."
 rm -f /tmp/ebpf_test_file.txt
