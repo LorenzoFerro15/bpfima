@@ -1,7 +1,4 @@
-#include "../../vmlinux.h"
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
+#include "../../utils/headers_bpf.h"
 
 extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
 extern int bpf_ima_get_measurement_count(void) __ksym;
