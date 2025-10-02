@@ -110,6 +110,10 @@ ls -la /tmp/ebpf_test_file.txt
 ls -la /tmp/ebpf_test_file1.txt
 ls -la /tmp/ebpf_test_file2.txt
 
+cat /tmp/ebpf_test_file.txt > /dev/null
+cat /tmp/ebpf_test_file1.txt > /dev/null
+cat /tmp/ebpf_test_file2.txt > /dev/null
+
 echo "   Removing test file..."
 rm -f /tmp/ebpf_test_file.txt
 rm -f /tmp/ebpf_test_file1.txt
