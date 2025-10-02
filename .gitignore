@@ -4,6 +4,9 @@
 *.mod.c
 *.mod.o
 
+
+vmlinux.h
+
 # Object files
 *.o
 

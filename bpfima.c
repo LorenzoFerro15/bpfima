@@ -111,8 +111,8 @@ static bool hash_exists(const u8 *hash_value)
     unsigned long flags;
     bool found = false;
     
-    /* Use first 4 bytes of SHA256 as hash key */
     hash_key = *(u32*)hash_value;
+
     
     spin_lock_irqsave(&hash_table_lock, flags);
     
