@@ -10,7 +10,7 @@ extern int bpf_tpm_is_available(void) __ksym;
 char LICENSE[] SEC("license") = "GPL";
 
 SEC("lsm/mmap_file")
-int bpf_file_open(struct file *file) {
+int bpf_mmap_file(struct file *file) {
     struct inode *inode = NULL;
     struct address_space *mapping;
     struct path file_path;

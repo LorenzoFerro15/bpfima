@@ -24,11 +24,11 @@ static void sig_int(int signo)
 
 int main(int argc, char **argv)
 {
-    struct bpf_link *file_open_link = NULL;
-    struct bpf_program *file_open_prog;
+    struct bpf_link *file_mmap_link = NULL;
+    struct bpf_program *file_mmap_prog;
     struct bpf_object *obj;
     int err;
-    const char *filename = "lsm_file_open.o"; /* default filename */
+    const char *filename = "lsm_mmap_file.o"; 
 
     if (argc > 1) {
         filename = argv[1];
@@ -61,18 +61,18 @@ int main(int argc, char **argv)
     }
 
 
-    file_open_prog = bpf_object__find_program_by_name(obj, "handle_lsm_file_post_open_tpm");
-    if (file_open_prog) {
-        file_open_link = bpf_program__attach(file_open_prog);
-        if (!libbpf_get_error(file_open_link)) {
+    file_mmap_prog= bpf_object__find_program_by_name(obj, "handle_lsm_file_mmap");
+    if (file_mmap_prog) {
+        file_mmap_link = bpf_program__attach(file_mmap_prog);
+        if (!libbpf_get_error(file_mmap_link)) {
             printf("Successfully attached file_post_open program\n");
         } else {
-            fprintf(stderr, "ERROR: failed to attach file_open LSM program\n");
-            file_open_link = NULL;
+            fprintf(stderr, "ERROR: failed to attach file_mmapLSM program\n");
+            file_mmap_link= NULL;
         }
     }
 
-    if (!file_open_link) {
+    if (!file_mmap_link) {
         fprintf(stderr, "ERROR: failed to attach any programs\n");
         goto cleanup;
     }
@@ -94,8 +94,8 @@ int main(int argc, char **argv)
     printf("\nDetaching BPF programs...\n");
 
 cleanup:
-    if (file_open_link) {
-        bpf_link__destroy(file_open_link);
+    if (file_mmap_link) {
+        bpf_link__destroy(file_mmap_link);
     }
     bpf_object__close(obj);
     return 0;
