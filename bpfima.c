@@ -18,10 +18,12 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
+#include <linux/hashtable.h>
 
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 #define IMA_EVENT_NAME_LEN_MAX 255
 #define TPM_PCR_INDEX 23
+#define HASH_TABLE_BITS 8  
 
 struct bpf_ima_template_entry {
     struct list_head list;
@@ -30,9 +32,17 @@ struct bpf_ima_template_entry {
     u8 digest[IMA_DIGEST_SIZE];
 };
 
+struct hash_entry {
+    struct hlist_node hash_node;
+    u8 sha256_hash[SHA256_DIGEST_SIZE];
+};
+
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
+
+static DEFINE_HASHTABLE(sha256_hash_table, HASH_TABLE_BITS);
+static DEFINE_SPINLOCK(hash_table_lock);
 
 /* SecurityFS interface */
 static struct dentry *bpfima_dir = NULL;
@@ -85,6 +95,73 @@ static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
 }
 
 /*
+ * hash_exists - Check if a SHA256 hash already exists in the hash table
+ * @hash_value: SHA256 digest to search for (must be SHA256_DIGEST_SIZE bytes)
+ *
+ * Searches the hash table to determine if a measurement with the given SHA256 hash
+ * has already been recorded. Uses a simple hash function based on the first 4 bytes
+ * of the SHA256 digest. The function is thread-safe using spinlock protection.
+ *
+ * Returns: true if hash exists, false if not found
+ */
+static bool hash_exists(const u8 *hash_value)
+{
+    struct hash_entry *entry;
+    u32 hash_key;
+    unsigned long flags;
+    bool found = false;
+    
+    /* Use first 4 bytes of SHA256 as hash key */
+    hash_key = *(u32*)hash_value;
+    
+    spin_lock_irqsave(&hash_table_lock, flags);
+    
+    hash_for_each_possible(sha256_hash_table, entry, hash_node, hash_key) {
+        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0) {
+            found = true;
+            break;
+        }
+    }
+    
+    spin_unlock_irqrestore(&hash_table_lock, flags);
+    
+    return found;
+}
+
+/*
+ * add_hash_to_table - Add a new SHA256 hash to the hash table
+ * @hash_value: SHA256 digest to add (must be SHA256_DIGEST_SIZE bytes)
+ * @can_sleep: Whether the current context allows sleeping for memory allocation
+ *
+ * Adds a new hash entry to the hash table to track that this measurement has been
+ * recorded. Uses appropriate memory allocation flags based on the calling context.
+ * The function is thread-safe using spinlock protection.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+static int add_hash_to_table(const u8 *hash_value, bool can_sleep)
+{
+    struct hash_entry *new_entry;
+    u32 hash_key;
+    unsigned long flags;
+    
+    new_entry = kzalloc(sizeof(*new_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+    if (!new_entry)
+        return -ENOMEM;
+    
+    memcpy(new_entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
+    
+    /* Use first 4 bytes of SHA256 as hash key */
+    hash_key = *(u32*)hash_value;
+    
+    spin_lock_irqsave(&hash_table_lock, flags);
+    hash_add(sha256_hash_table, &new_entry->hash_node, hash_key);
+    spin_unlock_irqrestore(&hash_table_lock, flags);
+    
+    return 0;
+}
+
+/*
  * extend_tpm_pcr - Extend TPM Platform Configuration Register with measurement
  * @hash_value: SHA256 digest to extend into the PCR (must be SHA256_DIGEST_SIZE bytes)
  * @event_name: Event name for logging purposes (used in success/failure messages)
@@ -133,15 +210,17 @@ static int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
  *
  * This function performs the complete measurement workflow:
  * 1. Computes SHA256 hash of the input data
- * 2. Creates a measurement entry and adds it to the global list
- * 3. Attempts TPM PCR extension if not in atomic context
- * 4. Handles atomic context by deferring TPM operations
- * 5. Uses appropriate memory allocation flags based on context
+ * 2. Checks if this hash has already been recorded (duplicate detection)
+ * 3. If not a duplicate, creates a measurement entry and adds it to the global list
+ * 4. Adds the hash to the tracking table and attempts TPM PCR extension
+ * 5. Handles atomic context by deferring TPM operations
+ * 6. Uses appropriate memory allocation flags based on context
  *
  * The function maintains atomicity between list operations and TPM operations
  * using a spinlock, but allows interrupts to prevent scheduling while atomic bugs.
  *
- * Returns: Total number of measurements recorded, negative error code on failure
+ * Returns: Total number of measurements recorded, negative error code on failure,
+ *         or existing count if duplicate detected
  */
 static int process_measurement(const char *event_name, const char *data, u32 data_len)
 {
@@ -156,6 +235,12 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
         return ret;
     }
 
+    if (hash_exists(hash_value)) {
+        printk(KERN_INFO "IMA_DUPLICATE: event=%s digest=%*ph (skipped)\n", 
+               event_name, IMA_DIGEST_SIZE, hash_value);
+        return atomic_read(&measurement_count);
+    }
+
     entry = kzalloc(sizeof(*entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!entry)
         return -ENOMEM;
@@ -167,6 +252,13 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     entry->event_data[sizeof(entry->event_data) - 1] = '\0';
     
     memcpy(entry->digest, hash_value, IMA_DIGEST_SIZE);
+
+    ret = add_hash_to_table(hash_value, can_sleep);
+    if (ret) {
+        printk(KERN_ERR "Failed to add hash to tracking table: %d\n", ret);
+        kfree(entry);
+        return ret;
+    }
 
     spin_lock(&measurement_list_lock);
 
@@ -728,6 +820,34 @@ static int __init bpfima_init(void)
 }
 
 /*
+ * cleanup_hash_table - Clean up all entries in the SHA256 hash table
+ *
+ * Iterates through all buckets of the hash table and frees all hash entries.
+ * This function should be called during module cleanup to prevent memory leaks.
+ * Uses irqsave locking to ensure safe cleanup in any context.
+ */
+static void cleanup_hash_table(void)
+{
+    struct hash_entry *entry;
+    struct hlist_node *tmp;
+    unsigned long flags;
+    int bkt;
+    int count = 0;
+
+    spin_lock_irqsave(&hash_table_lock, flags);
+    
+    hash_for_each_safe(sha256_hash_table, bkt, tmp, entry, hash_node) {
+        hash_del(&entry->hash_node);
+        kfree(entry);
+        count++;
+    }
+    
+    spin_unlock_irqrestore(&hash_table_lock, flags);
+    
+    printk(KERN_INFO "Hash table cleaned up. Freed %d hash entries\n", count);
+}
+
+/*
  * bpfima_exit - Module cleanup function
  *
  * Performs complete cleanup when the module is unloaded:
@@ -756,6 +876,8 @@ static void __exit bpfima_exit(void)
         kfree(entry);
     }
     spin_unlock(&measurement_list_lock);
+
+    cleanup_hash_table();
 
     printk(KERN_INFO "IMA measurements cleaned up. Total measurements: %d\n", 
            atomic_read(&measurement_count));
