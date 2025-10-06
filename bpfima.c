@@ -55,6 +55,7 @@ __bpf_kfunc int bpf_ima_get_measurement_count(void);
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size);
 __bpf_kfunc int bpf_tpm_is_available(void);
 __bpf_kfunc int bpf_ima_print_measurement_list(void);
+__bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size);
 
 __bpf_kfunc_start_defs();
 
@@ -480,7 +481,46 @@ __bpf_kfunc int bpf_ima_print_measurement_list(void)
     
     return atomic_read(&measurement_count);
 }
+/*
+ * bpf_ima_file_hash_simple - Simple file hash using scalar file representation
+ * @file_scalar: File pointer cast to u64 scalar (to bypass eBPF verifier)
+ * @digest: Output buffer to store hash (must be 32 bytes)
+ * @digest_size: Size of digest buffer in bytes (must be 32)
+ *
+ * This function accepts a file pointer cast to scalar from eBPF to bypass
+ * verifier restrictions, then casts it back to use with ima_file_hash.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+__bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size)
+{
+    int ret;
+    struct file **file;
 
+    printk(KERN_DEBUG "bpfima: Simple IMA file hash called, file_scalar=%llx, digest=%p, size=%u\n", 
+           file_scalar, digest, digest_size);
+
+    if (!file_scalar || !digest || digest_size != 32) {
+        printk(KERN_ERR "bpfima: Invalid parameters for IMA file hashing\n");
+        return -EINVAL;
+    }
+
+    file = (struct file **)file_scalar;
+
+    if (IS_ERR_OR_NULL(*file)) {
+        printk(KERN_ERR "bpfima: File pointer appears invalid\n");
+        return -EINVAL;
+    }
+
+    ret = ima_file_hash(*file, digest, digest_size);
+    if (ret < 0) {
+        printk(KERN_ERR "bpfima: IMA file hash failed: %d\n", ret);
+        return ret;
+    }
+
+    printk(KERN_INFO "bpfima: Successfully computed IMA file hash\n");
+    return 0;
+}
 __bpf_kfunc_end_defs();
 
 /*
@@ -770,6 +810,7 @@ BTF_ID_FLAGS(func, bpf_ima_get_measurement_count)
 BTF_ID_FLAGS(func, bpf_ima_get_pcr_value)
 BTF_ID_FLAGS(func, bpf_tpm_is_available)
 BTF_ID_FLAGS(func, bpf_ima_print_measurement_list)
+BTF_ID_FLAGS(func, bpf_ima_file_hash_custom)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
