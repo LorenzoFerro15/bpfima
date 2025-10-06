@@ -1,7 +1,4 @@
-#include "../../vmlinux.h"
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
+#include "../../utils/headers_bpf.h"
 
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & 0170000) == 0100000)
