@@ -54,21 +54,29 @@ int main(int argc, char **argv)
     }
 
     /* Load & verify BPF programs */
+    
+    file_mmap_prog = bpf_object__find_program_by_name(obj, "bpf_mmap_file");
+    if (file_mmap_prog) {
+        bpf_program__set_flags(file_mmap_prog, BPF_F_SLEEPABLE);
+        printf("✓ Set LSM program as sleepable for IMA helper\n");
+    } else {
+        fprintf(stderr, "ERROR: finding LSM program 'bpf_mmap_file' failed\n");
+        goto cleanup;
+    }
+    
     err = bpf_object__load(obj);
     if (err) {
         fprintf(stderr, "ERROR: loading BPF object file failed\n");
         goto cleanup;
     }
 
-
-    file_mmap_prog= bpf_object__find_program_by_name(obj, "bpf_mmap_file");
     if (file_mmap_prog) {
         file_mmap_link = bpf_program__attach(file_mmap_prog);
         if (!libbpf_get_error(file_mmap_link)) {
             printf("Successfully attached bpf_mmap_file program\n");
         } else {
-            fprintf(stderr, "ERROR: failed to attach file_mmapLSM program\n");
-            file_mmap_link= NULL;
+            fprintf(stderr, "ERROR: failed to attach file_mmap LSM program: %ld\n", libbpf_get_error(file_mmap_link));
+            file_mmap_link = NULL;
         }
     }
 
