@@ -496,6 +496,9 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
 {
     int ret;
     struct file **file;
+    char *filename = NULL;
+    char *path_buf = NULL;
+    bool can_sleep = !in_atomic() && !irqs_disabled();
 
     printk(KERN_DEBUG "bpfima: Simple IMA file hash called, file_scalar=%llx, digest=%p, size=%u\n", 
            file_scalar, digest, digest_size);
@@ -510,6 +513,22 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
     if (IS_ERR_OR_NULL(*file)) {
         printk(KERN_ERR "bpfima: File pointer appears invalid\n");
         return -EINVAL;
+    }
+
+    path_buf = kzalloc(PATH_MAX, can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+
+    if (path_buf) {
+        filename = d_path(&(*file)->f_path, path_buf, PATH_MAX);
+        if (!IS_ERR(filename)) {
+            printk(KERN_INFO "bpfima: Hashing file: %s\n", filename);
+        } else {
+            printk(KERN_DEBUG "bpfima: Could not get full path, error: %ld\n", PTR_ERR(filename));
+            if ((*file)->f_path.dentry && (*file)->f_path.dentry->d_name.name) {
+                printk(KERN_INFO "bpfima: Hashing file (name only): %s\n", 
+                       (*file)->f_path.dentry->d_name.name);
+            }
+        }
+        kfree(path_buf);
     }
 
     ret = ima_file_hash(*file, digest, digest_size);

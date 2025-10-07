@@ -18,6 +18,7 @@ SEC("lsm.s/mmap_file")
 int bpf_mmap_file(struct file *file) {
     u8 digest[32] = {0};
     u64 file_scalar;
+    int ret_extension = 0;
     
     bpf_printk("=== MMAP FILE VIA LSM ===\n");
 
@@ -97,6 +98,15 @@ int bpf_mmap_file(struct file *file) {
         bpf_printk("Hash: %02x%02x%02x%02x%02x%02x%02x%02x\n", 
                    digest[0], digest[1], digest[2], digest[3],
                    digest[4], digest[5], digest[6], digest[7]);
+
+        char event_name[] = "mmap_file";
+        ret_extension = bpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
+        if (ret_extension >= 0) {
+            int count = bpf_ima_get_measurement_count();
+            bpf_printk("✓ IMA measurement extended, total count: %d\n", count);
+        } else {
+            bpf_printk("✗ IMA measurement extension failed: %d\n", ret_extension);
+        }
     } else {
         bpf_printk("FAILED! Hash computation failed: %d\n", hash_ret);
     }
