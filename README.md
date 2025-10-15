@@ -2,17 +2,42 @@
 
 eBPF-based file integrity monitoring system with TPM hardware support for secure measurement and attestation.
 
+## Directory Structure
+
+```
+bpfima/
+├── build/              # Compiled objects (auto-generated)
+│   ├── *.ko           # Kernel modules
+│   ├── *.o            # eBPF and object files
+│   └── loader         # Minimal eBPF program loader
+├── scripts/           # Test scripts
+│   └── test.sh        # Minimal test script
+├── hooks/             # eBPF hook implementations
+│   ├── kprobe/        # Kprobe-based hooks
+│   └── lsm/           # LSM (Linux Security Module) hooks
+├── templates/         # Code templates
+├── utils/             # Utility headers
+├── loader.c           # Loader source
+├── bpfima.c          # Kernel module source
+└── Makefile           # Build system
+```
+
 ## Components
 
 ### eBPF Programs
-- `kfunc_simple.c` - Basic file monitoring using standard eBPF helpers
-- `kfunc_tpm.c` - TPM-enhanced monitoring with hardware attestation
-- `kfunc_tpm_sim.c` - TPM simulation for testing without hardware
+- `hooks/lsm/lsm_mmap_file.c` - LSM hook for file mmap operations
+- `hooks/lsm/lsm_file_open.c` - LSM hook for file open operations
+- `hooks/lsm/lsm_socket_connect.c` - LSM hook for socket connections
+- `hooks/kprobe/kprobe_file_open.c` - Kprobe for file open tracking
 
-### User Space Loaders
-- `loader_simple` - Loads simple eBPF program
-- `loader` - Loads TPM-enhanced eBPF program  
-- `loader_tpm` - TPM-specific loader with hardware access
+### User Space Loader
+- `loader` - Minimal loader that loads and attaches a single eBPF object file
+
+### Kernel Module
+- `bpfima.ko` - Provides custom kfuncs for TPM operations and measurement extension
+
+### User Space Loader
+- `loader` - Generic loader that automatically detects and attaches any eBPF program type (LSM, kprobe, tracepoint, fentry/fexit)
 
 ### Kernel Module
 - `bpfima.ko` - Provides custom kfuncs for TPM operations and measurement extension
@@ -44,53 +69,83 @@ Requirements:
 # Install dependencies (Fedora)
 sudo dnf install kernel-devel libbpf-devel elfutils-libelf-devel zlib-devel clang llvm dwarves
 
-# Build all components
+# Build all components (outputs to build/ directory)
 make all
 ```
+
+All compiled objects will be placed in the `build/` directory.
 
 ## Usage
 
-Run the complete test with TPM integration:
+Run the minimal test:
 
 ```bash
-sudo ./run_test.sh
+# Normal mode (default BPF program)
+sudo ./scripts/test.sh
+
+# Verbose mode (detailed insights)
+sudo ./scripts/test.sh --verbose
+
+# Test specific eBPF program
+sudo ./scripts/test.sh build/kprobe_file_open.o
+sudo ./scripts/test.sh build/lsm_file_open.o
+sudo ./scripts/test.sh build/lsm_socket_connect.o
+
+# Combine options
+sudo ./scripts/test.sh --verbose build/kprobe_file_open.o
 ```
 
-This script builds components, loads the kernel module, runs the TPM eBPF program, creates/removes a test file, and displays trace and kernel messages.
+The script builds, loads the kernel module, and runs the eBPF monitor.
+
+**Default BPF program:** `build/lsm_mmap_file.o`
+
+**Available programs:**
+- `build/lsm_mmap_file.o` - LSM file mmap monitoring (default)
+- `build/lsm_file_open.o` - LSM file open monitoring
+- `build/lsm_socket_connect.o` - LSM socket connection monitoring
+- `build/kprobe_file_open.o` - Kprobe file open tracking
+- `build/kfunc_tpm.o` - TPM-enhanced monitoring
+
+Verbose mode provides:
+- Build output
+- Module information
+- Target BPF object path
+- Trace file locations
+- Recent trace data
 
 ## Manual Usage
 
-Individual components can be run manually:
-
 ```bash
-# Build everything
+# Build
 make all
 
 # Load kernel module
-sudo insmod bpfima.ko
+sudo insmod build/bpfima.ko
 
-# Run simple eBPF monitor
-sudo ./loader_simple kfunc_simple.o &
-
-# Run TPM-enhanced monitor  
-sudo ./loader kfunc_tpm.o &
-
-# Create test file operations
-echo "test" > /tmp/test.txt
-rm /tmp/test.txt
+# Run loader with any eBPF program
+sudo ./build/loader build/lsm_mmap_file.o
 
 # View trace output
-sudo tail -30 /sys/kernel/debug/tracing/trace
-sudo dmesg | tail -20
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+
+# Cleanup
+sudo rmmod bpfima
 ```
 
 ## File Structure
 
-- `kfunc_simple.c` - Basic eBPF program using standard helpers
-- `kfunc_tpm.c` - TPM-enhanced eBPF program with hardware integration
+Source files:
+- `loader.c` - Minimal eBPF program loader
 - `bpfima.c` - Kernel module providing custom kfuncs
-- `loader.c`, `loader_simple.c` - User space loaders
-- `run_test.sh` - Automated test script
+- `hooks/` - eBPF hook implementations
+  - `hooks/lsm/*.c` - LSM hooks (file_open, mmap_file, socket_connect)
+  - `hooks/kprobe/*.c` - Kprobe hooks
+- `scripts/test.sh` - Minimal test script
+
+Build outputs (in `build/` directory):
+- `bpfima.ko` - Kernel module
+- `loader` - Loader executable
+- `*.o` - eBPF object files
 
 ## Error Diagnosis
 

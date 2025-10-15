@@ -6,6 +6,9 @@ extern int bpf_tpm_is_available(void) __ksym;
 
 #define AF_INET 2
 
+/* Helper for byte order conversion */
+#define bpf_ntohs(x) __builtin_bswap16(x)
+
 char LICENSE[] SEC("license") = "GPL";
 
 SEC("lsm/socket_connect")

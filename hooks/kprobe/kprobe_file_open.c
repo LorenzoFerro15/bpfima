@@ -1,7 +1,9 @@
+/* Define target architecture for PT_REGS macros - MUST be before headers */
+#define __TARGET_ARCH_x86
+
 #include "../../utils/headers_bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
 
 extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
 
@@ -42,8 +44,8 @@ int kretprobe_file_open(struct pt_regs *ctx) {
     
     bpf_printk("=== KRETPROBE: Regular file opened by %s (PID: %u) ===\n", comm, pid);
     
-    /* The key fubpf_ima_file_hashnctionality - use bpf_ima_file_hash in sleepable kretprobe! */
-    hash_ret = (file, file_hash, sizeof(file_hash));
+    /* The key functionality - use bpf_ima_file_hash in sleepable kretprobe! */
+    hash_ret = bpf_ima_file_hash(file, file_hash, sizeof(file_hash));
     
     if (hash_ret > 0) {
         bpf_printk("SUCCESS! bpf_ima_file_hash returned %ld bytes\n", hash_ret);
