@@ -1,29 +1,19 @@
-# Compiled kernel modules
-*.ko
-*.mod
-*.mod.c
-*.mod.o
+# Build directory - contains all compiled objects
+build/
 
-
-vmlinux.h
-
-# Object files
-*.o
-
-# Kernel build system files
+# Kernel build system files (in case they end up in root)
 *.cmd
 .tmp_versions/
-modules.order
-Module.symvers
 
-# Compiled executables
+# Compiled executables (legacy, now in build/)
 loader
 loader_simple
 loader_tmp
+loader_tpm
+loader_kprobe
+loader_lsm_ima
 
-# Build directories
-build/
-.tmp_versions/
+vmlinux.h
 
 # Editor temporary files
 *~

@@ -21,26 +21,50 @@ CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
 LIBS := -lbpf -lelf -lz
 
-# Our extra eBPF object (placed in current directory)
-LSM_OBJ := lsm_mmap_file.o
+# Build directory for all output files
+BUILD_DIR := build
 
-all: modules kfunc_tpm.o loader_tpm $(LSM_OBJ)
+# eBPF objects to compile
+BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
+            $(BUILD_DIR)/lsm_file_open.o \
+            $(BUILD_DIR)/lsm_socket_connect.o \
+            $(BUILD_DIR)/kprobe_file_open.o
+
+# Generic loader
+LOADER := $(BUILD_DIR)/loader
+
+all: $(BUILD_DIR) modules $(BPF_OBJS) $(LOADER)
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	@mkdir -p $(BUILD_DIR)
+	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f .*.cmd .*.o $(BUILD_DIR)/ 2>/dev/null || true
+	@rm -rf .tmp_versions 2>/dev/null || true
 
-kfunc_tpm.o: kfunc_tpm.c
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-loader_tpm: loader_tpm.c
+# Generic loader
+$(LOADER): loader.c | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
 
-# Compile hooks/lsm/lsm_mmap_file.c but output to current dir
-$(LSM_OBJ): hooks/lsm/lsm_mmap_file.c
-	$(CLANG) $(CFLAGS) -c $< -o $(LSM_OBJ)
+$(BUILD_DIR)/lsm_mmap_file.o: hooks/lsm/lsm_mmap_file.c | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lsm_file_open.o: hooks/lsm/lsm_file_open.c | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lsm_socket_connect.o: hooks/lsm/lsm_socket_connect.c | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/kprobe_file_open.o: hooks/kprobe/kprobe_file_open.c | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm -f kfunc_tpm.o loader_tpm $(LSM_OBJ)
+	rm -rf $(BUILD_DIR)
+	rm -f .*.cmd .*.o 2>/dev/null || true
+	rm -rf .tmp_versions 2>/dev/null || true
 
 .PHONY: all modules clean
