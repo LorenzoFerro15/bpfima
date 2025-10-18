@@ -158,6 +158,80 @@ if $VERBOSE; then
 fi
 
 echo "Press Ctrl-C to stop"
+echo ""
+
+# Test actions for lsm_file_post_open if the loaded object is lsm_file_post_open.o
+if [[ "$(basename "$BPF_OBJECT")" == "lsm_file_post_open.o" ]]; then
+    echo "=== Running test actions for lsm_file_post_open ==="
+    
+    # Create a test directory and files
+    TEST_DIR="/home/lo/bpfima_test"
+    mkdir -p "$TEST_DIR"
+    
+    echo "Creating test files to trigger file_post_open hash measurements..."
+    
+    # Create a test executable file (5KB - within the size range)
+    TEST_EXEC="$TEST_DIR/test_exec.sh"
+    echo "#!/bin/bash" > "$TEST_EXEC"
+    echo "echo 'This is a test executable'" >> "$TEST_EXEC"
+    # Pad the file to make it larger than 4KB
+    head -c 5000 /dev/zero | tr '\0' 'A' >> "$TEST_EXEC"
+    chmod +x "$TEST_EXEC"
+    
+    # Create another test file (8KB)
+    TEST_FILE="$TEST_DIR/test_binary"
+    dd if=/dev/urandom of="$TEST_FILE" bs=1024 count=8 2>/dev/null
+    chmod +x "$TEST_FILE"
+    
+    echo "  Created test files in $TEST_DIR"
+    sleep 1
+    
+    echo ""
+    echo "Triggering hash measurements by executing test files..."
+    
+    # Execute the test script (this should trigger lsm_file_post_open with MAY_EXEC)
+    echo "  1. Executing $TEST_EXEC"
+    "$TEST_EXEC" 2>/dev/null || true
+    sleep 1
+    
+    # Try to execute the binary (will fail but should trigger the hook)
+    echo "  2. Executing $TEST_FILE"
+    "$TEST_FILE" 2>/dev/null || true
+    sleep 1
+    
+    # Open files in read mode with exec permissions
+    echo "  3. Opening files with various methods"
+    # Use cat to open and read the files
+    cat "$TEST_EXEC" > /dev/null 2>&1 || true
+    sleep 0.5
+    cat "$TEST_FILE" > /dev/null 2>&1 || true
+    sleep 0.5
+    
+    # Try opening with exec command
+    echo "  4. Using exec to open files"
+    bash -c "exec 3< '$TEST_EXEC'; exec 3<&-" 2>/dev/null || true
+    sleep 0.5
+    
+    echo ""
+    echo "Test actions completed. Check trace output:"
+    echo "  sudo cat /sys/kernel/debug/tracing/trace_pipe"
+    echo "  or: sudo dmesg | grep -i 'bpf\|ima\|hash'"
+    echo ""
+    
+    # Show recent trace output if verbose
+    if $VERBOSE; then
+        echo "=== Recent trace output (last 30 lines) ==="
+        tail -30 /sys/kernel/debug/tracing/trace 2>/dev/null || echo "  (no trace data available)"
+        echo ""
+    fi
+    
+    echo "Cleaning up test files..."
+    rm -rf "$TEST_DIR"
+    echo "  Removed $TEST_DIR"
+    echo ""
+fi
+
+echo "Press Ctrl-C to stop monitoring"
 
 # Wait
 wait $LOADER_PID

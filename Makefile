@@ -28,6 +28,7 @@ BUILD_DIR := build
 BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
             $(BUILD_DIR)/lsm_file_open.o \
             $(BUILD_DIR)/lsm_socket_connect.o \
+            $(BUILD_DIR)/lsm_file_post_open.o \
             $(BUILD_DIR)/kprobe_file_open.o
 
 # Generic loader
@@ -53,6 +54,9 @@ $(BUILD_DIR)/lsm_mmap_file.o: hooks/lsm/lsm_mmap_file.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lsm_file_open.o: hooks/lsm/lsm_file_open.c | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lsm_file_post_open.o: hooks/lsm/lsm_file_post_open.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lsm_socket_connect.o: hooks/lsm/lsm_socket_connect.c | $(BUILD_DIR)

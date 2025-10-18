@@ -495,7 +495,7 @@ __bpf_kfunc int bpf_ima_print_measurement_list(void)
 __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size)
 {
     int ret;
-    struct file **file;
+    struct file *filep;
     char *filename = NULL;
     char *path_buf = NULL;
     bool can_sleep = !in_atomic() && !irqs_disabled();
@@ -508,30 +508,31 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
         return -EINVAL;
     }
 
-    file = (struct file **)file_scalar;
+    /* Interpret the incoming scalar as a direct pointer to struct file */
+    filep = (struct file *)(uintptr_t)file_scalar;
 
-    if (IS_ERR_OR_NULL(*file)) {
-        printk(KERN_ERR "bpfima: File pointer appears invalid\n");
+    if (IS_ERR_OR_NULL(filep)) {
+        printk(KERN_ERR "bpfima: File pointer appears invalid (filep=%p)\n", filep);
         return -EINVAL;
     }
 
     path_buf = kzalloc(PATH_MAX, can_sleep ? GFP_KERNEL : GFP_ATOMIC);
 
     if (path_buf) {
-        filename = d_path(&(*file)->f_path, path_buf, PATH_MAX);
+        filename = d_path(&filep->f_path, path_buf, PATH_MAX);
         if (!IS_ERR(filename)) {
             printk(KERN_INFO "bpfima: Hashing file: %s\n", filename);
         } else {
             printk(KERN_DEBUG "bpfima: Could not get full path, error: %ld\n", PTR_ERR(filename));
-            if ((*file)->f_path.dentry && (*file)->f_path.dentry->d_name.name) {
+            if (filep->f_path.dentry && filep->f_path.dentry->d_name.name) {
                 printk(KERN_INFO "bpfima: Hashing file (name only): %s\n", 
-                       (*file)->f_path.dentry->d_name.name);
+                       filep->f_path.dentry->d_name.name);
             }
         }
         kfree(path_buf);
     }
 
-    ret = ima_file_hash(*file, digest, digest_size);
+    ret = ima_file_hash(filep, digest, digest_size);
     if (ret < 0) {
         printk(KERN_ERR "bpfima: IMA file hash failed: %d\n", ret);
         return ret;
