@@ -44,18 +44,20 @@ int bpf_mmap_file(struct file *file) {
         
         bpf_printk("File has NULL inode, trying hash anyway...\n");
         
+        /* Read the file pointer into a u64 scalar so the verifier sees a plain
+         * scalar value (trusted_ptr_file can't be passed directly to kfuncs). */
         if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0) {
             bpf_printk("Failed to read file pointer\n");
             return 0;
         }
-        
+
         if (file_scalar == 0) {
             bpf_printk("Invalid file scalar (0), skipping\n");
             return 0;
         }
-        
+
         bpf_printk("File scalar: %llu\n", file_scalar);
-        
+
         int hash_ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
         if (hash_ret == 0) {
             bpf_printk("SUCCESS! Hash: %02x%02x%02x%02x%02x%02x%02x%02x\n", 
@@ -81,18 +83,20 @@ int bpf_mmap_file(struct file *file) {
     bpf_printk("File: %p\n", file);
     bpf_printk("Processing file mapping\n");
     
+    /* Read the file pointer into a u64 scalar so the verifier sees a plain
+     * scalar value (trusted_ptr_file can't be passed directly to kfuncs). */
     if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0) {
         bpf_printk("Failed to read file pointer\n");
         return 0;
     }
-    
+
     if (file_scalar == 0) {
         bpf_printk("Invalid file scalar (0), skipping\n");
         return 0;
     }
-    
+
     bpf_printk("File scalar: %llu\n", file_scalar);
-    
+
     int hash_ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
     if (hash_ret == 0) {
         bpf_printk("Hash: %02x%02x%02x%02x%02x%02x%02x%02x\n", 
