@@ -38,7 +38,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
     u32 pid;
     u64 pid_tgid;
     int hash_ret;
-    char *event_name = "file_post_open";
+    char event_name[] = "file_post_open";
     
     /* Get process information */
     bpf_get_current_comm(comm, sizeof(comm));
@@ -210,12 +210,12 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
     }
     
-    rbpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
-    
-    if(ret == 0) {
+    int extend_ret = bpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
+
+    if (extend_ret >= 0) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
     } else {
-        bpf_printk("  IMA measurement extension FAILED for event: %s (ret=%d)\n", event_name, ret);
+        bpf_printk("  IMA measurement extension FAILED for event: %s (ret=%d)\n", event_name, extend_ret);
     }
     return 0;
 }

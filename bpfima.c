@@ -266,13 +266,14 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     list_add_tail(&entry->list, &bpf_measurement_list);
     atomic_inc(&measurement_count);
     
-    if (can_sleep) {
-        extend_tpm_pcr(hash_value, event_name);
-    } else {
+    if (!can_sleep) {
         printk(KERN_INFO "Called from atomic context, TPM extension deferred for event: %s\n", event_name);
+        spin_unlock(&measurement_list_lock);
+    } else {
+        /* release lock before performing TPM extension which may sleep */
+        spin_unlock(&measurement_list_lock);
+        extend_tpm_pcr(hash_value, event_name);
     }
-
-    spin_unlock(&measurement_list_lock);
 
     printk(KERN_INFO "IMA_MEASUREMENT: event=%s count=%d digest=%*ph\n", 
            event_name, atomic_read(&measurement_count), IMA_DIGEST_SIZE, hash_value);
