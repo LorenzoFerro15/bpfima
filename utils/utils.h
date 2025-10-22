@@ -91,3 +91,48 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
 }
 
 #endif /* UTILS_H */
+
+/*
+ * Convert a byte vector to a hex string (lowercase), up to 32 bytes.
+ * Returns the number of characters written (excluding NUL) or -1 on error.
+ * The output buffer must be at least (len*2 + 1) bytes long; a safe size is 65.
+ */
+static __always_inline int bytes_to_hex_str(const u8 *bytes, int len, char *out, int out_len)
+{
+    int pos = 0;
+    int max = len;
+    if (max > 32)
+        max = 32;
+
+    /* hex characters table */
+    const char *hex = "0123456789abcdef";
+
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+        if (i >= max)
+            break;
+        if (pos + 2 >= out_len)
+            return -1;
+        u8 b = bytes[i];
+        u8 hi = (b >> 4) & 0xf;
+        u8 lo = b & 0xf;
+        out[pos++] = hex[hi];
+        out[pos++] = hex[lo];
+    }
+
+    if (pos < out_len) {
+        out[pos] = '\0';
+        return pos;
+    }
+    return -1;
+}
+
+/* Build a small hex string and print it with bpf_printk as a C string. */
+static __always_inline void print_hex_digest(const u8 *bytes, int len)
+{
+    char buf[65] = {0};
+    int r = bytes_to_hex_str(bytes, len, buf, sizeof(buf));
+    if (r > 0) {
+        bpf_printk("%s\n", buf);
+    }
+}
