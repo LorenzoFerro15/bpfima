@@ -14,6 +14,7 @@ loader_kprobe
 loader_lsm_ima
 
 vmlinux.h
+log.txt
 
 # Editor temporary files
 *~

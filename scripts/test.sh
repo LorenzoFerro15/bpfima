@@ -4,6 +4,7 @@
 set -e
 
 # Default values
+BPF_CONTAINER=false
 VERBOSE=false
 BPF_OBJECT=""
 
@@ -12,6 +13,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --verbose|-v)
             VERBOSE=true
+            shift
+            ;;
+        --container|--with-container)
+            BPF_CONTAINER=true
             shift
             ;;
         *.o)
@@ -33,6 +38,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --verbose"
             echo "  $0 build/kprobe_file_open.o"
             echo "  $0 --verbose build/lsm_file_open.o"
+            echo "  $0 --container    Run a lightweight container and execute commands inside it"
             exit 0
             ;;
         *)
@@ -83,6 +89,14 @@ cleanup() {
         if $VERBOSE; then
             echo "  Removed kernel module"
         fi
+    fi
+    # Ensure test container is removed if it exists
+    CONTAINER_NAME="bpfima_test_container"
+    if command -v docker >/dev/null 2>&1; then
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+    if command -v podman >/dev/null 2>&1; then
+        podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
     echo "Done"
 }
@@ -232,6 +246,49 @@ if [[ "$(basename "$BPF_OBJECT")" == "lsm_file_post_open.o" ]]; then
 fi
 
 echo "Press Ctrl-C to stop monitoring"
+
+# If requested, run a lightweight container, exec commands inside it, then stop/remove it
+run_container() {
+    CONTAINER_NAME="bpfima_test_container"
+
+    # pick docker or podman
+    if command -v docker >/dev/null 2>&1; then
+        CONTAINER_CLI=docker
+    elif command -v podman >/dev/null 2>&1; then
+        CONTAINER_CLI=podman
+    else
+        echo "No container runtime found (docker or podman). Skipping container test."
+        return 0
+    fi
+
+    echo "[container] Using runtime: $CONTAINER_CLI"
+
+    # Pull a small image
+    echo "[container] Pulling alpine image..."
+    $CONTAINER_CLI pull alpine:latest >/dev/null 2>&1 || true
+
+    # Run container in background
+    echo "[container] Starting container: $CONTAINER_NAME"
+    $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm alpine:latest sleep 300 >/dev/null
+    if [ $? -ne 0 ]; then
+        echo "[container] Failed to start container"
+        return 1
+    fi
+
+    # Exec some lightweight commands
+    echo "[container] Executing commands inside container"
+    $CONTAINER_CLI exec "$CONTAINER_NAME" sh -c "echo 'hello from container' > /tmp/hello && ls -la /tmp && cat /etc/os-release" || true
+
+    # Wait a moment then stop the container
+    sleep 1
+    echo "[container] Stopping container"
+    $CONTAINER_CLI stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    echo "[container] Done"
+}
+
+if $BPF_CONTAINER; then
+    run_container || echo "Container test failed"
+fi
 
 # Wait
 wait $LOADER_PID
