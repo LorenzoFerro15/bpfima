@@ -624,10 +624,11 @@ static int measurements_seq_show(struct seq_file *s, void *v)
     
     entry = list_entry(v, struct bpf_ima_template_entry, list);
     
-    seq_printf(s, "%s %s ", entry->event_name, entry->event_data);
     for (i = 0; i < IMA_DIGEST_SIZE; i++) {
         seq_printf(s, "%02x", entry->digest[i]);
     }
+
+    seq_printf(s, " %s %s", entry->event_name, entry->event_data);
     seq_printf(s, "\n");
     
     return 0;

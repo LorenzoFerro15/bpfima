@@ -41,6 +41,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     int ret;
     int cgroup_id;
     u32 scratch_key = 0;
+    char event_name[] = "bprm_file_exec";
     struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
     /* Fallback to small stack buffer if map lookup fails (shouldn't normally) */
     char stack_dependencies_buf[16] = {0};
@@ -69,6 +70,19 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         ancestor = BPF_CORE_READ(cur, real_parent);
     }
 
+    struct css_set *cgroups = BPF_CORE_READ(cur, cgroups);
+    if (cgroups) {
+        struct cgroup *dfl = BPF_CORE_READ(cgroups, dfl_cgrp);
+        if (dfl) {
+            struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
+            if (kn) {
+                char cgroup_name[64] = {0};
+                bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
+                bpf_printk(" cgroup_name: %s\n", cgroup_name);
+            }
+        }
+    }
+
 #pragma unroll
     for (int i = 0; i < 10; i++) {
         if (!ancestor)
@@ -85,14 +99,14 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
              */
             int avail = deps_max - deps_actual;
             if (avail > 0) {
-                const int want = 16; /* max comm we expect to read */
+                const int want = 16;
                 if (deps_actual <= deps_max - want)
                     avail = want;
                 else
                     avail = deps_max - deps_actual;
-                int r = bpf_probe_read_kernel_str(&deps[deps_actual], avail, BPF_CORE_READ(ancestor, comm));
-                if (r > 0) {
-                    int consumed = r - 1;
+                ret = bpf_probe_read_kernel_str(&deps[deps_actual], avail, BPF_CORE_READ(ancestor, comm));
+                if (ret > 0) {
+                    int consumed = ret - 1;
                     if (consumed < 0)
                         consumed = 0;
                     deps_actual += consumed;
@@ -119,7 +133,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         bpf_printk(" filename: %s\n", fname_buf);
     }
     
-    deps[deps_actual > 0 ? deps_actual - 1 : 0] = '\0'; 
+ 
     
     bpf_printk(" dependencies: %s\n", deps);
 
@@ -127,56 +141,29 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     if (file) {
         u64 file_scalar = 0;
         if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) == 0 && file_scalar != 0) {
-            // bpf_printk(" file ptr: %p (scalar=0x%llx)\n", file, file_scalar);
             ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
             if (ret == 0) {
                 print_hex_digest(digest, 32);
+                
+                bpf_printk(" deps_actual=%d deps_max=%d\n", deps_actual, deps_max);
 
-                char event_name[] = "bprm_file_exec";
-                bpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
-                return 0;
+                if (deps_actual <= deps_max - 65) {
+                    int written = bytes_to_hex_str(digest, 32, deps + deps_actual, deps_max - deps_actual);
+                    if (written > 0) {
+                        deps_actual += written;
+                    }
+                }
+                if (deps_actual < deps_max) {
+                    deps[deps_actual] = '\0';
+                } else {
+                    deps[deps_max - 1] = '\0';
+                }
+                bpf_ima_extend_measurement(event_name, deps, deps_actual);
             }
             else {
                 bpf_printk(" failed hashing failed extending found data about it");
             }
         }
     }
-
-    // in case hash fails record the data about the triggerer 
-
-    int argc = BPF_CORE_READ(bprm, argc);
-    kuid_t uid = BPF_CORE_READ(bprm, cred->uid);
-    kgid_t gid = BPF_CORE_READ(bprm, cred->gid);
-
-    digest[0] = (u8)(pid & 0xff);
-    digest[1] = (u8)((pid >> 8) & 0xff);
-    digest[2] = (u8)((pid >> 16) & 0xff);
-    digest[3] = (u8)((pid >> 24) & 0xff);
-
-    for (int i = 0; i < 16; i++) {
-        if (i < 16)
-            digest[4 + i] = comm[i];
-        else
-            digest[4 + i] = 0;
-    }
-
-    digest[20] = (u8)(argc & 0xff);
-    digest[21] = (u8)((argc >> 8) & 0xff);
-    digest[22] = (u8)((argc >> 16) & 0xff);
-    digest[23] = (u8)((argc >> 24) & 0xff);
-
-    digest[24] = (u8)(uid.val & 0xff);
-    digest[25] = (u8)((uid.val >> 8) & 0xff);
-    digest[26] = (u8)((uid.val >> 16) & 0xff);
-    digest[27] = (u8)((uid.val >> 24) & 0xff);
-
-    digest[28] = (u8)(gid.val & 0xff);
-    digest[29] = (u8)((gid.val >> 8) & 0xff);
-    digest[30] = (u8)((gid.val >> 16) & 0xff);
-    digest[31] = (u8)((gid.val >> 24) & 0xff);
-
-    char event_name2[] = "bprm_derived";
-    bpf_ima_extend_measurement(event_name2, (const char *)digest, sizeof(digest));
-
     return 0;
 }

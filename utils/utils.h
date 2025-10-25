@@ -107,7 +107,6 @@ static __always_inline int bytes_to_hex_str(const u8 *bytes, int len, char *out,
     /* hex characters table */
     const char *hex = "0123456789abcdef";
 
-#pragma unroll
     for (int i = 0; i < 32; i++) {
         if (i >= max)
             break;
