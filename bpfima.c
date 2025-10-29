@@ -314,6 +314,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
     char *concat_data = NULL;
     size_t offset = 0;
     int ret = -1;
+    char separator = '|';
 
     if (!event_name && !namespace_id && !dependencies && !additional_data) {
         printk(KERN_ERR "bpfima: All parameters are null\n");
@@ -340,24 +341,26 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         printk(KERN_ERR "bpfima: kmalloc failed\n");
         return -ENOMEM;
     }
-    if (event_name) {
-        size_t len = strlen(event_name);
-        memcpy(concat_data + offset, event_name, len);
-        offset += len;
-    }
+
     if (namespace_id) {
         size_t len = strlen(namespace_id);
         memcpy(concat_data + offset, namespace_id, len);
         offset += len;
+        memcpy(concat_data + offset, &separator, 1);
+        offset += 1;
     }
     if (dependencies) {
         size_t len = strlen(dependencies);
         memcpy(concat_data + offset, dependencies, len);
         offset += len;
+        memcpy(concat_data + offset, &separator, 1);
+        offset += 1;
     }
     if (additional_data && additional_data_len > 0) {
         memcpy(concat_data + offset, additional_data, additional_data_len);
         offset += additional_data_len;
+        memcpy(concat_data + offset, &separator, 1);
+        offset += 1;
     }
     ret = process_measurement(event_name ? event_name : "", concat_data, total_len);
     kfree(concat_data);
