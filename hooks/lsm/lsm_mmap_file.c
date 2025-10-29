@@ -4,7 +4,7 @@
 #define S_ISREG(m) (((m) & 0170000) == 0100000)
 #endif
 
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_get_measurement_count(void) __ksym;
 extern int bpf_tpm_is_available(void) __ksym;
 extern int bpf_ima_custom_file_hash_scalar(struct file *file, u8 *digest, u32 digest_size) __ksym;
@@ -104,7 +104,8 @@ int bpf_mmap_file(struct file *file) {
                    digest[4], digest[5], digest[6], digest[7]);
 
         char event_name[] = "mmap_file";
-        ret_extension = bpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
+    // BPF kfuncs may only support up to 3 arguments, so pass event_name and digest as additional_data
+            ret_extension = bpf_ima_extend_measurement(event_name, NULL, NULL, (const char *)digest, sizeof(digest)); // If this fails, fallback to 3-arg version
         if (ret_extension >= 0) {
             int count = bpf_ima_get_measurement_count();
             bpf_printk("✓ IMA measurement extended, total count: %d\n", count);

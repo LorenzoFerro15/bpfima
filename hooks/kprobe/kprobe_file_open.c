@@ -5,7 +5,7 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 
 /*
  * Simple kretprobe on do_filp_open - called when file open returns
