@@ -22,6 +22,7 @@ log.txt
 *.swo
 .*.swp
 .*.swo
+*.patch
 
 # IDE files
 .vscode/

@@ -2,7 +2,7 @@
 #include "../../utils/utils.h"
 
 /* External kfunc declarations used by hooks */
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
 
 char LICENSE[] SEC("license") = "GPL";
@@ -48,6 +48,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     char *deps = stack_dependencies_buf;
     int deps_actual =  0;
     int deps_max = sizeof(stack_dependencies_buf);
+    char cgroup_name[64] = {0};
     if (scratch) {
         deps = scratch->buf;
         deps_max = sizeof(scratch->buf);
@@ -76,7 +77,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         if (dfl) {
             struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
             if (kn) {
-                char cgroup_name[64] = {0};
                 bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
                 bpf_printk(" cgroup_name: %s\n", cgroup_name);
             }
@@ -144,21 +144,21 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
             ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
             if (ret == 0) {
                 print_hex_digest(digest, 32);
+                char digest_hex[65] = {0};
                 
                 bpf_printk(" deps_actual=%d deps_max=%d\n", deps_actual, deps_max);
 
-                if (deps_actual <= deps_max - 65) {
-                    int written = bytes_to_hex_str(digest, 32, deps + deps_actual, deps_max - deps_actual);
-                    if (written > 0) {
-                        deps_actual += written;
-                    }
+                int written = bytes_to_hex_str(digest, 32, digest_hex, sizeof(digest_hex));
+                if (written < 0) {
+                    bpf_printk(" failed converting digest to hex string\n");
                 }
                 if (deps_actual < deps_max) {
                     deps[deps_actual] = '\0';
                 } else {
                     deps[deps_max - 1] = '\0';
                 }
-                bpf_ima_extend_measurement(event_name, deps, deps_actual);
+                digest_hex[64] = '\0';
+                bpf_ima_extend_measurement(event_name, cgroup_name, deps, digest_hex, 64);
             }
             else {
                 bpf_printk(" failed hashing failed extending found data about it");

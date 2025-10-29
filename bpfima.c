@@ -50,7 +50,7 @@ static struct dentry *measurements_file = NULL;
 static struct dentry *status_file = NULL;
 static char bpfima_dir_name[32] = "bpfima";
 
-__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len);
+__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len);
 __bpf_kfunc int bpf_ima_get_measurement_count(void);
 __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size);
 __bpf_kfunc int bpf_tpm_is_available(void);
@@ -296,29 +296,72 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
  *
  * Returns: Total number of measurements recorded, negative error code on validation failure
  */
-__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len)
+__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len)
 {
-    if (!event_name || !data) {
-        printk(KERN_ERR "bpfima: Invalid null parameters (event_name=%p, data=%p)\n", event_name, data);
+    printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u", 
+        event_name ? event_name : "(null)", 
+        namespace_id ? namespace_id : "(null)", 
+        dependencies ? dependencies : "(null)", 
+        additional_data_len);
+    if (additional_data && additional_data_len > 0) {
+        char buf[129];
+        size_t print_len = additional_data_len < 128 ? additional_data_len : 128;
+        memcpy(buf, additional_data, print_len);
+        buf[print_len] = '\0';
+        printk(KERN_INFO "bpfima: additional_data='%s'", buf);
+    }
+    size_t total_len = 0;
+    char *concat_data = NULL;
+    size_t offset = 0;
+    int ret = -1;
+
+    if (!event_name && !namespace_id && !dependencies && !additional_data) {
+        printk(KERN_ERR "bpfima: All parameters are null\n");
         return -EINVAL;
     }
-    
-    if (strlen(event_name) == 0) {
+    if (event_name && strlen(event_name) == 0) {
         printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
         return -EINVAL;
     }
-    
-    if (data_len <= 0) { 
-        printk(KERN_ERR "bpfima: Invalid data_len: %u\n", data_len);
+    if (event_name)
+        total_len += strlen(event_name);
+    if (namespace_id)
+        total_len += strlen(namespace_id);
+    if (dependencies)
+        total_len += strlen(dependencies);
+    if (additional_data && additional_data_len > 0)
+        total_len += additional_data_len;
+    if (total_len == 0) {
+        printk(KERN_ERR "bpfima: No valid data to concatenate\n");
         return -EINVAL;
     }
-    
-    if (strnlen(data, data_len) == 0) {
-        printk(KERN_ERR "bpfima: Empty data content not allowed\n");
-        return -EINVAL;
+    concat_data = kmalloc(total_len, GFP_KERNEL);
+    if (!concat_data) {
+        printk(KERN_ERR "bpfima: kmalloc failed\n");
+        return -ENOMEM;
     }
-    
-    return process_measurement(event_name, data, data_len);
+    if (event_name) {
+        size_t len = strlen(event_name);
+        memcpy(concat_data + offset, event_name, len);
+        offset += len;
+    }
+    if (namespace_id) {
+        size_t len = strlen(namespace_id);
+        memcpy(concat_data + offset, namespace_id, len);
+        offset += len;
+    }
+    if (dependencies) {
+        size_t len = strlen(dependencies);
+        memcpy(concat_data + offset, dependencies, len);
+        offset += len;
+    }
+    if (additional_data && additional_data_len > 0) {
+        memcpy(concat_data + offset, additional_data, additional_data_len);
+        offset += additional_data_len;
+    }
+    ret = process_measurement(event_name ? event_name : "", concat_data, total_len);
+    kfree(concat_data);
+    return ret;
 }
 
 /*

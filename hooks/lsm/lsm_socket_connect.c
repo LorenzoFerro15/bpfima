@@ -1,6 +1,6 @@
 #include "../../utils/headers_bpf.h"
 
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_get_measurement_count(void) __ksym;
 extern int bpf_tpm_is_available(void) __ksym;
 
@@ -45,7 +45,7 @@ int bpf_socket_connect(struct socket *sock, struct sockaddr *address, int addrle
         /* still emit an IMA measurement if you want */
         char event_name[] = "socket_connect_lsm_no_socket";
         char random_data[] = "socket_connect_no_socket_42";
-        int ret = bpf_ima_extend_measurement(event_name, random_data, sizeof(random_data));
+    int ret = bpf_ima_extend_measurement(event_name, NULL, NULL, random_data, sizeof(random_data));
         bpf_printk("IMA measurement result (no socket): %d\n", ret);
         return 0;
     }
@@ -101,7 +101,7 @@ int bpf_socket_connect(struct socket *sock, struct sockaddr *address, int addrle
     {
         char event_name[] = "socket_connect_lsm_event";
         char random_data[] = "socket_connect_seen_42";
-        int ret = bpf_ima_extend_measurement(event_name, random_data, sizeof(random_data));
+    int ret = bpf_ima_extend_measurement(event_name, NULL, NULL, random_data, sizeof(random_data));
         bpf_printk("IMA measurement result: %d\n", ret);
     }
 

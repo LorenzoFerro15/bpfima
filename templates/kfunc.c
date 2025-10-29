@@ -11,7 +11,7 @@ extern int bpf_ima_is_enabled(void) __ksym;
 extern int bpf_get_file_path(struct file *file, char *buf, u32 buf_size) __ksym;
 extern int bpf_ima_measure_data(const char *event_label, const char *event_name, const char *data, u32 data_len) __ksym;
 extern int bpf_ima_file_info(struct file *file, char *hash_buf, u32 buf_size) __ksym;
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_get_measurement_count(void) __ksym;
 extern int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size) __ksym;
 
@@ -37,7 +37,7 @@ int handle_kprobe(struct pt_regs *ctx)
     char measurement_data[] = "unlink_operation_detected";
     char pcr_buffer[64];
     
-    int extend_ret = bpf_ima_extend_measurement(event_name, measurement_data, sizeof(measurement_data) - 1);
+    int extend_ret = bpf_ima_extend_measurement(event_name, NULL, NULL, measurement_data, sizeof(measurement_data) - 1);
     int count = bpf_ima_get_measurement_count();
     int pcr_ret = bpf_ima_get_pcr_value(pcr_buffer, sizeof(pcr_buffer));
     

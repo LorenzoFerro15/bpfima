@@ -5,7 +5,7 @@
 #endif
 
 /* External kfunc declarations for IMA operations */
-extern int bpf_ima_extend_measurement(const char *event_name, const char *data, u32 data_len) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_get_measurement_count(void) __ksym;
 extern int bpf_tpm_is_available(void) __ksym;
 extern int bpf_ima_custom_file_hash_scalar(struct file *file, u8 *digest, u32 digest_size) __ksym;
@@ -210,7 +210,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
     }
     
-    int extend_ret = bpf_ima_extend_measurement(event_name, (const char *)digest, sizeof(digest));
+    int extend_ret = bpf_ima_extend_measurement(event_name, NULL, NULL, (const char *)digest, sizeof(digest));
 
     if (extend_ret >= 0) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
