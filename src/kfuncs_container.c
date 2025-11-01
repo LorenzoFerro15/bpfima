@@ -10,6 +10,7 @@
 #include <linux/btf.h>
 
 #include "bpfima_common.h"
+#include "bpfima_container.h"
 #include "bpfima_merkle.h"
 #include "bpfima_kfuncs.h"
 

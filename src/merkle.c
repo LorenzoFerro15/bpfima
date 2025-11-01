@@ -1,5 +1,5 @@
 /*
- * Merkle Tree Implementation for Container Tracking
+ * Merkle Tree Implementation for BPF-IMA
  * 
  * This file implements a non-binary Merkle tree where each container
  * is represented as a leaf node. The root hash represents the entire
@@ -10,19 +10,17 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/crypto.h>
-#include <linux/tpm.h>
 #include <linux/preempt.h>
 #include <linux/irqflags.h>
 #include <crypto/hash.h>
 
 #include "bpfima_common.h"
 #include "bpfima_merkle.h"
+#include "bpfima_container.h"
+#include "bpfima_measurements.h"
 #include "bpfima_securityfs.h"
 
 /* Global state */
-LIST_HEAD(container_list);
-DEFINE_SPINLOCK(container_list_lock);
-
 LIST_HEAD(host_measurement_list);
 DEFINE_SPINLOCK(host_measurement_lock);
 
@@ -30,53 +28,6 @@ LIST_HEAD(merkle_root_history);
 DEFINE_SPINLOCK(merkle_root_history_lock);
 
 struct merkle_tree_root system_merkle_root;
-atomic_t container_count = ATOMIC_INIT(0);
-
-/**
- * extend_tpm_pcr_with_root - Extend TPM PCR with the Merkle root hash
- * @root_hash: The Merkle root hash to extend into the TPM PCR
- * @event_name: Event name for logging purposes
- *
- * This function extends the configured TPM PCR (default PCR 23) with the
- * Merkle root hash value. This creates a hardware-backed attestation of
- * the current system integrity state as represented by all container
- * measurements.
- *
- * The function handles TPM chip acquisition, digest preparation, PCR extension,
- * and proper cleanup. It provides detailed logging for both success and failure cases.
- *
- * The function assumes it's called in a context where sleeping is allowed
- * (i.e., not in atomic context) since TPM operations can sleep.
- *
- * Returns: 0 on successful PCR extension, negative error code on failure
- */
-static int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
-{
-    struct tpm_chip *chip;
-    struct tpm_digest digest[1];
-    int ret;
-
-    chip = tpm_default_chip();
-    if (!chip) {
-        pr_warn("bpfima: TPM not available, measurement added to list only\n");
-        return -ENODEV;
-    }
-
-    memset(digest, 0, sizeof(digest));
-    digest[0].alg_id = TPM_ALG_SHA256;
-    memcpy(digest[0].digest, root_hash, MERKLE_HASH_SIZE);
-    
-    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
-    } else {
-        pr_info("bpfima: Extended TPM PCR %d with measurement for event: %s\n", 
-                TPM_PCR_INDEX, event_name);
-    }
-    
-    tpm_put_ops(chip);
-    return ret;
-}
 
 /**
  * compute_container_leaf_hash - Compute the leaf hash for a container
@@ -250,75 +201,6 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
 }
 
 /**
- * find_container_by_id - Find a container node by its ID
- * @container_id: Container identifier to search for
- *
- * Must be called with container_list_lock held.
- * Returns: Pointer to container_node if found, NULL otherwise
- */
-struct container_node *find_container_by_id(const char *container_id)
-{
-    struct container_node *container;
-    
-    list_for_each_entry(container, &container_list, list) {
-        if (strcmp(container->id, container_id) == 0)
-            return container;
-    }
-    
-    return NULL;
-}
-
-/**
- * create_container_node - Create and initialize a new container node
- * @container_id: Unique identifier for the container
- *
- * Returns: Pointer to new container_node on success, ERR_PTR on failure
- */
-struct container_node *create_container_node(const char *container_id)
-{
-    struct container_node *container;
-    unsigned long flags;
-    int ret;
-    
-    container = kzalloc(sizeof(*container), GFP_KERNEL);
-    if (!container)
-        return ERR_PTR(-ENOMEM);
-    
-    /* Initialize container structure */
-    strscpy(container->id, container_id, CONTAINER_ID_MAX_LEN);
-    INIT_LIST_HEAD(&container->measurement_list);
-    spin_lock_init(&container->measurement_lock);
-    memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
-    atomic_set(&container->measurement_count, 0);
-    container->securityfs_dir = NULL;
-    container->securityfs_measurements_file = NULL;
-    
-    /* Add to global container list */
-    spin_lock_irqsave(&container_list_lock, flags);
-    list_add_tail(&container->list, &container_list);
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    atomic_inc(&container_count);
-    
-    /* Create securityfs directory for this container */
-    ret = create_container_securityfs(container);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to create securityfs for container %s: %d\n",
-               container_id, ret);
-        /* Remove from list on failure */
-        spin_lock_irqsave(&container_list_lock, flags);
-        list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-        atomic_dec(&container_count);
-        kfree(container);
-        return ERR_PTR(ret);
-    }
-    
-    pr_info("bpfima: Created container node for %s\n", container_id);
-    return container;
-}
-
-/**
  * add_container_measurement - Add a measurement to a container's list
  *
  * Returns: 0 on success, negative error code on failure
@@ -332,17 +214,10 @@ int add_container_measurement(struct container_node *container,
     unsigned long flags;
     int ret;
     
-    entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+    /* Create measurement entry using helper function */
+    entry = create_measurement_entry(event_name, event_data, digest, GFP_KERNEL);
     if (!entry)
         return -ENOMEM;
-    
-    /* Initialize measurement entry */
-    strscpy(entry->event_name, event_name, IMA_EVENT_NAME_LEN_MAX + 1);
-    if (event_data)
-        strscpy(entry->event_data, event_data, sizeof(entry->event_data));
-    else
-        entry->event_data[0] = '\0';
-    memcpy(entry->digest, digest, MERKLE_HASH_SIZE);
     
     /* Add to container's measurement list */
     spin_lock_irqsave(&container->measurement_lock, flags);
@@ -391,17 +266,10 @@ int add_host_measurement(const char *event_name,
     struct measurement_entry *entry;
     unsigned long flags;
     
-    entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+    /* Create measurement entry using helper function */
+    entry = create_measurement_entry(event_name, event_data, digest, GFP_KERNEL);
     if (!entry)
         return -ENOMEM;
-    
-    /* Initialize measurement entry */
-    strscpy(entry->event_name, event_name, IMA_EVENT_NAME_LEN_MAX + 1);
-    if (event_data)
-        strscpy(entry->event_data, event_data, sizeof(entry->event_data));
-    else
-        entry->event_data[0] = '\0';
-    memcpy(entry->digest, digest, MERKLE_HASH_SIZE);
     
     /* Add to host measurement list */
     spin_lock_irqsave(&host_measurement_lock, flags);
@@ -411,51 +279,6 @@ int add_host_measurement(const char *event_name,
     pr_debug("bpfima: Added measurement to host list: %s\n", event_name);
     
     return 0;
-}
-
-/**
- * cleanup_container_measurements - Free all measurements in a container
- * @container: Container to clean up
- */
-void cleanup_container_measurements(struct container_node *container)
-{
-    struct measurement_entry *entry, *tmp;
-    
-    list_for_each_entry_safe(entry, tmp, &container->measurement_list, list) {
-        list_del(&entry->list);
-        kfree(entry);
-    }
-}
-
-/**
- * cleanup_all_containers - Remove and free all container nodes
- */
-void cleanup_all_containers(void)
-{
-    struct container_node *container, *tmp;
-    unsigned long flags;
-    int count = 0;
-    
-    spin_lock_irqsave(&container_list_lock, flags);
-    list_for_each_entry_safe(container, tmp, &container_list, list) {
-        list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-        
-        /* Remove securityfs entries */
-        remove_container_securityfs(container);
-        
-        /* Clean up measurements */
-        cleanup_container_measurements(container);
-        
-        /* Free container */
-        kfree(container);
-        count++;
-        
-        spin_lock_irqsave(&container_list_lock, flags);
-    }
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    pr_info("bpfima: Cleaned up %d containers\n", count);
 }
 
 /**

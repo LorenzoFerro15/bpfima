@@ -1,9 +1,9 @@
 # Main module (monolithic)
 obj-m += bpfima.o
 
-# Modular version (refactored demonstration)
+# Modular version (refactored and modularized)
 obj-m += bpfima_modular.o
-bpfima_modular-y := src/main.o src/merkle.o src/kfuncs_container.o src/securityfs.o
+bpfima_modular-y := src/bpfima_core.o src/container.o src/merkle.o src/measurements.o src/kfuncs_container.o src/securityfs.o src/hash_utils.o src/tpm_ops.o
 ccflags-y += -I$(src)/include
 
 KBUILD_CFLAGS += -g -O2
