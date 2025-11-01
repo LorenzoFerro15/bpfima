@@ -5,6 +5,10 @@
 extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
 
+/* Container tracking kfuncs - Task 5: eBPF Container Event Hook Integration */
+extern int bpf_container_create_or_get(const char *container_id) __ksym;
+extern int bpf_container_add_measurement(const char *container_id, const char *event_name, const char *event_data, const u8 *digest, u32 digest_size) __ksym;
+
 char LICENSE[] SEC("license") = "GPL";
 
 /* Per-CPU scratch buffer to avoid large stack allocations and heavy inlining
@@ -27,9 +31,18 @@ struct {
 
 /*
  * LSM hook: bprm_check_security
- * Collects available fields from struct linux_binprm and attempts to
- * compute a SHA256-like 32-byte blob to pass to bpf_ima_extend_measurement.
- * This demonstrates the data available in linux_binprm to callers.
+ * 
+ * Container Lifecycle Tracking (Task 5):
+ * This hook serves as the primary container event detector. It:
+ * 1. Extracts cgroup information to identify container context
+ * 2. Creates or retrieves container nodes in the kernel module
+ * 3. Computes file hash of the executable being launched
+ * 4. Adds measurements to the appropriate container's list
+ * 5. Triggers Merkle root recalculation and TPM PCR extension
+ * 
+ * When a process executes within a container (identified by cgroup_name),
+ * this hook ensures the container is tracked and all measurements are
+ * properly recorded in the container-specific measurement list.
  */
 SEC("lsm/bprm_check_security")
 int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
@@ -79,6 +92,42 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
             if (kn) {
                 bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
                 bpf_printk(" cgroup_name: %s\n", cgroup_name);
+            }
+        }
+    }
+
+    /* ===== Task 5: Container Event Tracking =====
+     * If we detected a valid cgroup name (potential container identifier),
+     * ensure that a container node exists in the kernel tracking system.
+     * This acts as a "container start" event detector.
+     */
+    bool is_container_context = false;
+    if (cgroup_name[0] != '\0') {
+        /* Filter out common system cgroups to focus on actual containers
+         * Containers typically have IDs like:
+         * - docker-<hash>
+         * - cri-containerd-<hash>
+         * - kubepods-<...>
+         * - Or custom container runtime identifiers
+         */
+        const char *ignore_patterns[] = {"/", "init.scope", "system.slice", "user.slice"};
+        bool should_track = true;
+        
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            if (__builtin_strcmp(cgroup_name, ignore_patterns[i]) == 0) {
+                should_track = false;
+                break;
+            }
+        }
+        
+        if (should_track) {
+            is_container_context = true;
+            ret = bpf_container_create_or_get(cgroup_name);
+            if (ret == 0) {
+                bpf_printk("✓ Container tracking: %s (created or exists)\n", cgroup_name);
+            } else {
+                bpf_printk("⚠ Failed to track container %s: %d\n", cgroup_name, ret);
             }
         }
     }
@@ -158,7 +207,28 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
                     deps[deps_max - 1] = '\0';
                 }
                 digest_hex[64] = '\0';
-                bpf_ima_extend_measurement(event_name, cgroup_name, deps, digest_hex, 64);
+                
+                /* ===== Task 5: Container Measurement Integration =====
+                 * Route measurements to the appropriate tracking system:
+                 * - If in container context: Add to container-specific list
+                 * - Otherwise: Use legacy host-level measurement system
+                 * 
+                 * This ensures proper Merkle tree leaf updates and TPM PCR extension.
+                 */
+                if (is_container_context && cgroup_name[0] != '\0') {
+                    /* Container-aware measurement using new kfunc */
+                    ret = bpf_container_add_measurement(cgroup_name, event_name, deps, digest, sizeof(digest));
+                    if (ret == 0) {
+                        bpf_printk("✓ Added measurement to container %s: %s\n", cgroup_name, event_name);
+                    } else {
+                        bpf_printk("⚠ Failed to add container measurement: %d\n", ret);
+                        /* Fallback to legacy system */
+                        bpf_ima_extend_measurement(event_name, cgroup_name, deps, digest_hex, 64);
+                    }
+                } else {
+                    /* Host-level measurement (legacy system) */
+                    bpf_ima_extend_measurement(event_name, cgroup_name, deps, digest_hex, 64);
+                }
             }
             else {
                 bpf_printk(" failed hashing failed extending found data about it");

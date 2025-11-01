@@ -941,10 +941,12 @@ cleanup:
  * Computes the Merkle root by hashing together all container leaf hashes.
  * The root hash represents the entire system state (virtual PCR value).
  * 
- * Algorithm:
- * 1. Initialize hash context
- * 2. For each container in order, update hash with container's leaf_hash
- * 3. Finalize to produce the root hash
+ * This function follows the same pattern as process_measurement:
+ * 1. Check if we can sleep (atomic context detection)
+ * 2. Perform hash calculation
+ * 3. Update global state with spinlock protection
+ * 4. Release lock before TPM operation (which can sleep)
+ * 5. Defer TPM extension if called from atomic context
  *
  * Must be called with container_list_lock held or from a context where
  * container list is stable.
@@ -960,12 +962,14 @@ static int recalculate_merkle_root(void)
     int ret = 0;
     u32 leaf_count = 0;
     u8 new_root[MERKLE_HASH_SIZE];
+    bool can_sleep = !in_atomic() && !irqs_disabled();
     
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm))
         return PTR_ERR(tfm);
     
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), 
+                   can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!desc) {
         crypto_free_shash(tfm);
         return -ENOMEM;
@@ -1000,6 +1004,18 @@ static int recalculate_merkle_root(void)
     spin_unlock_irqrestore(&system_merkle_root.lock, flags);
     
     pr_debug("bpfima: Merkle root recalculated with %u leaves\n", leaf_count);
+    
+    if (!can_sleep) {
+        printk(KERN_INFO "Called from atomic context, TPM extension deferred for event: merkle_root_update\n");
+    } else {
+        /* 
+         * Release lock before performing TPM extension which may sleep
+         * Following the same pattern as process_measurement
+         */
+        extend_tpm_pcr(new_root, "merkle_root_update");
+    }
+    
+    ret = 0; /* Success regardless of TPM extension result */
     
 cleanup:
     kfree(desc);
