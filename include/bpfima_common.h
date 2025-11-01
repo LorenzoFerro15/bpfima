@@ -90,4 +90,14 @@ struct hash_entry {
     u8 sha256_hash[SHA256_DIGEST_SIZE];
 };
 
+/* Hash utility functions */
+int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
+bool hash_exists(const u8 *hash_value);
+int add_hash_to_table(const u8 *hash_value, bool can_sleep);
+void cleanup_hash_table(void);
+
+/* TPM operations */
+int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
+int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name);
+
 #endif /* BPFIMA_COMMON_H */
