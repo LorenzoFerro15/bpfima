@@ -1,4 +1,10 @@
+# Main module (monolithic)
 obj-m += bpfima.o
+
+# Modular version (refactored demonstration)
+obj-m += bpfima_modular.o
+bpfima_modular-y := src/main.o src/merkle.o src/kfuncs_container.o src/securityfs.o
+ccflags-y += -I$(src)/include
 
 KBUILD_CFLAGS += -g -O2
 # Use BTF from sysfs if available
@@ -44,7 +50,9 @@ modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 	@mkdir -p $(BUILD_DIR)
 	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f .*.cmd .*.o $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f src/.*.cmd $(BUILD_DIR)/ 2>/dev/null || true
 	@rm -rf .tmp_versions 2>/dev/null || true
 
 # Generic loader

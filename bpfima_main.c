@@ -20,124 +20,22 @@
 #include <linux/proc_fs.h>
 #include <linux/hashtable.h>
 
+#include "include/bpfima_common.h"
+#include "include/bpfima_merkle.h"
+#include "include/bpfima_securityfs.h"
+
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 #define IMA_EVENT_NAME_LEN_MAX 255
 #define TPM_PCR_INDEX 23
 #define HASH_TABLE_BITS 8
 
-/* Container tracking and Merkle tree constants */
-#define CONTAINER_ID_MAX_LEN 128
-#define MERKLE_HASH_SIZE SHA256_DIGEST_SIZE
-
-/**
- * struct measurement_entry - Represents a single measurement/extension event
- * @list: Linked list node for maintaining measurement list
- * @event_name: Event name/description
- * @event_data: Additional event data
- * @digest: SHA-256 hash of the measurement
- *
- * This structure tracks individual measurements that are extended into
- * either the host measurement list or a container-specific measurement list.
- */
-struct measurement_entry {
-    struct list_head list;
-    char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
-    char event_data[256];
-    u8 digest[MERKLE_HASH_SIZE];
-};
-
-/**
- * struct container_node - Represents a container/pod with its measurement list
- * @list: Linked list node for maintaining list of all containers
- * @id: Unique container identifier (e.g., container ID, pod name)
- * @measurement_list: List of measurements specific to this container
- * @measurement_lock: Spinlock protecting the measurement list
- * @leaf_hash: Current SHA-256 hash representing this container (Merkle leaf)
- * @measurement_count: Number of measurements in this container's list
- * @securityfs_dir: SecurityFS directory for this container
- * @securityfs_measurements_file: SecurityFS file for container measurements
- *
- * Each container has its own measurement list that tracks all events
- * related to that specific container. The leaf_hash is used as the
- * container's leaf value in the Merkle tree root calculation.
- */
-struct container_node {
-    struct list_head list;
-    char id[CONTAINER_ID_MAX_LEN];
-    struct list_head measurement_list;
-    spinlock_t measurement_lock;
-    u8 leaf_hash[MERKLE_HASH_SIZE];
-    atomic_t measurement_count;
-    struct dentry *securityfs_dir;
-    struct dentry *securityfs_measurements_file;
-};
-
-/**
- * struct merkle_root_entry - Tracks values extended into the Merkle tree root
- * @list: Linked list node
- * @value: Hash value that was added to the Merkle root calculation
- * @source_container_id: ID of the container that triggered this extension
- *                        (empty string for host events)
- *
- * This list keeps track of all values that have been incorporated into
- * the Merkle tree root. Each time a container's leaf hash changes or
- * a host event occurs, the new value is recorded here before being
- * added to the Merkle root calculation.
- */
-struct merkle_root_entry {
-    struct list_head list;
-    u8 value[MERKLE_HASH_SIZE];
-    char source_container_id[CONTAINER_ID_MAX_LEN];
-};
-
-/**
- * struct merkle_tree_root - Non-binary Merkle tree with one leaf per container
- * @root_hash: Current Merkle root hash (virtual PCR value)
- * @lock: Spinlock for thread-safe tree operations
- * @leaf_count: Number of leaf nodes (containers) in the tree
- *
- * The Merkle tree root is calculated by hashing together all container
- * leaf hashes. This represents the virtual PCR value that reflects the
- * entire system state. The root is recalculated whenever any container's
- * leaf hash changes.
- */
-struct merkle_tree_root {
-    u8 root_hash[MERKLE_HASH_SIZE];
-    spinlock_t lock;
-    u32 leaf_count;
-};
-
-struct bpf_ima_template_entry {
-    struct list_head list;
-    char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
-    char event_data[256];
-    u8 digest[IMA_DIGEST_SIZE];
-};
-
-struct hash_entry {
-    struct hlist_node hash_node;
-    u8 sha256_hash[SHA256_DIGEST_SIZE];
-};
-
+/* Legacy BPF-IMA global state */
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
 static DEFINE_HASHTABLE(sha256_hash_table, HASH_TABLE_BITS);
 static DEFINE_SPINLOCK(hash_table_lock);
-
-/* Container tracking and Merkle tree globals */
-static LIST_HEAD(container_list);            /* List of all container_node structures */
-static DEFINE_SPINLOCK(container_list_lock); /* Protects container_list */
-
-static LIST_HEAD(host_measurement_list);     /* Host-level measurement list */
-static DEFINE_SPINLOCK(host_measurement_lock); /* Protects host measurement list */
-
-static LIST_HEAD(merkle_root_history);       /* List of merkle_root_entry structures */
-static DEFINE_SPINLOCK(merkle_root_history_lock); /* Protects merkle root history */
-
-static struct merkle_tree_root system_merkle_root; /* The Merkle tree root (virtual PCR) */
-static atomic_t container_count = ATOMIC_INIT(0);
 
 /* SecurityFS interface */
 static struct dentry *bpfima_dir = NULL;
@@ -2088,6 +1986,16 @@ static void cleanup_host_measurements(void)
     list_for_each_entry_safe(entry, tmp, &host_measurement_list, list) {
         list_del(&entry->list);
         kfree(entry);
+        count++;
+    }
+    spin_unlock_irqrestore(&host_measurement_lock, flags);
+    
+    pr_info("bpfima: Cleaned up %d host measurements\n", count);
+}
+
+/**
+ * cleanup_merkle_root_history - Free all Merkle root history entries
+ */
         count++;
     }
     spin_unlock_irqrestore(&host_measurement_lock, flags);
