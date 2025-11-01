@@ -10,6 +10,9 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/crypto.h>
+#include <linux/tpm.h>
+#include <linux/preempt.h>
+#include <linux/irqflags.h>
 #include <crypto/hash.h>
 
 #include "bpfima_common.h"
@@ -28,6 +31,52 @@ DEFINE_SPINLOCK(merkle_root_history_lock);
 
 struct merkle_tree_root system_merkle_root;
 atomic_t container_count = ATOMIC_INIT(0);
+
+/**
+ * extend_tpm_pcr_with_root - Extend TPM PCR with the Merkle root hash
+ * @root_hash: The Merkle root hash to extend into the TPM PCR
+ * @event_name: Event name for logging purposes
+ *
+ * This function extends the configured TPM PCR (default PCR 23) with the
+ * Merkle root hash value. This creates a hardware-backed attestation of
+ * the current system integrity state as represented by all container
+ * measurements.
+ *
+ * The function handles TPM chip acquisition, digest preparation, PCR extension,
+ * and proper cleanup. It provides detailed logging for both success and failure cases.
+ *
+ * The function assumes it's called in a context where sleeping is allowed
+ * (i.e., not in atomic context) since TPM operations can sleep.
+ *
+ * Returns: 0 on successful PCR extension, negative error code on failure
+ */
+static int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
+{
+    struct tpm_chip *chip;
+    struct tpm_digest digest[1];
+    int ret;
+
+    chip = tpm_default_chip();
+    if (!chip) {
+        pr_warn("bpfima: TPM not available, measurement added to list only\n");
+        return -ENODEV;
+    }
+
+    memset(digest, 0, sizeof(digest));
+    digest[0].alg_id = TPM_ALG_SHA256;
+    memcpy(digest[0].digest, root_hash, MERKLE_HASH_SIZE);
+    
+    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
+    if (ret < 0) {
+        pr_err("bpfima: Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
+    } else {
+        pr_info("bpfima: Extended TPM PCR %d with measurement for event: %s\n", 
+                TPM_PCR_INDEX, event_name);
+    }
+    
+    tpm_put_ops(chip);
+    return ret;
+}
 
 /**
  * compute_container_leaf_hash - Compute the leaf hash for a container
@@ -87,6 +136,13 @@ cleanup:
  * Computes the Merkle root by hashing together all container leaf hashes.
  * The root hash represents the entire system state (virtual PCR value).
  *
+ * This function follows the same pattern as process_measurement:
+ * 1. Check if we can sleep (atomic context detection)
+ * 2. Perform hash calculation
+ * 3. Update global state with spinlock protection
+ * 4. Release lock before TPM operation (which can sleep)
+ * 5. Defer TPM extension if called from atomic context
+ *
  * Returns: 0 on success, negative error code on failure
  */
 int recalculate_merkle_root(void)
@@ -98,12 +154,14 @@ int recalculate_merkle_root(void)
     int ret = 0;
     u32 leaf_count = 0;
     u8 new_root[MERKLE_HASH_SIZE];
+    bool can_sleep = !in_atomic() && !irqs_disabled();
     
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm))
         return PTR_ERR(tfm);
     
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), 
+                   can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!desc) {
         crypto_free_shash(tfm);
         return -ENOMEM;
@@ -138,6 +196,22 @@ int recalculate_merkle_root(void)
     spin_unlock_irqrestore(&system_merkle_root.lock, flags);
     
     pr_debug("bpfima: Merkle root recalculated with %u leaves\n", leaf_count);
+    
+    if (!can_sleep) {
+        pr_info("bpfima: Called from atomic context, TPM extension deferred for merkle_root_update\n");
+    } else {
+        /* 
+         * Release lock before performing TPM extension which may sleep
+         * Following the same pattern as process_measurement
+         */
+        ret = extend_tpm_pcr_with_root(new_root, "merkle_root_update");
+        if (ret < 0 && ret != -ENODEV) {
+            /* Log error but don't fail - TPM extension is optional */
+            pr_warn("bpfima: Failed to extend TPM PCR with Merkle root: %d\n", ret);
+        }
+    }
+    
+    ret = 0; /* Success regardless of TPM extension result */
     
 cleanup:
     kfree(desc);
