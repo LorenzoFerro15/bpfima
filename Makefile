@@ -1,5 +1,6 @@
-# Main module (monolithic)
+# Main module (now using shared components)
 obj-m += bpfima.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o
 
 # Modular version (refactored and modularized)
 obj-m += bpfima_modular.o
