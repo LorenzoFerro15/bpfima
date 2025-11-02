@@ -123,9 +123,6 @@ static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
-static DEFINE_HASHTABLE(sha256_hash_table, HASH_TABLE_BITS);
-static DEFINE_SPINLOCK(hash_table_lock);
-
 /* Container tracking and Merkle tree globals */
 static LIST_HEAD(container_list);            /* List of all container_node structures */
 static DEFINE_SPINLOCK(container_list_lock); /* Protects container_list */
@@ -185,151 +182,14 @@ static int add_host_measurement(const char *event_name,
                                 const char *event_data,
                                 const u8 *digest);
 
+/* External function declarations from modular components */
+int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
+bool hash_exists(const u8 *hash_value);
+int add_hash_to_table(const u8 *hash_value, bool can_sleep);
+void cleanup_hash_table(void);
+int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
+
 __bpf_kfunc_start_defs();
-
-
-/*
- * calculate_sha256_hash - Compute SHA256 hash digest of input data
- * @data: Input data buffer to hash
- * @len: Length of input data in bytes
- * @digest: Output buffer to store SHA256 digest (must be SHA256_DIGEST_SIZE bytes)
- *
- * Allocates crypto transform and descriptor to compute SHA256 hash using kernel
- * crypto API. The function handles all memory allocation/deallocation internally.
- *
- * Returns: 0 on success, negative error code on failure
- */
-static int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
-{
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
-    int ret;
-
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-        return PTR_ERR(tfm);
-
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc) {
-        crypto_free_shash(tfm);
-        return -ENOMEM;
-    }
-
-    desc->tfm = tfm;
-    ret = crypto_shash_digest(desc, data, len, digest);
-
-    kfree(desc);
-    crypto_free_shash(tfm);
-    return ret;
-}
-
-/*
- * hash_exists - Check if a SHA256 hash already exists in the hash table
- * @hash_value: SHA256 digest to search for (must be SHA256_DIGEST_SIZE bytes)
- *
- * Searches the hash table to determine if a measurement with the given SHA256 hash
- * has already been recorded. Uses a simple hash function based on the first 4 bytes
- * of the SHA256 digest. The function is thread-safe using spinlock protection.
- *
- * Returns: true if hash exists, false if not found
- */
-static bool hash_exists(const u8 *hash_value)
-{
-    struct hash_entry *entry;
-    u32 hash_key;
-    unsigned long flags;
-    bool found = false;
-    
-    hash_key = *(u32*)hash_value;
-
-    
-    spin_lock_irqsave(&hash_table_lock, flags);
-    
-    hash_for_each_possible(sha256_hash_table, entry, hash_node, hash_key) {
-        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0) {
-            found = true;
-            break;
-        }
-    }
-    
-    spin_unlock_irqrestore(&hash_table_lock, flags);
-    
-    return found;
-}
-
-/*
- * add_hash_to_table - Add a new SHA256 hash to the hash table
- * @hash_value: SHA256 digest to add (must be SHA256_DIGEST_SIZE bytes)
- * @can_sleep: Whether the current context allows sleeping for memory allocation
- *
- * Adds a new hash entry to the hash table to track that this measurement has been
- * recorded. Uses appropriate memory allocation flags based on the calling context.
- * The function is thread-safe using spinlock protection.
- *
- * Returns: 0 on success, negative error code on failure
- */
-static int add_hash_to_table(const u8 *hash_value, bool can_sleep)
-{
-    struct hash_entry *new_entry;
-    u32 hash_key;
-    unsigned long flags;
-    
-    new_entry = kzalloc(sizeof(*new_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
-    if (!new_entry)
-        return -ENOMEM;
-    
-    memcpy(new_entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
-    
-    /* Use first 4 bytes of SHA256 as hash key */
-    hash_key = *(u32*)hash_value;
-    
-    spin_lock_irqsave(&hash_table_lock, flags);
-    hash_add(sha256_hash_table, &new_entry->hash_node, hash_key);
-    spin_unlock_irqrestore(&hash_table_lock, flags);
-    
-    return 0;
-}
-
-/*
- * extend_tpm_pcr - Extend TPM Platform Configuration Register with measurement
- * @hash_value: SHA256 digest to extend into the PCR (must be SHA256_DIGEST_SIZE bytes)
- * @event_name: Event name for logging purposes (used in success/failure messages)
- *
- * Attempts to extend the configured TPM PCR with the provided hash value.
- * This function handles TPM chip acquisition, digest preparation, PCR extension,
- * and proper cleanup. It provides detailed logging for both success and failure cases.
- *
- * The function assumes it's called in a context where sleeping is allowed
- * (i.e., not in atomic context) since TPM operations can sleep.
- *
- * Returns: 0 on successful PCR extension, negative error code on failure
- */
-static int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
-{
-    struct tpm_chip *chip;
-    struct tpm_digest digest[1];
-    int ret;
-
-    chip = tpm_default_chip();
-    if (!chip) {
-        printk(KERN_WARNING "TPM not available, measurement added to list only\n");
-        return -ENODEV;
-    }
-
-    memset(digest, 0, sizeof(digest));
-    digest[0].alg_id = TPM_ALG_SHA256;
-    memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
-    
-    ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-    if (ret < 0) {
-        printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
-    } else {
-        printk(KERN_INFO "Extended TPM PCR %d with measurement for event: %s\n", TPM_PCR_INDEX, event_name);
-    }
-    
-    tpm_put_ops(chip);
-    return ret;
-}
 
 /*
  * process_measurement - Core function to process measurement data with TPM integration
@@ -1845,15 +1705,16 @@ static int create_container_securityfs(struct container_node *container)
  * @container: Container node to remove directory for
  *
  * Removes the securityfs directory and files for a container.
+ * Uses securityfs_remove() which handles NULL and IS_ERR pointers safely.
  */
 static void remove_container_securityfs(struct container_node *container)
 {
-    if (container->securityfs_measurements_file) {
+    if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file)) {
         securityfs_remove(container->securityfs_measurements_file);
         container->securityfs_measurements_file = NULL;
     }
     
-    if (container->securityfs_dir) {
+    if (container->securityfs_dir && !IS_ERR(container->securityfs_dir)) {
         securityfs_remove(container->securityfs_dir);
         container->securityfs_dir = NULL;
     }
@@ -1989,19 +1850,19 @@ cleanup_containers:
  * Removes all SecurityFS files and directories created by bpfima_securityfs_init().
  * This function is called during module unload to ensure proper cleanup.
  *
- * Removal order:
- * 1. Individual files (status, measurements)
- * 2. Directory (using recursive remove to handle any remaining content)
+ * Removal order is critical:
+ * 1. Remove individual files first
+ * 2. Remove child directories (containers_dir recursively)
+ * 3. Remove parent directory (bpfima_dir recursively)
  *
- * Uses securityfs_recursive_remove() for the directory to ensure complete
- * cleanup even if files were somehow left behind. All global pointers are
- * reset to NULL to prevent double-cleanup attempts.
+ * Using securityfs_recursive_remove() ensures complete cleanup of directory trees.
+ * All global pointers are reset to NULL to prevent double-cleanup attempts.
  *
  * Safe to call multiple times or with partially initialized state.
  */
 static void bpfima_securityfs_cleanup(void)
 {
-    /* Clean up container tracking files and directories */
+    /* Remove individual files under bpfima_dir first */
     if (container_list_file) {
         securityfs_remove(container_list_file);
         container_list_file = NULL;
@@ -2018,14 +1879,6 @@ static void bpfima_securityfs_cleanup(void)
         securityfs_remove(host_measurements_file);
         host_measurements_file = NULL;
     }
-    
-    /* Recursively remove containers directory (includes per-container dirs) */
-    if (containers_dir) {
-        securityfs_recursive_remove(containers_dir);
-        containers_dir = NULL;
-    }
-    
-    /* Clean up original files */
     if (status_file) {
         securityfs_remove(status_file);
         status_file = NULL;
@@ -2035,7 +1888,14 @@ static void bpfima_securityfs_cleanup(void)
         measurements_file = NULL;
     }
     
-    if (bpfima_dir) {
+    /* Recursively remove containers directory and all per-container subdirectories */
+    if (containers_dir && !IS_ERR(containers_dir)) {
+        securityfs_recursive_remove(containers_dir);
+        containers_dir = NULL;
+    }
+    
+    /* Finally, recursively remove the main bpfima directory */
+    if (bpfima_dir && !IS_ERR(bpfima_dir)) {
         securityfs_recursive_remove(bpfima_dir);
         bpfima_dir = NULL;
     }
@@ -2113,37 +1973,7 @@ static int __init bpfima_init(void)
     return 0;
 }
 
-/*
- * cleanup_hash_table - Clean up all entries in the SHA256 hash table
- *
- * Iterates through all buckets of the hash table and frees all hash entries.
- * This function should be called during module cleanup to prevent memory leaks.
- * Uses irqsave locking to ensure safe cleanup in any context.
- */
-static void cleanup_hash_table(void)
-{
-    struct hash_entry *entry;
-    struct hlist_node *tmp;
-    unsigned long flags;
-    int bkt;
-    int count = 0;
-
-    spin_lock_irqsave(&hash_table_lock, flags);
-    
-    hash_for_each_safe(sha256_hash_table, bkt, tmp, entry, hash_node) {
-        hash_del(&entry->hash_node);
-        kfree(entry);
-        count++;
-    }
-    
-    spin_unlock_irqrestore(&hash_table_lock, flags);
-    
-    printk(KERN_INFO "Hash table cleaned up. Freed %d hash entries\n", count);
-}
-
-/*
- * Container and Merkle tree cleanup functions
- */
+/* Container and Merkle tree cleanup functions */
 
 /**
  * cleanup_container_measurements - Free all measurements in a container
@@ -2256,13 +2086,13 @@ static void __exit bpfima_exit(void)
 
     printk(KERN_INFO "BPF-IMA module unloading...\n");
     
-    /* Clean up securityfs first (will recursively remove container dirs) */
-    bpfima_securityfs_cleanup();
-    
-    /* Clean up container tracking structures */
+    /* Clean up container tracking structures FIRST (includes per-container securityfs) */
     cleanup_all_containers();
     cleanup_host_measurements();
     cleanup_merkle_root_history();
+    
+    /* Now clean up main securityfs interface (after containers are gone) */
+    bpfima_securityfs_cleanup();
     
     /* Clean up original BPF measurement list */
     bpf_ima_print_measurement_list();
