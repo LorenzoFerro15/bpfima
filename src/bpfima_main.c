@@ -966,14 +966,29 @@ static int recalculate_merkle_root(void)
     
     pr_debug("bpfima: Merkle root recalculated with %u leaves\n", leaf_count);
     
-    if (!can_sleep) {
-        printk(KERN_INFO "Called from atomic context, TPM extension deferred for event: merkle_root_update\n");
-    } else {
-        /* 
-         * Release lock before performing TPM extension which may sleep
-         * Following the same pattern as process_measurement
-         */
-        extend_tpm_pcr(new_root, "merkle_root_update");
+    /* Add the new Merkle root to the general measurement list */
+    {
+        struct bpf_ima_template_entry *pcr_entry;
+        
+        pcr_entry = kzalloc(sizeof(*pcr_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+        if (pcr_entry) {
+            pcr_entry->event_name[0] = '\0';
+            pcr_entry->event_data[0] = '\0';
+            memcpy(pcr_entry->digest, new_root, IMA_DIGEST_SIZE);
+            
+            spin_lock(&measurement_list_lock);
+            list_add_tail(&pcr_entry->list, &bpf_measurement_list);
+            atomic_inc(&measurement_count);
+            spin_unlock(&measurement_list_lock);
+            
+            pr_debug("bpfima: Added Merkle root to general measurement list\n");
+        }
+    }
+    
+    /* Extend the Merkle root to physical TPM PCR */
+    if (can_sleep) {
+        extend_tpm_pcr(new_root, "merkle_root");
+        pr_debug("bpfima: Extended Merkle root to TPM PCR\n");
     }
     
     ret = 0; /* Success regardless of TPM extension result */
@@ -1147,7 +1162,7 @@ static int add_container_measurement(struct container_node *container,
         /* Continue anyway, this is not critical */
     }
     
-    /* Recalculate Merkle root */
+    /* Recalculate Merkle root (this will also extend to PCR and update general list) */
     ret = recalculate_merkle_root();
     if (ret < 0) {
         pr_err("bpfima: Failed to recalculate merkle root: %d\n", ret);

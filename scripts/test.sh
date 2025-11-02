@@ -63,17 +63,30 @@ cleanup() {
     log_info "Cleanup started"
     
     # Kill loader process first
+    if [ -n "$LOADER_PID" ] && kill -0 "$LOADER_PID" 2>/dev/null; then
+        log_info "Stopping loader process (PID: $LOADER_PID)"
+        kill -9 "$LOADER_PID" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # Also kill any remaining loader processes
     if pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null; then
-        log_info "Stopped loader process"
+        log_info "Stopped additional loader processes"
         sleep 1
     fi
     
     # Remove containers
-    if command -v docker >/dev/null 2>&1; then
-        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    fi
-    if command -v podman >/dev/null 2>&1; then
-        podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    if [ -n "$CONTAINER_CLI" ]; then
+        log_info "Removing test container"
+        $CONTAINER_CLI rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    else
+        # Try both if CONTAINER_CLI not set
+        if command -v docker >/dev/null 2>&1; then
+            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        fi
+        if command -v podman >/dev/null 2>&1; then
+            podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        fi
     fi
     
     # Wait a bit for BPF programs to detach
@@ -81,8 +94,9 @@ cleanup() {
     
     # Try to remove module
     if lsmod | grep -q "^bpfima "; then
+        log_info "Removing kernel module"
         if rmmod bpfima 2>/dev/null; then
-            log_info "Removed kernel module"
+            log_info "Kernel module removed"
         else
             log_warn "Could not remove module (may require manual cleanup)"
             log_warn "Try: sudo rmmod -f bpfima"
@@ -209,4 +223,8 @@ fi
 # Wait a moment for any final events
 sleep 2
 
-log_info "Test finished - cleaning up"
+log_info "Test finished - press Ctrl+C to cleanup and exit"
+log_info "Monitoring mode active... (loader PID: $LOADER_PID)"
+
+# Wait indefinitely until interrupted
+wait
