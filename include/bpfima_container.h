@@ -14,4 +14,13 @@ struct container_node *create_container_node(const char *container_id);
 void cleanup_container_measurements(struct container_node *container);
 void cleanup_all_containers(void);
 
+/* Measurement functions */
+int add_container_measurement(struct container_node *container,
+                              const char *event_name,
+                              const char *event_data,
+                              const u8 *digest);
+int add_host_measurement(const char *event_name,
+                         const char *event_data,
+                         const u8 *digest);
+
 #endif /* BPFIMA_CONTAINER_H */

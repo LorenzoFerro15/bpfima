@@ -28,7 +28,6 @@ bpfima/
 ├── src/               # Kernel module source (modular)
 │   ├── main.c         # Module initialization
 │   ├── merkle.c       # Merkle tree implementation
-│   ├── securityfs.c   # SecurityFS implementation
 │   └── kfuncs_container.c  # Container tracking kfuncs
 ├── templates/         # Code templates
 ├── utils/             # Utility headers
