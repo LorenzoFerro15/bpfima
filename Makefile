@@ -1,11 +1,13 @@
 # Main module (now using shared components)
 obj-m += bpfima.o
-bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o
+
+# Add include directory for modular headers
+ccflags-y += -I$(src)/include
 
 # Modular version (refactored and modularized)
-obj-m += bpfima_modular.o
-bpfima_modular-y := src/bpfima_core.o src/container.o src/merkle.o src/measurements.o src/kfuncs_container.o src/securityfs.o src/hash_utils.o src/tpm_ops.o
-ccflags-y += -I$(src)/include
+# obj-m += bpfima_modular.o
+# bpfima_modular-y := src/container.o src/merkle.o src/measurements.o src/kfuncs_container.o src/hash_utils.o src/tpm_ops.o
 
 KBUILD_CFLAGS += -g -O2
 # Use BTF from sysfs if available

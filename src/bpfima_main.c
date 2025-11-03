@@ -20,6 +20,10 @@
 #include <linux/proc_fs.h>
 #include <linux/hashtable.h>
 
+#include "bpfima_common.h"
+#include "bpfima_container.h"
+#include "bpfima_kfuncs.h"
+
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 #define IMA_EVENT_NAME_LEN_MAX 255
 #define TPM_PCR_INDEX 23
@@ -39,12 +43,6 @@
  * This structure tracks individual measurements that are extended into
  * either the host measurement list or a container-specific measurement list.
  */
-struct measurement_entry {
-    struct list_head list;
-    char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
-    char event_data[256];
-    u8 digest[MERKLE_HASH_SIZE];
-};
 
 /**
  * struct container_node - Represents a container/pod with its measurement list
@@ -61,16 +59,6 @@ struct measurement_entry {
  * related to that specific container. The leaf_hash is used as the
  * container's leaf value in the Merkle tree root calculation.
  */
-struct container_node {
-    struct list_head list;
-    char id[CONTAINER_ID_MAX_LEN];
-    struct list_head measurement_list;
-    spinlock_t measurement_lock;
-    u8 leaf_hash[MERKLE_HASH_SIZE];
-    atomic_t measurement_count;
-    struct dentry *securityfs_dir;
-    struct dentry *securityfs_measurements_file;
-};
 
 /**
  * struct merkle_root_entry - Tracks values extended into the Merkle tree root
@@ -84,12 +72,6 @@ struct container_node {
  * a host event occurs, the new value is recorded here before being
  * added to the Merkle root calculation.
  */
-struct merkle_root_entry {
-    struct list_head list;
-    u8 value[MERKLE_HASH_SIZE];
-    char source_container_id[CONTAINER_ID_MAX_LEN];
-};
-
 /**
  * struct merkle_tree_root - Non-binary Merkle tree with one leaf per container
  * @root_hash: Current Merkle root hash (virtual PCR value)
@@ -101,31 +83,14 @@ struct merkle_root_entry {
  * entire system state. The root is recalculated whenever any container's
  * leaf hash changes.
  */
-struct merkle_tree_root {
-    u8 root_hash[MERKLE_HASH_SIZE];
-    spinlock_t lock;
-    u32 leaf_count;
-};
-
-struct bpf_ima_template_entry {
-    struct list_head list;
-    char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
-    char event_data[256];
-    u8 digest[IMA_DIGEST_SIZE];
-};
-
-struct hash_entry {
-    struct hlist_node hash_node;
-    u8 sha256_hash[SHA256_DIGEST_SIZE];
-};
 
 static LIST_HEAD(bpf_measurement_list);
 static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
 /* Container tracking and Merkle tree globals */
-static LIST_HEAD(container_list);            /* List of all container_node structures */
-static DEFINE_SPINLOCK(container_list_lock); /* Protects container_list */
+LIST_HEAD(container_list);            /* List of all container_node structures */
+DEFINE_SPINLOCK(container_list_lock); /* Protects container_list */
 
 static LIST_HEAD(host_measurement_list);     /* Host-level measurement list */
 static DEFINE_SPINLOCK(host_measurement_lock); /* Protects host measurement list */
@@ -133,8 +98,13 @@ static DEFINE_SPINLOCK(host_measurement_lock); /* Protects host measurement list
 static LIST_HEAD(merkle_root_history);       /* List of merkle_root_entry structures */
 static DEFINE_SPINLOCK(merkle_root_history_lock); /* Protects merkle root history */
 
-static struct merkle_tree_root system_merkle_root; /* The Merkle tree root (virtual PCR) */
-static atomic_t container_count = ATOMIC_INIT(0);
+struct merkle_tree_root system_merkle_root; /* The Merkle tree root (virtual PCR) */
+atomic_t container_count = ATOMIC_INIT(0);
+
+EXPORT_SYMBOL(container_list);
+EXPORT_SYMBOL(container_list_lock);
+EXPORT_SYMBOL(system_merkle_root);
+EXPORT_SYMBOL(container_count);
 
 /* SecurityFS interface */
 static struct dentry *bpfima_dir = NULL;
@@ -172,15 +142,6 @@ __bpf_kfunc int bpf_get_container_leaf_hash(const char *container_id, u8 *leaf_h
  * Forward declarations for Merkle tree helper functions
  * (needed by kfuncs defined before the actual implementations)
  */
-static struct container_node *find_container_by_id(const char *container_id);
-static struct container_node *create_container_node(const char *container_id);
-static int add_container_measurement(struct container_node *container,
-                                     const char *event_name,
-                                     const char *event_data,
-                                     const u8 *digest);
-static int add_host_measurement(const char *event_name,
-                                const char *event_data,
-                                const u8 *digest);
 
 /* External function declarations from modular components */
 int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
@@ -580,160 +541,6 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
 /*
  * Container tracking kfuncs - callable from eBPF programs
  */
-
-/**
- * bpf_container_create_or_get - Create a new container or get existing one
- * @container_id: Unique container identifier
- *
- * Creates a new container node if it doesn't exist, or returns success
- * if the container already exists.
- *
- * Returns: 0 on success, negative error code on failure
- */
-__bpf_kfunc int bpf_container_create_or_get(const char *container_id)
-{
-    struct container_node *container;
-    unsigned long flags;
-    
-    if (!container_id || container_id[0] == '\0')
-        return -EINVAL;
-    
-    /* Check if container already exists */
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    if (container) {
-        pr_debug("bpfima: Container %s already exists\n", container_id);
-        return 0;
-    }
-    
-    /* Create new container */
-    container = create_container_node(container_id);
-    if (IS_ERR(container)) {
-        pr_err("bpfima: Failed to create container %s: %ld\n",
-               container_id, PTR_ERR(container));
-        return PTR_ERR(container);
-    }
-    
-    pr_info("bpfima: Created new container: %s\n", container_id);
-    return 0;
-}
-
-/**
- * bpf_container_add_measurement - Add a measurement to a container
- * @container_id: Container identifier
- * @event_name: Event name/description
- * @event_data: Additional event data (can be NULL)
- * @digest: SHA-256 digest of the measurement
- * @digest_size: Size of digest (must be MERKLE_HASH_SIZE)
- *
- * Adds a measurement to the specified container's list and updates
- * the Merkle tree root.
- *
- * Returns: 0 on success, negative error code on failure
- */
-__bpf_kfunc int bpf_container_add_measurement(const char *container_id,
-                                               const char *event_name,
-                                               const char *event_data,
-                                               const u8 *digest,
-                                               u32 digest_size)
-{
-    struct container_node *container;
-    unsigned long flags;
-    int ret;
-    
-    if (!container_id || !event_name || !digest)
-        return -EINVAL;
-    
-    if (digest_size != MERKLE_HASH_SIZE)
-        return -EINVAL;
-    
-    /* Find the container */
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    if (!container) {
-        pr_err("bpfima: Container %s not found\n", container_id);
-        return -ENOENT;
-    }
-    
-    /* Add measurement to container */
-    ret = add_container_measurement(container, event_name, event_data, digest);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to add measurement to container %s: %d\n",
-               container_id, ret);
-        return ret;
-    }
-    
-    pr_debug("bpfima: Added measurement '%s' to container %s\n",
-             event_name, container_id);
-    
-    return 0;
-}
-
-/**
- * bpf_host_add_measurement - Add a measurement to the host measurement list
- * @event_name: Event name/description
- * @event_data: Additional event data (can be NULL)
- * @digest: SHA-256 digest of the measurement
- * @digest_size: Size of digest (must be MERKLE_HASH_SIZE)
- *
- * Adds a measurement to the host-level measurement list.
- *
- * Returns: 0 on success, negative error code on failure
- */
-__bpf_kfunc int bpf_host_add_measurement(const char *event_name,
-                                          const char *event_data,
-                                          const u8 *digest,
-                                          u32 digest_size)
-{
-    int ret;
-    
-    if (!event_name || !digest)
-        return -EINVAL;
-    
-    if (digest_size != MERKLE_HASH_SIZE)
-        return -EINVAL;
-    
-    ret = add_host_measurement(event_name, event_data, digest);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to add host measurement: %d\n", ret);
-        return ret;
-    }
-    
-    pr_debug("bpfima: Added host measurement: %s\n", event_name);
-    
-    return 0;
-}
-
-/**
- * bpf_get_merkle_root - Get the current Merkle root hash
- * @root_hash: Buffer to store the root hash (must be MERKLE_HASH_SIZE bytes)
- * @hash_size: Size of the buffer (must be MERKLE_HASH_SIZE)
- *
- * Retrieves the current Merkle root hash (virtual PCR value).
- *
- * Returns: 0 on success, negative error code on failure
- */
-__bpf_kfunc int bpf_get_merkle_root(u8 *root_hash, u32 hash_size)
-{
-    unsigned long flags;
-    
-    if (!root_hash)
-        return -EINVAL;
-    
-    if (hash_size != MERKLE_HASH_SIZE)
-        return -EINVAL;
-    
-    spin_lock_irqsave(&system_merkle_root.lock, flags);
-    memcpy(root_hash, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&system_merkle_root.lock, flags);
-    
-    return 0;
-}
-
 /* ===== Task 6: Enhanced Query kfuncs for Bidirectional Communication ===== */
 
 /**
@@ -1041,7 +848,7 @@ static int add_merkle_root_history_entry(const u8 *value, const char *container_
  *
  * Returns: Pointer to container_node if found, NULL otherwise
  */
-static struct container_node *find_container_by_id(const char *container_id)
+struct container_node *find_container_by_id(const char *container_id)
 {
     struct container_node *container;
     
@@ -1052,6 +859,7 @@ static struct container_node *find_container_by_id(const char *container_id)
     
     return NULL;
 }
+EXPORT_SYMBOL(find_container_by_id);
 
 /**
  * create_container_node - Create and initialize a new container node
@@ -1062,7 +870,7 @@ static struct container_node *find_container_by_id(const char *container_id)
  *
  * Returns: Pointer to new container_node on success, ERR_PTR on failure
  */
-static struct container_node *create_container_node(const char *container_id)
+struct container_node *create_container_node(const char *container_id)
 {
     struct container_node *container;
     unsigned long flags;
@@ -1105,6 +913,7 @@ static struct container_node *create_container_node(const char *container_id)
     pr_info("bpfima: Created container node for %s\n", container_id);
     return container;
 }
+EXPORT_SYMBOL(create_container_node);
 
 /**
  * add_container_measurement - Add a measurement to a container's list
@@ -1119,10 +928,10 @@ static struct container_node *create_container_node(const char *container_id)
  *
  * Returns: 0 on success, negative error code on failure
  */
-static int add_container_measurement(struct container_node *container,
-                                     const char *event_name,
-                                     const char *event_data,
-                                     const u8 *digest)
+int add_container_measurement(struct container_node *container,
+                              const char *event_name,
+                              const char *event_data,
+                              const u8 *digest)
 {
     struct measurement_entry *entry;
     unsigned long flags;
@@ -1174,6 +983,7 @@ static int add_container_measurement(struct container_node *container,
     
     return 0;
 }
+EXPORT_SYMBOL(add_container_measurement);
 
 /**
  * add_host_measurement - Add a measurement to the host measurement list
@@ -1185,9 +995,9 @@ static int add_container_measurement(struct container_node *container,
  *
  * Returns: 0 on success, negative error code on failure
  */
-static int add_host_measurement(const char *event_name,
-                                const char *event_data,
-                                const u8 *digest)
+int add_host_measurement(const char *event_name,
+                         const char *event_data,
+                         const u8 *digest)
 {
     struct measurement_entry *entry;
     unsigned long flags;
@@ -1213,6 +1023,7 @@ static int add_host_measurement(const char *event_name,
     
     return 0;
 }
+EXPORT_SYMBOL(add_host_measurement);
 
 /*
  * SecurityFS implementation for exposing measurement list
@@ -1936,7 +1747,7 @@ BTF_ID_FLAGS(func, bpf_container_exists)
 BTF_ID_FLAGS(func, bpf_get_container_leaf_hash)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
-static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
+const struct btf_kfunc_id_set bpf_kfunc_example_set = {
     .owner = THIS_MODULE,
     .set = &bpf_kfunc_example_ids_set,
 };
@@ -1998,7 +1809,7 @@ static int __init bpfima_init(void)
  * Must be called with container->measurement_lock held or when
  * no other threads can access the container.
  */
-static void cleanup_container_measurements(struct container_node *container)
+void cleanup_container_measurements(struct container_node *container)
 {
     struct measurement_entry *entry, *tmp;
     
@@ -2007,6 +1818,7 @@ static void cleanup_container_measurements(struct container_node *container)
         kfree(entry);
     }
 }
+EXPORT_SYMBOL(cleanup_container_measurements);
 
 /**
  * cleanup_all_containers - Remove and free all container nodes
@@ -2014,7 +1826,7 @@ static void cleanup_container_measurements(struct container_node *container)
  * Removes all containers from the list and frees their resources.
  * This includes securityfs entries and all measurement data.
  */
-static void cleanup_all_containers(void)
+void cleanup_all_containers(void)
 {
     struct container_node *container, *tmp;
     unsigned long flags;
@@ -2041,6 +1853,7 @@ static void cleanup_all_containers(void)
     
     pr_info("bpfima: Cleaned up %d containers\n", count);
 }
+EXPORT_SYMBOL(cleanup_all_containers);
 
 /**
  * cleanup_host_measurements - Free all host measurement entries

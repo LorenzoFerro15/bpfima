@@ -6,7 +6,7 @@
 #include "bpfima_common.h"
 
 /* BPF kfunc declarations */
-__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, 
+/* __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, 
                                            const char *namespace_id, 
                                            const char *dependencies, 
                                            const char *additional_data, 
@@ -16,7 +16,7 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size);
 __bpf_kfunc int bpf_tpm_is_available(void);
 __bpf_kfunc int bpf_ima_print_measurement_list(void);
 __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size);
-
+ */
 /* Container tracking kfuncs */
 __bpf_kfunc int bpf_container_create_or_get(const char *container_id);
 __bpf_kfunc int bpf_container_add_measurement(const char *container_id, 
