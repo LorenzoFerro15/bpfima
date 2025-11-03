@@ -1,6 +1,6 @@
 # Main module (now using shared components)
 obj-m += bpfima.o
-bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o
 
 # Add include directory for modular headers
 ccflags-y += -I$(src)/include

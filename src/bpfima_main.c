@@ -89,8 +89,6 @@ static DEFINE_SPINLOCK(measurement_list_lock);
 static atomic_t measurement_count = ATOMIC_INIT(0);
 
 /* Container tracking and Merkle tree globals */
-LIST_HEAD(container_list);            /* List of all container_node structures */
-DEFINE_SPINLOCK(container_list_lock); /* Protects container_list */
 
 static LIST_HEAD(host_measurement_list);     /* Host-level measurement list */
 static DEFINE_SPINLOCK(host_measurement_lock); /* Protects host measurement list */
@@ -99,12 +97,8 @@ static LIST_HEAD(merkle_root_history);       /* List of merkle_root_entry struct
 static DEFINE_SPINLOCK(merkle_root_history_lock); /* Protects merkle root history */
 
 struct merkle_tree_root system_merkle_root; /* The Merkle tree root (virtual PCR) */
-atomic_t container_count = ATOMIC_INIT(0);
 
-EXPORT_SYMBOL(container_list);
-EXPORT_SYMBOL(container_list_lock);
 EXPORT_SYMBOL(system_merkle_root);
-EXPORT_SYMBOL(container_count);
 
 /* SecurityFS interface */
 static struct dentry *bpfima_dir = NULL;
@@ -642,8 +636,8 @@ __bpf_kfunc_end_defs();
  * Forward declarations for securityfs functions only
  * (Merkle tree function declarations are earlier, before kfuncs)
  */
-static int create_container_securityfs(struct container_node *container);
-static void remove_container_securityfs(struct container_node *container);
+int create_container_securityfs(struct container_node *container);
+void remove_container_securityfs(struct container_node *container);
 
 /*
  * Merkle Tree Implementation for Container Tracking
@@ -848,19 +842,6 @@ static int add_merkle_root_history_entry(const u8 *value, const char *container_
  *
  * Returns: Pointer to container_node if found, NULL otherwise
  */
-struct container_node *find_container_by_id(const char *container_id)
-{
-    struct container_node *container;
-    
-    list_for_each_entry(container, &container_list, list) {
-        if (strcmp(container->id, container_id) == 0)
-            return container;
-    }
-    
-    return NULL;
-}
-EXPORT_SYMBOL(find_container_by_id);
-
 /**
  * create_container_node - Create and initialize a new container node
  * @container_id: Unique identifier for the container
@@ -870,51 +851,6 @@ EXPORT_SYMBOL(find_container_by_id);
  *
  * Returns: Pointer to new container_node on success, ERR_PTR on failure
  */
-struct container_node *create_container_node(const char *container_id)
-{
-    struct container_node *container;
-    unsigned long flags;
-    int ret;
-    
-    container = kzalloc(sizeof(*container), GFP_KERNEL);
-    if (!container)
-        return ERR_PTR(-ENOMEM);
-    
-    /* Initialize container structure */
-    strscpy(container->id, container_id, CONTAINER_ID_MAX_LEN);
-    INIT_LIST_HEAD(&container->measurement_list);
-    spin_lock_init(&container->measurement_lock);
-    memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
-    atomic_set(&container->measurement_count, 0);
-    container->securityfs_dir = NULL;
-    container->securityfs_measurements_file = NULL;
-    
-    /* Add to global container list */
-    spin_lock_irqsave(&container_list_lock, flags);
-    list_add_tail(&container->list, &container_list);
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    atomic_inc(&container_count);
-    
-    /* Create securityfs directory for this container */
-    ret = create_container_securityfs(container);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to create securityfs for container %s: %d\n",
-               container_id, ret);
-        /* Remove from list on failure */
-        spin_lock_irqsave(&container_list_lock, flags);
-        list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-        atomic_dec(&container_count);
-        kfree(container);
-        return ERR_PTR(ret);
-    }
-    
-    pr_info("bpfima: Created container node for %s\n", container_id);
-    return container;
-}
-EXPORT_SYMBOL(create_container_node);
-
 /**
  * add_container_measurement - Add a measurement to a container's list
  * @container: Container to add measurement to
@@ -1495,7 +1431,7 @@ static const struct file_operations container_measurements_fops = {
  *
  * Returns: 0 on success, negative error code on failure
  */
-static int create_container_securityfs(struct container_node *container)
+int create_container_securityfs(struct container_node *container)
 {
     if (!containers_dir) {
         pr_err("bpfima: containers_dir not initialized\n");
@@ -1526,6 +1462,9 @@ static int create_container_securityfs(struct container_node *container)
     return 0;
 }
 
+
+EXPORT_SYMBOL(create_container_securityfs);
+
 /*
  * remove_container_securityfs - Remove securityfs directory for a container
  * @container: Container node to remove directory for
@@ -1533,7 +1472,7 @@ static int create_container_securityfs(struct container_node *container)
  * Removes the securityfs directory and files for a container.
  * Uses securityfs_remove() which handles NULL and IS_ERR pointers safely.
  */
-static void remove_container_securityfs(struct container_node *container)
+void remove_container_securityfs(struct container_node *container)
 {
     if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file)) {
         securityfs_remove(container->securityfs_measurements_file);
@@ -1545,6 +1484,8 @@ static void remove_container_securityfs(struct container_node *container)
         container->securityfs_dir = NULL;
     }
 }
+
+EXPORT_SYMBOL(remove_container_securityfs);
 
 /*
  * bpfima_securityfs_init - Initialize SecurityFS interface for BPF-IMA
@@ -1809,52 +1750,12 @@ static int __init bpfima_init(void)
  * Must be called with container->measurement_lock held or when
  * no other threads can access the container.
  */
-void cleanup_container_measurements(struct container_node *container)
-{
-    struct measurement_entry *entry, *tmp;
-    
-    list_for_each_entry_safe(entry, tmp, &container->measurement_list, list) {
-        list_del(&entry->list);
-        kfree(entry);
-    }
-}
-EXPORT_SYMBOL(cleanup_container_measurements);
-
 /**
  * cleanup_all_containers - Remove and free all container nodes
  *
  * Removes all containers from the list and frees their resources.
  * This includes securityfs entries and all measurement data.
  */
-void cleanup_all_containers(void)
-{
-    struct container_node *container, *tmp;
-    unsigned long flags;
-    int count = 0;
-    
-    spin_lock_irqsave(&container_list_lock, flags);
-    list_for_each_entry_safe(container, tmp, &container_list, list) {
-        list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-        
-        /* Remove securityfs entries */
-        remove_container_securityfs(container);
-        
-        /* Clean up measurements */
-        cleanup_container_measurements(container);
-        
-        /* Free container */
-        kfree(container);
-        count++;
-        
-        spin_lock_irqsave(&container_list_lock, flags);
-    }
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    pr_info("bpfima: Cleaned up %d containers\n", count);
-}
-EXPORT_SYMBOL(cleanup_all_containers);
-
 /**
  * cleanup_host_measurements - Free all host measurement entries
  */
