@@ -1,14 +1,3 @@
-/*
- * Measurement Utilities for BPF-IMA
- * 
- * Common helper functions for creating and managing measurement entries.
- * This module reduces code duplication across container and host measurements.
- */
-
-#include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/string.h>
-
 #include "bpfima_common.h"
 #include "bpfima_measurements.h"
 

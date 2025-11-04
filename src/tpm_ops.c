@@ -1,15 +1,3 @@
-/*
- * TPM Operations for BPF-IMA
- * 
- * Common functions for extending TPM PCR values with measurements.
- * These functions are shared between different parts of the BPF-IMA module.
- */
-
-#include <linux/kernel.h>
-#include <linux/tpm.h>
-#include <crypto/hash_info.h>
-#include <crypto/sha2.h>
-
 #include "bpfima_common.h"
 
 #define TPM_PCR_INDEX 23

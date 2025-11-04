@@ -5,13 +5,6 @@
  * the BPF-IMA module for SHA256 operations and duplicate detection.
  */
 
-#include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/crypto.h>
-#include <crypto/hash.h>
-#include <crypto/sha2.h>
-#include <linux/hashtable.h>
-
 #include "bpfima_common.h"
 
 #define HASH_TABLE_BITS 8

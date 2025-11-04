@@ -1,7 +1,6 @@
 #ifndef BPFIMA_MEASUREMENTS_H
 #define BPFIMA_MEASUREMENTS_H
 
-#include <linux/slab.h>
 #include "bpfima_common.h"
 
 /* Measurement entry creation helper */
