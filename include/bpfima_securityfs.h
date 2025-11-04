@@ -65,4 +65,7 @@ void bpfima_securityfs_cleanup(void);
 int create_container_securityfs(struct container_node *container);
 void remove_container_securityfs(struct container_node *container);
 
+int create_container_securityfs(struct container_node *container);
+void remove_container_securityfs(struct container_node *container);
+
 #endif /* BPFIMA_SECURITYFS_H */

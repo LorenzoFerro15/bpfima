@@ -481,7 +481,6 @@ int container_measurements_open(struct inode *inode, struct file *file)
  */
 void bpfima_securityfs_cleanup(void)
 {
-    /* Remove individual files under bpfima_dir first */
     if (container_list_file) {
         securityfs_remove(container_list_file);
         container_list_file = NULL;
@@ -518,5 +517,63 @@ void bpfima_securityfs_cleanup(void)
     }
     
     pr_info("bpfima: SecurityFS interface removed\n");
+}
+
+/*
+ * create_container_securityfs - Create securityfs directory for a new container
+ * @container: Container node to create directory for
+ *
+ * Creates a subdirectory under /sys/kernel/security/bpfima/containers/<container_id>/
+ * and a measurements file within it.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int create_container_securityfs(struct container_node *container)
+{
+    if (!containers_dir) {
+        pr_err("bpfima: containers_dir not initialized\n");
+        return -EINVAL;
+    }
+    
+    container->securityfs_dir = securityfs_create_dir(container->id, containers_dir);
+    if (IS_ERR(container->securityfs_dir)) {
+        pr_err("bpfima: Failed to create securityfs dir for container %s: %ld\n",
+               container->id, PTR_ERR(container->securityfs_dir));
+        return PTR_ERR(container->securityfs_dir);
+    }
+    
+    container->securityfs_measurements_file = 
+        securityfs_create_file("measurements", 0444, container->securityfs_dir,
+                              container, &container_measurements_fops);
+    if (IS_ERR(container->securityfs_measurements_file)) {
+        pr_err("bpfima: Failed to create measurements file for container %s: %ld\n",
+               container->id, PTR_ERR(container->securityfs_measurements_file));
+        securityfs_remove(container->securityfs_dir);
+        container->securityfs_dir = NULL;
+        return PTR_ERR(container->securityfs_measurements_file);
+    }
+    
+    pr_info("bpfima: Created securityfs for container %s\n", container->id);
+    return 0;
+}
+
+/*
+ * remove_container_securityfs - Remove securityfs directory for a container
+ * @container: Container node to remove directory for
+ *
+ * Removes the securityfs directory and files for a container.
+ * Uses securityfs_remove() which handles NULL and IS_ERR pointers safely.
+ */
+void remove_container_securityfs(struct container_node *container)
+{
+    if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file)) {
+        securityfs_remove(container->securityfs_measurements_file);
+        container->securityfs_measurements_file = NULL;
+    }
+    
+    if (container->securityfs_dir && !IS_ERR(container->securityfs_dir)) {
+        securityfs_remove(container->securityfs_dir);
+        container->securityfs_dir = NULL;
+    }
 }
 
