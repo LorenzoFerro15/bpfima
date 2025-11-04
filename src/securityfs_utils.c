@@ -47,6 +47,51 @@ const struct file_operations merkle_root_fops = {
     .release = single_release,
 };
 
+const struct seq_operations container_list_seq_ops = {
+    .start = container_list_seq_start,
+    .next = container_list_seq_next,
+    .stop = container_list_seq_stop,
+    .show = container_list_seq_show,
+};
+
+const struct file_operations container_list_fops = {
+    .owner = THIS_MODULE,
+    .open = container_list_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = seq_release,
+};
+
+const struct seq_operations merkle_root_history_seq_ops = {
+    .start = merkle_root_history_seq_start,
+    .next = merkle_root_history_seq_next,
+    .stop = merkle_root_history_seq_stop,
+    .show = merkle_root_history_seq_show,
+};
+
+const struct file_operations merkle_root_history_fops = {
+    .owner = THIS_MODULE,
+    .open = merkle_root_history_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = seq_release,
+};
+
+const struct seq_operations container_measurements_seq_ops = {
+    .start = container_measurements_seq_start,
+    .next = container_measurements_seq_next,
+    .stop = container_measurements_seq_stop,
+    .show = container_measurements_seq_show,
+};
+
+const struct file_operations container_measurements_fops = {
+    .owner = THIS_MODULE,
+    .open = container_measurements_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = seq_release,
+};
+
 struct dentry *bpfima_dir = NULL;
 struct dentry *measurements_file = NULL;
 struct dentry *status_file = NULL;
@@ -290,6 +335,134 @@ int merkle_root_open(struct inode *inode, struct file *file)
     return single_open(file, merkle_root_show, NULL);
 }
 
+int merkle_root_history_seq_show(struct seq_file *s, void *v)
+{
+    struct merkle_root_entry *entry = list_entry(v, struct merkle_root_entry, list);
+    int i;
+    
+    for (i = 0; i < MERKLE_HASH_SIZE; i++)
+        seq_printf(s, "%02x", entry->value[i]);
+    
+    if (entry->source_container_id[0] != '\0')
+        seq_printf(s, " container=%s", entry->source_container_id);
+    else
+        seq_printf(s, " source=host");
+    
+    seq_printf(s, "\n");
+    return 0;
+}
+
+void *merkle_root_history_seq_start(struct seq_file *s, loff_t *pos)
+{
+    spin_lock(&merkle_root_history_lock);
+    return seq_list_start(&merkle_root_history, *pos);
+}
+
+void *merkle_root_history_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    return seq_list_next(v, &merkle_root_history, pos);
+}
+
+void merkle_root_history_seq_stop(struct seq_file *s, void *v)
+{
+    spin_unlock(&merkle_root_history_lock);
+}
+
+int merkle_root_history_open(struct inode *inode, struct file *file)
+{
+    return seq_open(file, &merkle_root_history_seq_ops);
+}
+
+/*
+ * container_list_show - Display list of all containers
+ */
+int container_list_seq_show(struct seq_file *s, void *v)
+{
+    struct container_node *container = list_entry(v, struct container_node, list);
+    int i;
+    
+    seq_printf(s, "%s leaf_hash=", container->id);
+    
+    for (i = 0; i < MERKLE_HASH_SIZE; i++)
+        seq_printf(s, "%02x", container->leaf_hash[i]);
+    
+    seq_printf(s, " measurements=%d\n", atomic_read(&container->measurement_count));
+    
+    return 0;
+}
+
+void *container_list_seq_start(struct seq_file *s, loff_t *pos)
+{
+    spin_lock(&container_list_lock);
+    return seq_list_start(&container_list, *pos);
+}
+
+void *container_list_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    return seq_list_next(v, &container_list, pos);
+}
+
+void container_list_seq_stop(struct seq_file *s, void *v)
+{
+    spin_unlock(&container_list_lock);
+}
+
+int container_list_open(struct inode *inode, struct file *file)
+{
+    return seq_open(file, &container_list_seq_ops);
+}
+
+/*
+ * container_measurements_show - Display measurements for a specific container
+ * Uses inode->i_private to get the container_node pointer
+ */
+int container_measurements_seq_show(struct seq_file *s, void *v)
+{
+    struct measurement_entry *entry = list_entry(v, struct measurement_entry, list);
+    int i;
+    
+    for (i = 0; i < MERKLE_HASH_SIZE; i++)
+        seq_printf(s, "%02x", entry->digest[i]);
+    
+    seq_printf(s, " %s", entry->event_name);
+    
+    if (entry->event_data[0] != '\0')
+        seq_printf(s, " %s", entry->event_data);
+    
+    seq_printf(s, "\n");
+    return 0;
+}
+
+void *container_measurements_seq_start(struct seq_file *s, loff_t *pos)
+{
+    struct container_node *container = s->private;
+    spin_lock(&container->measurement_lock);
+    return seq_list_start(&container->measurement_list, *pos);
+}
+
+void *container_measurements_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    struct container_node *container = s->private;
+    return seq_list_next(v, &container->measurement_list, pos);
+}
+
+void container_measurements_seq_stop(struct seq_file *s, void *v)
+{
+    struct container_node *container = s->private;
+    spin_unlock(&container->measurement_lock);
+}
+
+int container_measurements_open(struct inode *inode, struct file *file)
+{
+    struct container_node *container = inode->i_private;
+    int ret = seq_open(file, &container_measurements_seq_ops);
+    if (ret == 0) {
+        struct seq_file *sf = file->private_data;
+        sf->private = container;
+    }
+    return ret;
+}
+
 /*
  * bpfima_securityfs_cleanup - Clean up SecurityFS interface
  *
@@ -334,13 +507,11 @@ void bpfima_securityfs_cleanup(void)
         measurements_file = NULL;
     }
     
-    /* Recursively remove containers directory and all per-container subdirectories */
     if (containers_dir && !IS_ERR(containers_dir)) {
         securityfs_recursive_remove(containers_dir);
         containers_dir = NULL;
     }
     
-    /* Finally, recursively remove the main bpfima directory */
     if (bpfima_dir && !IS_ERR(bpfima_dir)) {
         securityfs_recursive_remove(bpfima_dir);
         bpfima_dir = NULL;
