@@ -47,6 +47,17 @@ const struct file_operations merkle_root_fops = {
     .release = single_release,
 };
 
+struct dentry *bpfima_dir = NULL;
+struct dentry *measurements_file = NULL;
+struct dentry *status_file = NULL;
+char bpfima_dir_name[32] = "bpfima";
+
+struct dentry *containers_dir = NULL;
+struct dentry *host_measurements_file = NULL; 
+struct dentry *merkle_root_file = NULL;     
+struct dentry *merkle_root_history_file = NULL;
+struct dentry *container_list_file = NULL;   
+
 /*
  * measurements_seq_start - Start iterator for measurement list seq_file operations
  * @s: seq_file structure for output formatting

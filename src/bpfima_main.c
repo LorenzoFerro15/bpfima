@@ -5,17 +5,7 @@
 #include "bpfima_securityfs.h"
 
 /* SecurityFS interface */
-static struct dentry *bpfima_dir = NULL;
-static struct dentry *measurements_file = NULL;
-static struct dentry *status_file = NULL;
-static char bpfima_dir_name[32] = "bpfima";
-
-/* SecurityFS interface for container tracking and Merkle tree */
-static struct dentry *containers_dir = NULL;           /* /sys/kernel/security/bpfima/containers/ */
-static struct dentry *host_measurements_file = NULL;   /* Host measurement list */
-static struct dentry *merkle_root_file = NULL;         /* Current Merkle root hash */
-static struct dentry *merkle_root_history_file = NULL; /* History of root extensions */
-static struct dentry *container_list_file = NULL;      /* List of all containers */
+   /* List of all containers */
 
 /*
  * merkle_root_history_show - Display history of values extended into Merkle root
@@ -394,7 +384,7 @@ BTF_ID_FLAGS(func, bpf_container_create_or_get)
 BTF_ID_FLAGS(func, bpf_container_add_measurement)
 BTF_ID_FLAGS(func, bpf_host_add_measurement)
 BTF_ID_FLAGS(func, bpf_get_merkle_root)
-/* Task 6: Enhanced query kfuncs for bidirectional communication */
+
 BTF_ID_FLAGS(func, bpf_container_get_count)
 BTF_ID_FLAGS(func, bpf_container_get_measurement_count)
 BTF_ID_FLAGS(func, bpf_container_exists)

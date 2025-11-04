@@ -24,6 +24,16 @@ extern const struct seq_operations host_measurements_seq_ops;
 extern const struct file_operations host_measurements_fops; 
 extern const struct file_operations merkle_root_fops;
 
+extern struct dentry *bpfima_dir;
+extern struct dentry *measurements_file;
+extern struct dentry *status_file;
+extern char bpfima_dir_name[32];
+extern struct dentry *containers_dir;
+extern struct dentry *host_measurements_file;
+extern struct dentry *merkle_root_file;
+extern struct dentry *merkle_root_history_file;
+extern struct dentry *container_list_file;
+
 int merkle_root_show(struct seq_file *s, void *unused);
 int merkle_root_open(struct inode *inode, struct file *file);
 
