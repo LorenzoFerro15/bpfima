@@ -1,14 +1,3 @@
-/*
- * BPF Kernel Functions (kfuncs) for Container Tracking
- * 
- * These functions can be called from eBPF programs to interact
- * with the container tracking and Merkle tree system.
- */
-
-#include <linux/kernel.h>
-#include <linux/bpf.h>
-#include <linux/btf.h>
-
 #include "bpfima_common.h"
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
@@ -142,3 +131,98 @@ __bpf_kfunc int bpf_get_merkle_root(u8 *root_hash, u32 hash_size)
     
     return 0;
 }
+
+/**
+ * bpf_container_get_count - Get the total number of tracked containers
+ *
+ * Returns: Number of containers currently being tracked
+ */
+__bpf_kfunc int bpf_container_get_count(void)
+{
+    return atomic_read(&container_count);
+}
+
+/**
+ * bpf_container_get_measurement_count - Get measurement count for a container
+ * @container_id: Container identifier
+ *
+ * Returns: Number of measurements in the container, or negative error code
+ */
+__bpf_kfunc int bpf_container_get_measurement_count(const char *container_id)
+{
+    struct container_node *container;
+    unsigned long flags;
+    int count;
+    
+    if (!container_id || container_id[0] == '\0')
+        return -EINVAL;
+    
+    spin_lock_irqsave(&container_list_lock, flags);
+    container = find_container_by_id(container_id);
+    if (!container) {
+        spin_unlock_irqrestore(&container_list_lock, flags);
+        return -ENOENT;
+    }
+    count = atomic_read(&container->measurement_count);
+    spin_unlock_irqrestore(&container_list_lock, flags);
+    
+    return count;
+}
+
+/**
+ * bpf_container_exists - Check if a container is being tracked
+ * @container_id: Container identifier
+ *
+ * Returns: 1 if container exists, 0 if not, negative error code on failure
+ */
+__bpf_kfunc int bpf_container_exists(const char *container_id)
+{
+    struct container_node *container;
+    unsigned long flags;
+    
+    if (!container_id || container_id[0] == '\0')
+        return -EINVAL;
+    
+    spin_lock_irqsave(&container_list_lock, flags);
+    container = find_container_by_id(container_id);
+    spin_unlock_irqrestore(&container_list_lock, flags);
+    
+    return container ? 1 : 0;
+}
+
+/**
+ * bpf_get_container_leaf_hash - Get the Merkle leaf hash for a container
+ * @container_id: Container identifier
+ * @leaf_hash: Buffer to store the leaf hash (must be MERKLE_HASH_SIZE bytes)
+ * @hash_size: Size of the buffer (must be MERKLE_HASH_SIZE)
+ *
+ * Retrieves the current leaf hash for the specified container.
+ * The leaf hash represents the current state of all measurements in the container.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+__bpf_kfunc int bpf_get_container_leaf_hash(const char *container_id, u8 *leaf_hash, u32 hash_size)
+{
+    struct container_node *container;
+    unsigned long flags;
+    
+    if (!container_id || !leaf_hash)
+        return -EINVAL;
+    
+    if (hash_size != MERKLE_HASH_SIZE)
+        return -EINVAL;
+    
+    spin_lock_irqsave(&container_list_lock, flags);
+    container = find_container_by_id(container_id);
+    if (!container) {
+        spin_unlock_irqrestore(&container_list_lock, flags);
+        return -ENOENT;
+    }
+    
+    memcpy(leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
+    spin_unlock_irqrestore(&container_list_lock, flags);
+    
+    return 0;
+}
+
+

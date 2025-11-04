@@ -6,13 +6,8 @@
  * system state (virtual PCR value).
  */
 
-#include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/string.h>
-#include <linux/crypto.h>
-#include <linux/preempt.h>
-#include <linux/irqflags.h>
-#include <crypto/hash.h>
+// #include <linux/preempt.h>
+// #include <linux/irqflags.h>
 
 #include "bpfima_common.h"
 #include "bpfima_merkle.h"

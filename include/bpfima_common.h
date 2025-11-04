@@ -6,6 +6,25 @@
 #include <linux/spinlock.h>
 #include <linux/atomic.h>
 #include <crypto/sha2.h>
+#include <linux/ima.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/bpf.h>
+#include <linux/btf.h>
+#include <linux/btf_ids.h>
+#include <linux/fs.h>
+#include <linux/string.h>
+#include <linux/slab.h>
+#include <linux/crypto.h>
+#include <linux/tpm.h>
+#include <crypto/hash.h>
+#include <crypto/hash_info.h>
+#include <linux/security.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
+#include <linux/proc_fs.h>
+#include <linux/hashtable.h>
 
 /* Constants */
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
