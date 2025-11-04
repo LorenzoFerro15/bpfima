@@ -20,9 +20,7 @@ int add_container_measurement(struct container_node *container,
                               const char *event_data,
                               const u8 *digest);
 
-/* Host measurement functions */
-extern struct list_head host_measurement_list;
-extern spinlock_t host_measurement_lock;
+
 int add_host_measurement(const char *event_name,
                         const char *event_data,
                         const u8 *digest);

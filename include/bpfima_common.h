@@ -36,6 +36,13 @@
 #define CONTAINER_ID_MAX_LEN 128
 #define MERKLE_HASH_SIZE SHA256_DIGEST_SIZE
 
+/* Global measurement tracking - defined in kfuncs_measure.c */
+extern atomic_t measurement_count;
+extern struct list_head host_measurement_list;
+extern spinlock_t host_measurement_lock;
+extern spinlock_t measurement_list_lock;
+extern struct list_head bpf_measurement_list;
+
 /**
  * struct measurement_entry - Represents a single measurement/extension event
  * @list: Linked list node for maintaining measurement list
@@ -118,5 +125,8 @@ void cleanup_hash_table(void);
 /* TPM operations */
 int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
 int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name);
+
+int create_container_securityfs(struct container_node *container);
+void remove_container_securityfs(struct container_node *container);
 
 #endif /* BPFIMA_COMMON_H */

@@ -4,12 +4,6 @@
 #include <linux/bpf.h>
 #include <linux/btf.h>
 #include "bpfima_common.h"
-
-/* Global measurement tracking - defined in kfuncs_measure.c */
-extern struct list_head bpf_measurement_list;
-extern spinlock_t measurement_list_lock;
-extern atomic_t measurement_count;
-
 /* BPF kfunc declarations - Measurement tracking */
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, 
                                            const char *namespace_id, 

@@ -99,6 +99,9 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
  *
  * Returns: Total number of measurements recorded, negative error code on validation failure
  */
+
+__bpf_kfunc_start_defs();
+ 
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len)
 {
     printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u", 
@@ -392,3 +395,4 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
     return 0;
 }
 
+__bpf_kfunc_end_defs();
