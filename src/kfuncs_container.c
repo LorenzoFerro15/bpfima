@@ -3,6 +3,8 @@
 #include "bpfima_merkle.h"
 #include "bpfima_kfuncs.h"
 
+__bpf_kfunc_start_defs();
+
 /**
  * bpf_container_create_or_get - Create a new container or get existing one
  * @container_id: Unique container identifier
@@ -225,4 +227,4 @@ __bpf_kfunc int bpf_get_container_leaf_hash(const char *container_id, u8 *leaf_h
     return 0;
 }
 
-
+__bpf_kfunc_end_defs();
