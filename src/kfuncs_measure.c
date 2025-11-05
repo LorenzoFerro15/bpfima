@@ -1,5 +1,7 @@
 #include "bpfima_common.h"
 #include "bpfima_kfuncs.h"
+#include "bpfima_container.h"
+#include "bpfima_merkle.h"
 
 /* Global measurement tracking */
 LIST_HEAD(bpf_measurement_list);
@@ -84,43 +86,53 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
 }
 
 /*
- * bpf_ima_extend_measurement - BPF kfunc to add measurement to list and extend TPM PCR
+ * bpf_ima_extend_measurement - BPF kfunc to add measurement and extend TPM PCR
  * @event_name: Name/identifier of the event being measured (must not be null or empty)
- * @data: Event data payload to be measured (must not be null or empty) 
- * @data_len: Length of event data in bytes (must be > 0)
+ * @namespace_id: Container/namespace identifier (NULL for host measurements)
+ * @dependencies: Dependency chain information (e.g., parent process names)
+ * @additional_data: Additional event data (hash, metadata, etc.)
+ * @additional_data_len: Length of additional_data in bytes
  *
  * This is the main entry point for BPF programs to record integrity measurements.
- * Performs comprehensive parameter validation before delegating to process_measurement.
- * Validates that event_name and data are not null, empty, or zero-length.
  * 
+ * Flow:
+ * 1. Calculate hash from concatenated data (namespace_id | dependencies | additional_data)
+ * 2. If namespace_id is provided:
+ *    a. Find or create container node
+ *    b. Add measurement to container's measurement list
+ *    c. Recalculate container's leaf hash
+ *    d. Add leaf hash to Merkle root history
+ *    e. Recalculate global Merkle root
+ *    f. Extend TPM PCR with new Merkle root
+ * 3. If namespace_id is NULL, use legacy host measurement system
+ *
  * Can be called from both atomic and non-atomic contexts. TPM operations will be
  * deferred if called from atomic context to prevent scheduling while atomic bugs.
  *
- * Returns: Total number of measurements recorded, negative error code on validation failure
+ * Returns: 0 on success, negative error code on failure
  */
 
 __bpf_kfunc_start_defs();
  
 __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len)
 {
+    struct container_node *container = NULL;
+    unsigned long flags;
+    size_t total_len = 0;
+    char *concat_data = NULL;
+    size_t offset = 0;
+    u8 hash_value[SHA256_DIGEST_SIZE];
+    int ret = -1;
+    char separator = '|';
+    bool can_sleep = !in_atomic() && !irqs_disabled();
+
     printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u", 
         event_name ? event_name : "(null)", 
         namespace_id ? namespace_id : "(null)", 
         dependencies ? dependencies : "(null)", 
         additional_data_len);
-    if (additional_data && additional_data_len > 0) {
-        char buf[129];
-        size_t print_len = additional_data_len < 128 ? additional_data_len : 128;
-        memcpy(buf, additional_data, print_len);
-        buf[print_len] = '\0';
-        printk(KERN_INFO "bpfima: additional_data='%s'", buf);
-    }
-    size_t total_len = 0;
-    char *concat_data = NULL;
-    size_t offset = 0;
-    int ret = -1;
-    char separator = '|';
 
+    /* Parameter validation */
     if (!event_name && !namespace_id && !dependencies && !additional_data) {
         printk(KERN_ERR "bpfima: All parameters are null\n");
         return -EINVAL;
@@ -129,6 +141,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
         return -EINVAL;
     }
+
     if (event_name)
         total_len += strlen(event_name);
     if (namespace_id)
@@ -137,39 +150,88 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         total_len += strlen(dependencies);
     if (additional_data && additional_data_len > 0)
         total_len += additional_data_len;
+    
+    total_len += 3;
+
     if (total_len == 0) {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
         return -EINVAL;
     }
-    concat_data = kmalloc(total_len, GFP_KERNEL);
+
+    concat_data = kmalloc(total_len, can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!concat_data) {
         printk(KERN_ERR "bpfima: kmalloc failed\n");
         return -ENOMEM;
     }
 
-    if (namespace_id) {
-        size_t len = strlen(namespace_id);
-        memcpy(concat_data + offset, namespace_id, len);
-        offset += len;
-        memcpy(concat_data + offset, &separator, 1);
-        offset += 1;
-    }
     if (dependencies) {
         size_t len = strlen(dependencies);
         memcpy(concat_data + offset, dependencies, len);
         offset += len;
-        memcpy(concat_data + offset, &separator, 1);
-        offset += 1;
+        concat_data[offset++] = separator;
     }
     if (additional_data && additional_data_len > 0) {
         memcpy(concat_data + offset, additional_data, additional_data_len);
         offset += additional_data_len;
-        memcpy(concat_data + offset, &separator, 1);
-        offset += 1;
     }
-    ret = process_measurement(event_name ? event_name : "", concat_data, total_len);
+
+    /* Step 2: Calculate hash of the concatenated data */
+    ret = calculate_sha256_hash(concat_data, offset, hash_value);
+    if (ret) {
+        printk(KERN_ERR "bpfima: Failed to calculate SHA256 hash: %d\n", ret);
+        kfree(concat_data);
+        return ret;
+    }
+
+    printk(KERN_DEBUG "bpfima: Computed hash: %*ph\n", SHA256_DIGEST_SIZE, hash_value);
+
+    /* Step 3: Check if this is a container measurement */
+    if (namespace_id && namespace_id[0] != '\0') {
+        /* Container/namespace measurement flow */
+        printk(KERN_INFO "bpfima: Processing container measurement for namespace: %s\n", namespace_id);
+
+        /* Find or create container */
+        spin_lock_irqsave(&container_list_lock, flags);
+        container = find_container_by_id(namespace_id);
+        spin_unlock_irqrestore(&container_list_lock, flags);
+
+        if (!container) {
+            printk(KERN_INFO "bpfima: Container %s not found, creating new one\n", namespace_id);
+            container = create_container_node(namespace_id);
+            if (IS_ERR(container)) {
+                printk(KERN_ERR "bpfima: Failed to create container %s: %ld\n",
+                       namespace_id, PTR_ERR(container));
+                kfree(concat_data);
+                return PTR_ERR(container);
+            }
+        }
+
+        /* Step 5: Add measurement directly to namespace/container list */
+        ret = add_container_measurement(container, event_name, concat_data, hash_value);
+        if (ret < 0) {
+            printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",
+                   namespace_id, ret);
+            kfree(concat_data);
+            return ret;
+        }
+
+        printk(KERN_INFO "bpfima:  Successfully added measurement to container %s\n", namespace_id);
+        printk(KERN_INFO "bpfima:  Leaf hash updated and added to history\n");
+        printk(KERN_INFO "bpfima:  Merkle root recalculated and TPM extended\n");
+
+    } else {
+        /* Host-level measurement (legacy system) */
+        printk(KERN_INFO "bpfima: Processing host-level measurement\n");
+        ret = process_measurement(event_name ? event_name : "", concat_data, offset);
+        if (ret < 0) {
+            printk(KERN_ERR "bpfima: Failed to process host measurement: %d\n", ret);
+            kfree(concat_data);
+            return ret;
+        }
+    }
+
     kfree(concat_data);
-    return ret;
+    return 0;
 }
 
 /*
