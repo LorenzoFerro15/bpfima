@@ -89,7 +89,6 @@ BTF_ID_FLAGS(func, bpf_tpm_is_available)
 BTF_ID_FLAGS(func, bpf_ima_print_measurement_list)
 BTF_ID_FLAGS(func, bpf_ima_file_hash_custom)
 BTF_ID_FLAGS(func, bpf_container_create_or_get)
-BTF_ID_FLAGS(func, bpf_container_add_measurement)
 BTF_ID_FLAGS(func, bpf_host_add_measurement)
 BTF_ID_FLAGS(func, bpf_get_merkle_root)
 

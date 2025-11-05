@@ -43,50 +43,6 @@ __bpf_kfunc int bpf_container_create_or_get(const char *container_id)
     pr_info("bpfima: Created new container: %s\n", container_id);
     return 0;
 }
-
-/**
- * bpf_container_add_measurement - Add a measurement to a container
- */
-__bpf_kfunc int bpf_container_add_measurement(const char *container_id,
-                                               const char *event_name,
-                                               const char *event_data,
-                                               const u8 *digest,
-                                               u32 digest_size)
-{
-    struct container_node *container;
-    unsigned long flags;
-    int ret;
-    
-    if (!container_id || !event_name || !digest)
-        return -EINVAL;
-    
-    if (digest_size != MERKLE_HASH_SIZE)
-        return -EINVAL;
-    
-    /* Find the container */
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
-    spin_unlock_irqrestore(&container_list_lock, flags);
-    
-    if (!container) {
-        pr_err("bpfima: Container %s not found\n", container_id);
-        return -ENOENT;
-    }
-    
-    /* Add measurement to container */
-    ret = add_container_measurement(container, event_name, event_data, digest);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to add measurement to container %s: %d\n",
-               container_id, ret);
-        return ret;
-    }
-    
-    pr_debug("bpfima: Added measurement '%s' to container %s\n",
-             event_name, container_id);
-    
-    return 0;
-}
-
 /**
  * bpf_host_add_measurement - Add a measurement to the host measurement list
  */

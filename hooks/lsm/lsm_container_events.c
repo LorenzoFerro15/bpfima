@@ -15,7 +15,7 @@
 
 /* External kfunc declarations */
 extern int bpf_container_create_or_get(const char *container_id) __ksym;
-extern int bpf_container_add_measurement(const char *container_id, const char *event_name, const char *event_data, const u8 *digest, u32 digest_size) __ksym;
+extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_get_merkle_root(u8 *root_hash, u32 hash_size) __ksym;
 extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
 
@@ -275,10 +275,14 @@ int BPF_PROG(lsm_container_file_post_open, struct file *file, int mask)
         file_scalar != 0) {
         ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
         if (ret == 0) {
-            /* Channel 4: Add measurement via kfunc (triggers Merkle tree update) */
+            /* Convert digest to hex string for additional_data */
+            char digest_hex[65] = {0};
+            bytes_to_hex_str(digest, 32, digest_hex, sizeof(digest_hex));
+            
+            /* Streamlined measurement via bpf_ima_extend_measurement */
             char event_name[] = "file_open";
-            ret = bpf_container_add_measurement(cgroup_name, event_name, comm, 
-                                               digest, sizeof(digest));
+            ret = bpf_ima_extend_measurement(event_name, cgroup_name, comm, 
+                                            digest_hex, 64);
             if (ret == 0) {
                 /* Channel 5: Update statistics in BPF maps */
                 update_container_stats(cgroup_name);
@@ -369,9 +373,14 @@ int BPF_PROG(lsm_container_exec_enhanced, struct linux_binprm *bprm)
             file_scalar != 0) {
             ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
             if (ret == 0) {
+                /* Convert digest to hex string for additional_data */
+                char digest_hex[65] = {0};
+                bytes_to_hex_str(digest, 32, digest_hex, sizeof(digest_hex));
+                
+                /* Streamlined measurement via bpf_ima_extend_measurement */
                 char event_name[] = "exec";
-                ret = bpf_container_add_measurement(cgroup_name, event_name, comm,
-                                                   digest, sizeof(digest));
+                ret = bpf_ima_extend_measurement(event_name, cgroup_name, comm,
+                                                digest_hex, 64);
                 if (ret == 0) {
                     update_container_stats(cgroup_name);
                     update_global_stat(1, 1);
