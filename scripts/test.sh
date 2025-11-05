@@ -3,27 +3,50 @@
 
 set -e
 
+# Default settings
+VERBOSE=0
+BPF_HOOK=""
+
 # Parse command line arguments
-if [ "$#" -eq 1 ]; then
-    if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
-        log_info "Usage: $0 [BPF_HOOK]"
-        log_info "  BPF_HOOK: Name of the BPF object file to load (with or without .o extension)"
-        log_info "  Default: lsm_container_events"
-        log_info "  Examples:"
-        log_info "    $0                                    # Use default hook"
-        log_info "    $0 lsm_mmap_file                     # Load specific hook"
-        log_info "    $0 lsm_bprm_check_security.o         # Load another hook (with .o)"
-        exit 0
-    else
-        # Add .o extension if not already present
-        if [[ "$1" == *.o ]]; then
-            BPF_OBJECT="$BUILD_DIR/$1"
-        else
-            BPF_OBJECT="$BUILD_DIR/$1.o"
-        fi
-    fi
-else
-    BPF_OBJECT="$BUILD_DIR/lsm_container_events.o"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS] [BPF_HOOK]"
+            echo ""
+            echo "Options:"
+            echo "  -v, --verbose    Enable verbose output"
+            echo "  -h, --help       Show this help message"
+            echo ""
+            echo "Arguments:"
+            echo "  BPF_HOOK         Name of the BPF object file to load (with or without .o extension)"
+            echo "                   Default: lsm_container_events"
+            echo ""
+            echo "Examples:"
+            echo "  $0                                    # Use default hook"
+            echo "  $0 -v                                 # Use default hook with verbose output"
+            echo "  $0 lsm_mmap_file                     # Load specific hook"
+            echo "  $0 -v lsm_bprm_check_security        # Load hook with verbose output"
+            exit 0
+            ;;
+        *)
+            if [ -z "$BPF_HOOK" ]; then
+                BPF_HOOK="$1"
+            else
+                echo "Error: Unknown argument '$1'"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Set default BPF hook if not specified
+if [ -z "$BPF_HOOK" ]; then
+    BPF_HOOK="lsm_container_events"
 fi
 
 # Check root
@@ -37,17 +60,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 TEST_DIR="/tmp/bpfima_test"
-CONTAINER_NAME="bpfima_test_container"
+CONTAINER_NAME_PREFIX="bpfima_test"
 
-# Get BPF hook name from argument or use default
-BPF_HOOK="${1:-lsm_container_events}"
-BPF_OBJECT="$BUILD_DIR/${BPF_HOOK}.o"
+# Add .o extension if not already present
+if [[ "$BPF_HOOK" == *.o ]]; then
+    BPF_OBJECT="$BUILD_DIR/$BPF_HOOK"
+else
+    BPF_OBJECT="$BUILD_DIR/${BPF_HOOK}.o"
+fi
 
 cd "$PROJECT_ROOT"
 
 # Logging functions
 log_info() {
     echo "[INFO] $1"
+}
+
+log_verbose() {
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "[VERBOSE] $1"
+    fi
 }
 
 log_warn() {
@@ -75,18 +107,21 @@ cleanup() {
         sleep 1
     fi
     
-    # Remove containers
     if [ -n "$CONTAINER_CLI" ]; then
-        log_info "Removing test container"
-        $CONTAINER_CLI rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        log_info "Removing test containers"
+        for container in nginx redis postgres; do
+            $CONTAINER_CLI rm -f "${CONTAINER_NAME_PREFIX}_${container}" >/dev/null 2>&1 || true
+        done
     else
         # Try both if CONTAINER_CLI not set
-        if command -v docker >/dev/null 2>&1; then
-            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        fi
-        if command -v podman >/dev/null 2>&1; then
-            podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        fi
+        for container in nginx redis postgres; do
+            if command -v docker >/dev/null 2>&1; then
+                docker rm -f "${CONTAINER_NAME_PREFIX}_${container}" >/dev/null 2>&1 || true
+            fi
+            if command -v podman >/dev/null 2>&1; then
+                podman rm -f "${CONTAINER_NAME_PREFIX}_${container}" >/dev/null 2>&1 || true
+            fi
+        done
     fi
     
     # Wait a bit for BPF programs to detach
@@ -114,9 +149,16 @@ log_info "BPF-IMA Test Starting"
 
 # 1. Build
 log_info "Building..."
-if ! make all > /dev/null 2>&1; then
-    log_err "Build failed"
-    exit 1
+if [ "$VERBOSE" -eq 1 ]; then
+    if ! make all; then
+        log_err "Build failed"
+        exit 1
+    fi
+else
+    if ! make all > /dev/null 2>&1; then
+        log_err "Build failed"
+        exit 1
+    fi
 fi
 log_info "Build successful"
 
@@ -160,48 +202,138 @@ fi
 log_info "eBPF program loaded (PID: $LOADER_PID)"
 
 # 4. Run container test
-log_info "Starting container test"
+log_info "Starting container tests"
 
 CONTAINER_CLI="docker"
 
 log_info "Using container runtime: $CONTAINER_CLI"
 
-if ! $CONTAINER_CLI pull alpine:latest 2>&1 | grep -v "up to date"; then
-    log_warn "Failed to pull alpine image"
-fi
+# Test with multiple different container images
+IMAGES=("nginx:latest" "redis:latest" "postgres:latest")
+CONTAINERS=("nginx" "redis" "postgres")
 
-log_info "Starting container: $CONTAINER_NAME"
-if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm alpine:latest sleep 300 2>&1; then
-    log_err "Failed to start container"
-    exit 1
-fi
-log_info "Container started"
-
-# 5. Perform file operations in container
-log_info "Performing file operations in container"
-$CONTAINER_CLI exec "$CONTAINER_NAME" sh -c "
-    echo 'test content' > /tmp/test1.txt &&
-    echo 'more data' > /tmp/test2.txt &&
-    ls -la /tmp &&
-    cat /tmp/test1.txt > /dev/null &&
-    cat /tmp/test2.txt > /dev/null
-" >/dev/null 2>&1 || log_warn "Some container operations failed"
+for i in "${!IMAGES[@]}"; do
+    IMAGE="${IMAGES[$i]}"
+    CONTAINER="${CONTAINERS[$i]}"
+    CONTAINER_NAME="${CONTAINER_NAME_PREFIX}_${CONTAINER}"
+    
+    log_info "Pulling image: $IMAGE"
+    if [ "$VERBOSE" -eq 1 ]; then
+        if ! $CONTAINER_CLI pull "$IMAGE"; then
+            log_warn "Failed to pull $IMAGE"
+            continue
+        fi
+    else
+        if ! $CONTAINER_CLI pull "$IMAGE" 2>&1 | grep -v "up to date" | grep -q .; then
+            log_verbose "Image $IMAGE already up to date or pulled successfully"
+        fi
+    fi
+    
+    log_info "Starting container: $CONTAINER_NAME (image: $IMAGE)"
+    
+    # Start container with appropriate settings for each image
+    case "$CONTAINER" in
+        nginx)
+            if [ "$VERBOSE" -eq 1 ]; then
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm "$IMAGE"; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            else
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm "$IMAGE" >/dev/null 2>&1; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            fi
+            ;;
+        redis)
+            if [ "$VERBOSE" -eq 1 ]; then
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm "$IMAGE"; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            else
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm "$IMAGE" >/dev/null 2>&1; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            fi
+            ;;
+        postgres)
+            if [ "$VERBOSE" -eq 1 ]; then
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm -e POSTGRES_PASSWORD=testpass "$IMAGE"; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            else
+                if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm -e POSTGRES_PASSWORD=testpass "$IMAGE" >/dev/null 2>&1; then
+                    log_err "Failed to start $CONTAINER_NAME"
+                    continue
+                fi
+            fi
+            ;;
+    esac
+    
+    log_info "Container started: $CONTAINER_NAME"
+    sleep 2
+    
+    # Perform file operations in container
+    log_info "Performing file operations in $CONTAINER_NAME"
+    
+    case "$CONTAINER" in
+        nginx)
+            CMD="sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /usr/share/nginx/html/ > /dev/null'"
+            ;;
+        redis)
+            CMD="sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /data/ > /dev/null'"
+            ;;
+        postgres)
+            CMD="bash -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /var/lib/postgresql/ > /dev/null'"
+            ;;
+    esac
+    
+    if [ "$VERBOSE" -eq 1 ]; then
+        log_verbose "Executing in $CONTAINER_NAME: $CMD"
+        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" $CMD; then
+            log_warn "Some operations failed in $CONTAINER_NAME"
+        fi
+    else
+        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" $CMD >/dev/null 2>&1; then
+            log_warn "Some operations failed in $CONTAINER_NAME"
+        fi
+    fi
+    
+    log_info "File operations completed in $CONTAINER_NAME"
+    sleep 1
+done
 
 sleep 2
-log_info "File operations completed"
+log_info "All container operations completed"
 
 # 6. Check securityfs
-if [ -d "/sys/kernel/security/bpfima/containers" ]; then
-    CONTAINER_COUNT=$(ls -1 /sys/kernel/security/bpfima/containers/ 2>/dev/null | wc -l)
+if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
+    CONTAINER_COUNT=$(ls -1 /sys/kernel/security/bpfima/namespaces/ 2>/dev/null | wc -l)
     log_info "Containers tracked in securityfs: $CONTAINER_COUNT"
+    if [ "$VERBOSE" -eq 1 ]; then
+        log_verbose "Namespace IDs:"
+        ls -1 /sys/kernel/security/bpfima/namespaces/ 2>/dev/null || true
+    fi
 else
     log_warn "securityfs directory not found"
 fi
 
-# 7. Stop container
-log_info "Stopping container"
-$CONTAINER_CLI stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-log_info "Container stopped"
+# 7. Stop containers
+log_info "Stopping containers"
+for container in nginx redis postgres; do
+    CONTAINER_NAME="${CONTAINER_NAME_PREFIX}_${container}"
+    if [ "$VERBOSE" -eq 1 ]; then
+        log_verbose "Stopping $CONTAINER_NAME"
+        $CONTAINER_CLI stop "$CONTAINER_NAME" 2>&1 || true
+    else
+        $CONTAINER_CLI stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+done
+log_info "Containers stopped"
 
 # 8. Display summary
 log_info "Test completed successfully"
@@ -210,7 +342,11 @@ log_info "Check logs with: dmesg | grep bpfima"
 # Show recent kernel messages
 if dmesg | grep -q bpfima; then
     log_info "Recent kernel messages:"
-    dmesg | grep bpfima | tail -10
+    if [ "$VERBOSE" -eq 1 ]; then
+        dmesg | grep bpfima | tail -20
+    else
+        dmesg | grep bpfima | tail -10
+    fi
 fi
 
 # Wait a moment for any final events

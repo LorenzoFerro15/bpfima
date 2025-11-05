@@ -56,7 +56,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     int ret;
     int cgroup_id;
     u32 scratch_key = 0;
-    char event_name[] = "bprm_file_exec"; 
+    char event_name[64] = {0}; 
     struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
 
     char stack_dependencies_buf[16] = {0};
@@ -160,14 +160,13 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     }
 
     const char *fname = BPF_CORE_READ(bprm, filename);
-    char fname_buf[64] = {0};
     if (fname) {
-        bpf_probe_read_kernel_str(fname_buf, sizeof(fname_buf), fname);
-        bpf_printk(" filename: %s\n", fname_buf);
+        bpf_probe_read_kernel_str(event_name, sizeof(event_name), fname);
+        bpf_printk(" filename: %s\n", event_name);
     }
     
     if (event_name[0] == '\0') {
-        __builtin_memcpy(event_name, "bprm_file_exec", 15);
+        __builtin_memcpy(event_name, "unknown", 8);
     }
     
     bpf_printk(" dependencies: %s\n", deps);

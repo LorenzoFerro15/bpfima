@@ -132,7 +132,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         dependencies ? dependencies : "(null)", 
         additional_data_len);
 
-    /* Parameter validation */
     if (!event_name && !namespace_id && !dependencies && !additional_data) {
         printk(KERN_ERR "bpfima: All parameters are null\n");
         return -EINVAL;
@@ -142,8 +141,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -EINVAL;
     }
 
-    if (event_name)
-        total_len += strlen(event_name);
     if (namespace_id)
         total_len += strlen(namespace_id);
     if (dependencies)
@@ -151,7 +148,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
     if (additional_data && additional_data_len > 0)
         total_len += additional_data_len;
     
-    total_len += 4; 
+    total_len += 3; 
 
     if (total_len == 0) {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
@@ -164,12 +161,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -ENOMEM;
     }
 
-    if (event_name) {
-        size_t len = strlen(event_name);
-        memcpy(concat_data + offset, event_name, len);
-        offset += len;
-        concat_data[offset++] = separator;
-    }
+    /* Build template data: namespace_id|dependencies|additional_data */
     if (namespace_id) {
         size_t len = strlen(namespace_id);
         memcpy(concat_data + offset, namespace_id, len);
@@ -187,7 +179,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         offset += additional_data_len;
     }
 
-    /* Step 2: Calculate hash of the concatenated data */
     ret = calculate_sha256_hash(concat_data, offset, hash_value);
     if (ret) {
         printk(KERN_ERR "bpfima: Failed to calculate SHA256 hash: %d\n", ret);
@@ -197,12 +188,9 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
 
     printk(KERN_DEBUG "bpfima: Computed template hash over all fields: %*ph\n", SHA256_DIGEST_SIZE, hash_value);
 
-    /* Step 3: Check if this is a container measurement */
     if (namespace_id && namespace_id[0] != '\0') {
-        /* Container/namespace measurement flow */
         printk(KERN_INFO "bpfima: Processing container measurement for namespace: %s\n", namespace_id);
 
-        /* Find or create container */
         spin_lock_irqsave(&container_list_lock, flags);
         container = find_container_by_id(namespace_id);
         spin_unlock_irqrestore(&container_list_lock, flags);
@@ -218,7 +206,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
             }
         }
 
-        /* Step 5: Add measurement directly to namespace/container list */
         ret = add_container_measurement(container, event_name, concat_data, hash_value);
         if (ret < 0) {
             printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",
