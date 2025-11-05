@@ -43,6 +43,9 @@ extern spinlock_t host_measurement_lock;
 extern spinlock_t measurement_list_lock;
 extern struct list_head bpf_measurement_list;
 
+/* TPM serialization mutex - defined in tpm_ops.c */
+extern struct mutex tpm_ops_mutex;
+
 /**
  * struct measurement_entry - Represents a single measurement/extension event
  * @list: Linked list node for maintaining measurement list

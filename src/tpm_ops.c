@@ -3,6 +3,8 @@
 #define TPM_PCR_INDEX 23
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 
+DEFINE_MUTEX(tpm_ops_mutex);
+
 /**
  * extend_tpm_pcr - Extend TPM Platform Configuration Register with measurement
  * @hash_value: SHA256 digest to extend into the PCR (must be SHA256_DIGEST_SIZE bytes)
@@ -23,9 +25,23 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
     struct tpm_digest digest[1];
     int ret;
 
+    if (!hash_value || !event_name) {
+        printk(KERN_ERR "bpfima: Invalid parameters to extend_tpm_pcr\n");
+        return -EINVAL;
+    }
+
+    if (in_atomic() || irqs_disabled()) {
+        printk(KERN_INFO "bpfima: Skipping TPM extend from atomic context for event: %s\n", 
+               event_name);
+        return -EAGAIN;
+    }
+
+    mutex_lock(&tpm_ops_mutex);
+
     chip = tpm_default_chip();
     if (!chip) {
-        printk(KERN_WARNING "TPM not available, measurement added to list only\n");
+        mutex_unlock(&tpm_ops_mutex);
+        printk(KERN_WARNING "bpfima: TPM not available, measurement added to list only\n");
         return -ENODEV;
     }
 
@@ -34,14 +50,20 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
     memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
     
     ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-    if (ret < 0) {
-        printk(KERN_ERR "Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
-    } else {
-        printk(KERN_INFO "Extended TPM PCR %d with measurement for event: %s\n", TPM_PCR_INDEX, event_name);
-    }
     
     tpm_put_ops(chip);
-    return ret;
+
+    mutex_unlock(&tpm_ops_mutex);
+
+    if (ret != 0) {
+        printk(KERN_ERR "bpfima: Failed to extend TPM PCR %d for event '%s': TPM RC %d\n", 
+               TPM_PCR_INDEX, event_name, ret);
+        return ret > 0 ? -EIO : ret;
+    }
+
+    printk(KERN_INFO "bpfima: Successfully extended TPM PCR %d for event: %s\n", 
+           TPM_PCR_INDEX, event_name);
+    return 0;
 }
 
 /**
@@ -68,8 +90,22 @@ int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
     struct tpm_digest digest[1];
     int ret;
 
+    if (!root_hash || !event_name) {
+        pr_err("bpfima: Invalid parameters to extend_tpm_pcr_with_root\n");
+        return -EINVAL;
+    }
+
+    if (in_atomic() || irqs_disabled()) {
+        pr_info("bpfima: Skipping TPM extend from atomic context for event: %s\n", 
+                event_name);
+        return -EAGAIN;
+    }
+
+    mutex_lock(&tpm_ops_mutex);
+
     chip = tpm_default_chip();
     if (!chip) {
+        mutex_unlock(&tpm_ops_mutex);
         pr_warn("bpfima: TPM not available, measurement added to list only\n");
         return -ENODEV;
     }
@@ -79,13 +115,18 @@ int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
     memcpy(digest[0].digest, root_hash, SHA256_DIGEST_SIZE);
     
     ret = tpm_pcr_extend(chip, TPM_PCR_INDEX, digest);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to extend TPM PCR %d: %d\n", TPM_PCR_INDEX, ret);
-    } else {
-        pr_info("bpfima: Extended TPM PCR %d with measurement for event: %s\n", 
-                TPM_PCR_INDEX, event_name);
-    }
     
     tpm_put_ops(chip);
-    return ret;
+
+    mutex_unlock(&tpm_ops_mutex);
+
+    if (ret != 0) {
+        pr_err("bpfima: Failed to extend TPM PCR %d for event '%s': TPM RC %d\n", 
+               TPM_PCR_INDEX, event_name, ret);
+        return ret > 0 ? -EIO : ret;  /* Convert positive TPM RC to negative errno */
+    }
+
+    pr_info("bpfima: Successfully extended TPM PCR %d for event: %s\n", 
+            TPM_PCR_INDEX, event_name);
+    return 0;
 }
