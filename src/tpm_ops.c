@@ -123,7 +123,7 @@ int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
     if (ret != 0) {
         pr_err("bpfima: Failed to extend TPM PCR %d for event '%s': TPM RC %d\n", 
                TPM_PCR_INDEX, event_name, ret);
-        return ret > 0 ? -EIO : ret;  /* Convert positive TPM RC to negative errno */
+        return ret > 0 ? -EIO : ret;  
     }
 
     pr_info("bpfima: Successfully extended TPM PCR %d for event: %s\n", 
