@@ -197,8 +197,17 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
 
 /**
  * add_container_measurement - Add a measurement to a container's list
+ * @container: Container node to add measurement to
+ * @event_name: Name of the event
+ * @event_data: Event data string
+ * @digest: SHA256 hash of the measurement
  *
- * Returns: 0 on success, negative error code on failure
+ * Checks if this file (identified by digest) has already been accessed by this
+ * namespace. If so, skips adding a duplicate measurement. If not, adds the
+ * measurement to the container's list, updates the container's leaf hash,
+ * and recalculates the Merkle root.
+ *
+ * Returns: 0 on success, negative error code on failure, 1 if duplicate skipped
  */
 int add_container_measurement(struct container_node *container,
                               const char *event_name,
@@ -208,6 +217,21 @@ int add_container_measurement(struct container_node *container,
     struct measurement_entry *entry;
     unsigned long flags;
     int ret;
+    
+    /* Check if this namespace has already accessed this file */
+    if (hash_exists(digest, container->id)) {
+        pr_info("bpfima: Duplicate file access for namespace %s, digest=%*ph (skipped)\n",
+                container->id, SHA256_DIGEST_SIZE, digest);
+        return 1; /* Indicate duplicate was skipped */
+    }
+    
+    /* Add to per-namespace hash table */
+    ret = add_hash_to_table(digest, container->id, true);
+    if (ret) {
+        pr_err("bpfima: Failed to add hash to tracking table for namespace %s: %d\n",
+               container->id, ret);
+        return ret;
+    }
     
     /* Create measurement entry using helper function */
     entry = create_measurement_entry(event_name, event_data, digest, GFP_KERNEL);

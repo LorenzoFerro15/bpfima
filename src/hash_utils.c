@@ -49,28 +49,33 @@ int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
 }
 
 /**
- * hash_exists - Check if a SHA256 hash already exists in the hash table
+ * hash_exists - Check if a SHA256 hash already exists for a specific namespace
  * @hash_value: SHA256 digest to search for (must be SHA256_DIGEST_SIZE bytes)
+ * @namespace_id: Namespace identifier to check (NULL for host/global namespace)
  *
  * Searches the hash table to determine if a measurement with the given SHA256 hash
- * has already been recorded. Uses a simple hash function based on the first 4 bytes
- * of the SHA256 digest. The function is thread-safe using spinlock protection.
+ * has already been recorded for the specified namespace. A file accessed by different
+ * namespaces will have separate entries. Uses a simple hash function based on the 
+ * first 4 bytes of the SHA256 digest. The function is thread-safe using spinlock protection.
  *
- * Returns: true if hash exists, false if not found
+ * Returns: true if hash exists for this namespace, false if not found
  */
-bool hash_exists(const u8 *hash_value)
+bool hash_exists(const u8 *hash_value, const char *namespace_id)
 {
     struct hash_entry *entry;
     u32 hash_key;
     unsigned long flags;
     bool found = false;
+    const char *ns_to_check = namespace_id ? namespace_id : "";
     
     hash_key = *(u32*)hash_value;
 
     spin_lock_irqsave(&hash_table_lock, flags);
     
     hash_for_each_possible(sha256_hash_table, entry, hash_node, hash_key) {
-        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0) {
+        /* Match both hash AND namespace */
+        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0 &&
+            strcmp(entry->namespace_id, ns_to_check) == 0) {
             found = true;
             break;
         }
@@ -82,27 +87,34 @@ bool hash_exists(const u8 *hash_value)
 }
 
 /**
- * add_hash_to_table - Add a new SHA256 hash to the hash table
+ * add_hash_to_table - Add a new SHA256 hash to the hash table for a namespace
  * @hash_value: SHA256 digest to add (must be SHA256_DIGEST_SIZE bytes)
+ * @namespace_id: Namespace identifier (NULL for host/global namespace)
  * @can_sleep: Whether the current context allows sleeping for memory allocation
  *
- * Adds a new hash entry to the hash table to track that this measurement has been
- * recorded. Uses appropriate memory allocation flags based on the calling context.
+ * Adds a new hash entry to the hash table to track that this file has been
+ * accessed by the specified namespace. The same file accessed by different
+ * namespaces will have separate entries. If the same namespace re-accesses
+ * the file, it should be checked with hash_exists() first to avoid duplicates.
+ * Uses appropriate memory allocation flags based on the calling context.
  * The function is thread-safe using spinlock protection.
  *
  * Returns: 0 on success, negative error code on failure
  */
-int add_hash_to_table(const u8 *hash_value, bool can_sleep)
+int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep)
 {
     struct hash_entry *new_entry;
     u32 hash_key;
     unsigned long flags;
+    const char *ns_to_store = namespace_id ? namespace_id : "";
     
     new_entry = kzalloc(sizeof(*new_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!new_entry)
         return -ENOMEM;
     
     memcpy(new_entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
+    strncpy(new_entry->namespace_id, ns_to_store, CONTAINER_ID_MAX_LEN - 1);
+    new_entry->namespace_id[CONTAINER_ID_MAX_LEN - 1] = '\0';
     
     /* Use first 4 bytes of SHA256 as hash key */
     hash_key = *(u32*)hash_value;
