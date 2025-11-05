@@ -1,7 +1,6 @@
 #include "../../utils/headers_bpf.h"
 #include "../../utils/utils.h"
 
-/* External kfunc declarations used by hooks */
 extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
 extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
 
@@ -57,9 +56,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     int ret;
     int cgroup_id;
     u32 scratch_key = 0;
-    char event_name[64] = {0};  // Will be set to the file path
+    char event_name[] = "bprm_file_exec"; 
     struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
-    /* Fallback to small stack buffer if map lookup fails (shouldn't normally) */
+
     char stack_dependencies_buf[16] = {0};
     char *deps = stack_dependencies_buf;
     int deps_actual =  0;
@@ -98,20 +97,8 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
             }
         }
     }
-
-    /* ===== Container Context Detection =====
-     * Identify if we're executing in a container context by checking cgroup name.
-     * The bpf_ima_extend_measurement kfunc will handle container creation if needed.
-     */
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        /* Filter out common system cgroups to focus on actual containers
-         * Containers typically have IDs like:
-         * - docker-<hash>
-         * - cri-containerd-<hash>
-         * - kubepods-<...>
-         * - Or custom container runtime identifiers
-         */
         const char *ignore_patterns[] = {"/", "init.scope", "system.slice", "user.slice"};
         bool should_track = true;
         
@@ -177,13 +164,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     if (fname) {
         bpf_probe_read_kernel_str(fname_buf, sizeof(fname_buf), fname);
         bpf_printk(" filename: %s\n", fname_buf);
-        
-        /* Set event_name to the file path */
-        bpf_probe_read_kernel_str(event_name, sizeof(event_name), fname);
     }
     
     if (event_name[0] == '\0') {
-        /* Fallback to default name if we couldn't get the filename */
         __builtin_memcpy(event_name, "bprm_file_exec", 15);
     }
     
@@ -210,16 +193,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
                     deps[deps_max - 1] = '\0';
                 }
                 digest_hex[64] = '\0';
-                
-                /* ===== Streamlined Measurement Flow =====
-                 * Call bpf_ima_extend_measurement which:
-                 * 1. Calculates hash from namespace_id | dependencies | additional_data
-                 * 2. If namespace_id provided: directly extends in namespace list
-                 * 3. Updates the leaf value
-                 * 4. Inserts new leaf value in history file
-                 * 5. Updates the root value
-                 * 6. Extends TPM with new root value
-                 */
                 ret = bpf_ima_extend_measurement(event_name, 
                                                 is_container_context ? cgroup_name : NULL, 
                                                 deps, 

@@ -117,12 +117,13 @@ struct bpf_ima_template_entry {
 struct hash_entry {
     struct hlist_node hash_node;
     u8 sha256_hash[SHA256_DIGEST_SIZE];
+    char namespace_id[CONTAINER_ID_MAX_LEN]; 
 };
 
 /* Hash utility functions */
 int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
-bool hash_exists(const u8 *hash_value);
-int add_hash_to_table(const u8 *hash_value, bool can_sleep);
+bool hash_exists(const u8 *hash_value, const char *namespace_id);
+int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep);
 void cleanup_hash_table(void);
 
 /* TPM operations */

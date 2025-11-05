@@ -28,7 +28,7 @@ atomic_t measurement_count = ATOMIC_INIT(0);
  * Returns: Total number of measurements recorded, negative error code on failure,
  *         or existing count if duplicate detected
  */
-static int process_measurement(const char *event_name, const char *data, u32 data_len)
+static int process_measurement(const char *event_name, const char *data, u32 data_len, const char *namespace_id)
 {
     struct bpf_ima_template_entry *entry;
     int ret = 0;
@@ -41,9 +41,9 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
         return ret;
     }
 
-    if (hash_exists(hash_value)) {
-        printk(KERN_INFO "IMA_DUPLICATE: event=%s digest=%*ph (skipped)\n", 
-               event_name, IMA_DIGEST_SIZE, hash_value);
+    if (hash_exists(hash_value, namespace_id)) {
+        printk(KERN_INFO "IMA_DUPLICATE: event=%s namespace=%s digest=%*ph (skipped - already accessed by this namespace)\n", 
+               event_name, namespace_id ? namespace_id : "host", IMA_DIGEST_SIZE, hash_value);
         return atomic_read(&measurement_count);
     }
 
@@ -59,7 +59,7 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
     
     memcpy(entry->digest, hash_value, IMA_DIGEST_SIZE);
 
-    ret = add_hash_to_table(hash_value, can_sleep);
+    ret = add_hash_to_table(hash_value, namespace_id, can_sleep);
     if (ret) {
         printk(KERN_ERR "Failed to add hash to tracking table: %d\n", ret);
         kfree(entry);
@@ -151,7 +151,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
     if (additional_data && additional_data_len > 0)
         total_len += additional_data_len;
     
-    total_len += 3;
+    total_len += 4; 
 
     if (total_len == 0) {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
@@ -164,6 +164,18 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -ENOMEM;
     }
 
+    if (event_name) {
+        size_t len = strlen(event_name);
+        memcpy(concat_data + offset, event_name, len);
+        offset += len;
+        concat_data[offset++] = separator;
+    }
+    if (namespace_id) {
+        size_t len = strlen(namespace_id);
+        memcpy(concat_data + offset, namespace_id, len);
+        offset += len;
+        concat_data[offset++] = separator;
+    }
     if (dependencies) {
         size_t len = strlen(dependencies);
         memcpy(concat_data + offset, dependencies, len);
@@ -183,7 +195,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return ret;
     }
 
-    printk(KERN_DEBUG "bpfima: Computed hash: %*ph\n", SHA256_DIGEST_SIZE, hash_value);
+    printk(KERN_DEBUG "bpfima: Computed template hash over all fields: %*ph\n", SHA256_DIGEST_SIZE, hash_value);
 
     /* Step 3: Check if this is a container measurement */
     if (namespace_id && namespace_id[0] != '\0') {
@@ -213,6 +225,10 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
                    namespace_id, ret);
             kfree(concat_data);
             return ret;
+        } else if (ret == 1) {
+            printk(KERN_INFO "bpfima:  File already accessed by namespace %s, skipped\n", namespace_id);
+            kfree(concat_data);
+            return 0;
         }
 
         printk(KERN_INFO "bpfima:  Successfully added measurement to container %s\n", namespace_id);
@@ -220,9 +236,8 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         printk(KERN_INFO "bpfima:  Merkle root recalculated and TPM extended\n");
 
     } else {
-        /* Host-level measurement (legacy system) */
         printk(KERN_INFO "bpfima: Processing host-level measurement\n");
-        ret = process_measurement(event_name ? event_name : "", concat_data, offset);
+        ret = process_measurement(event_name ? event_name : "", concat_data, offset, NULL);
         if (ret < 0) {
             printk(KERN_ERR "bpfima: Failed to process host measurement: %d\n", ret);
             kfree(concat_data);
@@ -457,8 +472,22 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
         return ret;
     }
 
-    printk(KERN_INFO "bpfima: Successfully computed IMA file hash, digest=%*ph\n", 
-           digest_size, digest);
+    bool all_zeros = true;
+    for (int i = 0; i < digest_size; i++) {
+        if (digest[i] != 0) {
+            all_zeros = false;
+            break;
+        }
+    }
+    
+    if (all_zeros) {
+        printk(KERN_WARNING "bpfima: IMA returned all-zero hash - IMA policy may not be active or file not measured\n");
+        printk(KERN_INFO "bpfima: To enable IMA: echo 'measure func=BPRM_CHECK' > /sys/kernel/security/ima/policy\n");
+    } else {
+        printk(KERN_INFO "bpfima: Successfully computed IMA file hash, digest=%*ph\n", 
+               digest_size, digest);
+    }
+    
     return 0;
 }
 
