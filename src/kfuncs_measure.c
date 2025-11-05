@@ -357,8 +357,8 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
     char *path_buf = NULL;
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
-    printk(KERN_DEBUG "bpfima: Simple IMA file hash called, file_scalar=%llx, digest=%p, size=%u\n", 
-           file_scalar, digest, digest_size);
+    printk(KERN_DEBUG "bpfima: Simple IMA file hash called, file_scalar=%llx, size=%u\n", 
+           file_scalar, digest_size);
 
     if (!file_scalar || !digest || digest_size != 32) {
         printk(KERN_ERR "bpfima: Invalid parameters for IMA file hashing\n");
@@ -395,7 +395,8 @@ __bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest
         return ret;
     }
 
-    printk(KERN_INFO "bpfima: Successfully computed IMA file hash\n");
+    printk(KERN_INFO "bpfima: Successfully computed IMA file hash, digest=%*ph\n", 
+           digest_size, digest);
     return 0;
 }
 
