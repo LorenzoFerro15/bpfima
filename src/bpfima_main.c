@@ -41,91 +41,44 @@ static int bpfima_securityfs_init(void)
         }
     }
     
-    measurements_file = securityfs_create_file("measurements", 0444,
-                                              bpfima_dir, NULL, &measurements_fops);
-    if (IS_ERR(measurements_file)) {
-        pr_err("bpfima: Failed to create measurements file: %ld\n", PTR_ERR(measurements_file));
-        securityfs_remove(bpfima_dir);
-        bpfima_dir = NULL;
-        return PTR_ERR(measurements_file);
-    }
-    
+    /* Create status file */
     status_file = securityfs_create_file("status", 0444,
                                         bpfima_dir, NULL, &status_fops);
     if (IS_ERR(status_file)) {
         pr_err("bpfima: Failed to create status file: %ld\n", PTR_ERR(status_file));
-        securityfs_remove(measurements_file);
         securityfs_remove(bpfima_dir);
-        measurements_file = NULL;
         bpfima_dir = NULL;
         return PTR_ERR(status_file);
     }
 
-    /* Create namespaces directory for container tracking */
+    /* Create Merkle root history file */
+    merkle_root_history_file = securityfs_create_file("merkle_root_history", 0444,
+                                                     bpfima_dir, NULL, &merkle_root_history_fops);
+    if (IS_ERR(merkle_root_history_file)) {
+        pr_err("bpfima: Failed to create merkle_root_history file: %ld\n", PTR_ERR(merkle_root_history_file));
+        securityfs_remove(status_file);
+        securityfs_remove(bpfima_dir);
+        status_file = NULL;
+        bpfima_dir = NULL;
+        return PTR_ERR(merkle_root_history_file);
+    }
+
+    /* Create namespaces directory for namespace tracking */
     containers_dir = securityfs_create_dir("namespaces", bpfima_dir);
     if (IS_ERR(containers_dir)) {
         pr_err("bpfima: Failed to create namespaces directory: %ld\n", PTR_ERR(containers_dir));
+        securityfs_remove(merkle_root_history_file);
         securityfs_remove(status_file);
-        securityfs_remove(measurements_file);
         securityfs_remove(bpfima_dir);
+        merkle_root_history_file = NULL;
         status_file = NULL;
-        measurements_file = NULL;
         bpfima_dir = NULL;
         return PTR_ERR(containers_dir);
     }
     
-    /* Create host measurements file */
-    host_measurements_file = securityfs_create_file("host_measurements", 0444,
-                                                   containers_dir, NULL, &host_measurements_fops);
-    if (IS_ERR(host_measurements_file)) {
-        pr_err("bpfima: Failed to create host_measurements file: %ld\n", PTR_ERR(host_measurements_file));
-        goto cleanup_containers;
-    }
-    
-    /* Create Merkle root file */
-    merkle_root_file = securityfs_create_file("merkle_root", 0444,
-                                             containers_dir, NULL, &merkle_root_fops);
-    if (IS_ERR(merkle_root_file)) {
-        pr_err("bpfima: Failed to create merkle_root file: %ld\n", PTR_ERR(merkle_root_file));
-        goto cleanup_containers;
-    }
-    
-    /* Create Merkle root history file */
-    merkle_root_history_file = securityfs_create_file("merkle_root_history", 0444,
-                                                     containers_dir, NULL, &merkle_root_history_fops);
-    if (IS_ERR(merkle_root_history_file)) {
-        pr_err("bpfima: Failed to create merkle_root_history file: %ld\n", PTR_ERR(merkle_root_history_file));
-        goto cleanup_containers;
-    }
-    
-    /* Create container list file */
-    container_list_file = securityfs_create_file("container_list", 0444,
-                                                containers_dir, NULL, &container_list_fops);
-    if (IS_ERR(container_list_file)) {
-        pr_err("bpfima: Failed to create container_list file: %ld\n", PTR_ERR(container_list_file));
-        goto cleanup_containers;
-    }
-    
     pr_info("bpfima: SecurityFS interface created at /sys/kernel/security/%s/\n", bpfima_dir_name);
-    pr_info("bpfima: Container tracking enabled at /sys/kernel/security/%s/containers/\n", bpfima_dir_name);
+    pr_info("bpfima: Namespace tracking enabled at /sys/kernel/security/%s/namespaces/\n", bpfima_dir_name);
     return 0;
-
-cleanup_containers:
-    /* Recursive remove will clean up all files under containers_dir */
-    if (containers_dir && !IS_ERR(containers_dir))
-        securityfs_recursive_remove(containers_dir);
-    securityfs_remove(status_file);
-    securityfs_remove(measurements_file);
-    securityfs_remove(bpfima_dir);
-    containers_dir = NULL;
-    host_measurements_file = NULL;
-    merkle_root_file = NULL;
-    merkle_root_history_file = NULL;
-    container_list_file = NULL;
-    status_file = NULL;
-    measurements_file = NULL;
-    bpfima_dir = NULL;
-    return PTR_ERR(containers_dir);
 }
 
 BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
