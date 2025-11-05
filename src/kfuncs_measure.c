@@ -73,9 +73,8 @@ static int process_measurement(const char *event_name, const char *data, u32 dat
         printk(KERN_INFO "Called from atomic context, TPM extension deferred for event: %s\n", event_name);
         spin_unlock(&measurement_list_lock);
     } else {
-        /* release lock before performing TPM extension which may sleep */
-        spin_unlock(&measurement_list_lock);
         extend_tpm_pcr(hash_value, event_name);
+        spin_unlock(&measurement_list_lock);
     }
 
     printk(KERN_INFO "IMA_MEASUREMENT: event=%s count=%d digest=%*ph\n", 
@@ -227,8 +226,11 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
         return 0;
     }
     
+    mutex_lock(&tpm_ops_mutex);
+
     chip = tpm_default_chip();
     if (!chip) {
+        mutex_unlock(&tpm_ops_mutex);
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
                  TPM_PCR_INDEX, atomic_read(&measurement_count));
         printk(KERN_INFO "TPM not available, using simulation\n");
@@ -239,11 +241,14 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     digest[0].alg_id = TPM_ALG_SHA256;
     
     ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
+    tpm_put_ops(chip);
+
+    mutex_unlock(&tpm_ops_mutex);
+    
     if (ret < 0) {
         snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION", 
                  TPM_PCR_INDEX, atomic_read(&measurement_count));
         printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
-        tpm_put_ops(chip);
         return ret;
     }
     
@@ -253,7 +258,6 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
                  "%02x", digest[0].digest[i]);
     }
     
-    tpm_put_ops(chip);
     return 0;
 }
 

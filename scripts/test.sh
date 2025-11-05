@@ -162,23 +162,16 @@ log_info "eBPF program loaded (PID: $LOADER_PID)"
 # 4. Run container test
 log_info "Starting container test"
 
-CONTAINER_CLI=""
-if command -v docker >/dev/null 2>&1; then
-    CONTAINER_CLI=docker
-elif command -v podman >/dev/null 2>&1; then
-    CONTAINER_CLI=podman
-else
-    log_warn "No container runtime found (docker/podman)"
-    wait $LOADER_PID
-    exit 0
-fi
+CONTAINER_CLI="docker"
 
 log_info "Using container runtime: $CONTAINER_CLI"
 
-$CONTAINER_CLI pull alpine:latest >/dev/null 2>&1 || log_warn "Failed to pull alpine image"
+if ! $CONTAINER_CLI pull alpine:latest 2>&1 | grep -v "up to date"; then
+    log_warn "Failed to pull alpine image"
+fi
 
 log_info "Starting container: $CONTAINER_NAME"
-if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm alpine:latest sleep 300 >/dev/null 2>&1; then
+if ! $CONTAINER_CLI run -d --name "$CONTAINER_NAME" --rm alpine:latest sleep 300 2>&1; then
     log_err "Failed to start container"
     exit 1
 fi
@@ -227,4 +220,9 @@ log_info "Test finished - press Ctrl+C to cleanup and exit"
 log_info "Monitoring mode active... (loader PID: $LOADER_PID)"
 
 # Wait indefinitely until interrupted
-wait
+if [ -n "$LOADER_PID" ] && kill -0 "$LOADER_PID" 2>/dev/null; then
+    wait "$LOADER_PID" 2>/dev/null || true
+else
+    log_warn "Loader process not running"
+    sleep infinity
+fi
