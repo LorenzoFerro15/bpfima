@@ -141,12 +141,14 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -EINVAL;
     }
 
-    if (dependencies)
-        total_len += strlen(dependencies);
-    if (additional_data && additional_data_len > 0)
-        total_len += additional_data_len;
-    
-    total_len += 1; 
+    if (dependencies) {
+        total_len += strlen(dependencies) + 1;
+    }
+    if (additional_data && additional_data_len > 0) {
+        total_len += additional_data_len + 1;
+    }
+    // separator between fields are of number n-1 
+    total_len -= 1; 
 
     if (total_len == 0) {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
@@ -162,7 +164,9 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
     if (additional_data && additional_data_len > 0) {
         memcpy(concat_data + offset, additional_data, additional_data_len);
         offset += additional_data_len;
-        concat_data[offset++] = separator;
+
+        if(dependencies)
+            concat_data[offset++] = separator;
     }
 
     if (dependencies) {
