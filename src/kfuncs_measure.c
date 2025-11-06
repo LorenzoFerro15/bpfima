@@ -123,7 +123,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
     size_t offset = 0;
     u8 hash_value[SHA256_DIGEST_SIZE];
     int ret = -1;
-    char separator = '|';
+    char separator = ' ';
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
     printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u", 
@@ -141,14 +141,12 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -EINVAL;
     }
 
-    if (namespace_id)
-        total_len += strlen(namespace_id);
     if (dependencies)
         total_len += strlen(dependencies);
     if (additional_data && additional_data_len > 0)
         total_len += additional_data_len;
     
-    total_len += 3; 
+    total_len += 1; 
 
     if (total_len == 0) {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
@@ -161,16 +159,18 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -ENOMEM;
     }
 
+    if (additional_data && additional_data_len > 0) {
+        memcpy(concat_data + offset, additional_data, additional_data_len);
+        offset += additional_data_len;
+        concat_data[offset++] = separator;
+    }
+
     if (dependencies) {
         size_t len = strlen(dependencies);
         memcpy(concat_data + offset, dependencies, len);
         offset += len;
-        concat_data[offset++] = separator;
     }
-    if (additional_data && additional_data_len > 0) {
-        memcpy(concat_data + offset, additional_data, additional_data_len);
-        offset += additional_data_len;
-    }
+    
 
     ret = calculate_sha256_hash(concat_data, offset, hash_value);
     if (ret) {
