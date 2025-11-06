@@ -159,6 +159,10 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         ancestor = next;
     }
 
+    // Null-terminate the dependencies string after the last entry
+    if (deps_actual > 0 && deps_actual <= deps_max)
+        deps[--deps_actual] = '\0';
+    
     const char *fname = BPF_CORE_READ(bprm, filename);
     if (fname) {
         bpf_probe_read_kernel_str(event_name, sizeof(event_name), fname);

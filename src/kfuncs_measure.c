@@ -161,13 +161,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name, const char *n
         return -ENOMEM;
     }
 
-    /* Build template data: namespace_id|dependencies|additional_data */
-    if (namespace_id) {
-        size_t len = strlen(namespace_id);
-        memcpy(concat_data + offset, namespace_id, len);
-        offset += len;
-        concat_data[offset++] = separator;
-    }
     if (dependencies) {
         size_t len = strlen(dependencies);
         memcpy(concat_data + offset, dependencies, len);
