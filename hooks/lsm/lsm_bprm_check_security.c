@@ -116,39 +116,39 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         }
     }
 
+    const char *fname = BPF_CORE_READ(bprm, filename);
+    if (fname) {
+        ret = bpf_probe_read_kernel_str(deps, deps_max, fname);
+        if (ret > 0) {
+            deps_actual = ret - 1; // exclude null terminator
+            if (deps_actual < deps_max) {
+                deps[deps_actual] = ':';
+                deps_actual++;
+            }
+        }
+    }
+    
+    if (deps_actual == 0) {
+        __builtin_memcpy(deps, "unknown:", 9);
+        deps_actual = 8;
+    }
+
 #pragma unroll
     for (int i = 0; i < 10; i++) {
         if (!ancestor)
             break;
 
         struct task_struct *next = BPF_CORE_READ(ancestor, real_parent);
-        if (deps_actual < deps_max) {
-            /* compute how many bytes are available and bound the probe-read
-             * so the verifier can reason about the map value bounds.
-             * We prefer reading up to 16 bytes (comm size) but ensure that
-             * when we choose the larger fixed size the sum (deps_actual +
-             * want) is <= deps_max. Otherwise fall back to the remaining
-             * space (deps_max - deps_actual).
-             */
-            int avail = deps_max - deps_actual;
-            if (avail > 0) {
-                const int want = 16;
-                if (deps_actual <= deps_max - want)
-                    avail = want;
-                else
-                    avail = deps_max - deps_actual;
-                ret = bpf_probe_read_kernel_str(&deps[deps_actual], avail, BPF_CORE_READ(ancestor, comm));
-                if (ret > 0) {
-                    int consumed = ret - 1;
-                    if (consumed < 0)
-                        consumed = 0;
-                    deps_actual += consumed;
-                    if (deps_actual < deps_max) {
-                        deps[deps_actual] = ':';
-                        deps_actual++;
-                    } else {
-                        deps[deps_max - 1] = '\0';
-                    }
+        if (deps_actual < deps_max - 16) {
+            ret = bpf_probe_read_kernel_str(&deps[deps_actual], 16, BPF_CORE_READ(ancestor, comm));
+            if (ret > 0) {
+                int consumed = ret - 1;
+                if (consumed < 0)
+                    consumed = 0;
+                deps_actual += consumed;
+                if (deps_actual < deps_max) {
+                    deps[deps_actual] = ':';
+                    deps_actual++;
                 }
             }
         }
@@ -163,15 +163,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     if (deps_actual > 0 && deps_actual <= deps_max)
         deps[--deps_actual] = '\0';
     
-    const char *fname = BPF_CORE_READ(bprm, filename);
-    if (fname) {
-        bpf_probe_read_kernel_str(event_name, sizeof(event_name), fname);
-        bpf_printk(" filename: %s\n", event_name);
-    }
-    
-    if (event_name[0] == '\0') {
-        __builtin_memcpy(event_name, "unknown", 8);
-    }
+    __builtin_memcpy(event_name, "bprm_check_security", 20);
     
     bpf_printk(" dependencies: %s\n", deps);
 
