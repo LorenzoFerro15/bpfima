@@ -12,17 +12,17 @@ char LICENSE[] SEC("license") = "GPL";
 /* Use a larger buffer and keep layout simple (no trailing metadata) so the
  * verifier can reason about map value bounds when we write fixed-size slots.
  */
-struct scratch_t {
-    /* 10 slots * 17 bytes each (16 char comm + separator) = 170; round up to 192 */
-    char buf[192];
-};
+// struct scratch_t {
+//     /* 10 slots * 17 bytes each (16 char comm + separator) = 170; round up to 192 */
+//     char buf[192];
+// };
 
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, struct scratch_t);
-} scratch_buf_map SEC(".maps");
+// struct {
+//     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+//     __uint(max_entries, 1);
+//     __type(key, u32);
+//     __type(value, struct scratch_t);
+// } scratch_buf_map SEC(".maps");
 
 /*
  * LSM hook: bprm_check_security
@@ -80,11 +80,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     bpf_printk("LSM bprm_check_security: %s PID=%u  cgroup_id=%d\n", comm, pid, cgroup_id);
 
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
-    struct task_struct *ancestor = NULL;
-
-    if (cur) {
-        ancestor = BPF_CORE_READ(cur, real_parent);
-    }
 
     struct css_set *cgroups = BPF_CORE_READ(cur, cgroups);
     if (cgroups) {
@@ -117,51 +112,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     }
 
     const char *fname = BPF_CORE_READ(bprm, filename);
-    if (fname) {
-        ret = bpf_probe_read_kernel_str(deps, deps_max, fname);
-        if (ret > 0) {
-            deps_actual = ret - 1; // exclude null terminator
-            if (deps_actual < deps_max) {
-                deps[deps_actual] = ':';
-                deps_actual++;
-            }
-        }
-    }
     
-    if (deps_actual == 0) {
-        __builtin_memcpy(deps, "unknown:", 9);
-        deps_actual = 8;
-    }
-
-#pragma unroll
-    for (int i = 0; i < 10; i++) {
-        if (!ancestor)
-            break;
-
-        struct task_struct *next = BPF_CORE_READ(ancestor, real_parent);
-        if (deps_actual < deps_max - 16) {
-            ret = bpf_probe_read_kernel_str(&deps[deps_actual], 16, BPF_CORE_READ(ancestor, comm));
-            if (ret > 0) {
-                int consumed = ret - 1;
-                if (consumed < 0)
-                    consumed = 0;
-                deps_actual += consumed;
-                if (deps_actual < deps_max) {
-                    deps[deps_actual] = ':';
-                    deps_actual++;
-                }
-            }
-        }
-
-        if (!next || next == ancestor)
-            break;
-
-        ancestor = next;
-    }
-
-    // Null-terminate the dependencies string after the last entry
-    if (deps_actual > 0 && deps_actual <= deps_max)
-        deps[--deps_actual] = '\0';
+    /* Build dependency chain using the modular utility function */
+    deps_actual = build_dependencies(deps, deps_max, fname, cur);
     
     __builtin_memcpy(event_name, "bprm_check_security", 20);
     
