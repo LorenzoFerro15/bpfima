@@ -1,28 +1,6 @@
-#include "../../utils/headers_bpf.h"
-#include "../../utils/utils.h"
-
-extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
-extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
+#include "../hook_utils.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-/* Per-CPU scratch buffer to avoid large stack allocations and heavy inlining
- * which can blow up the verifier. Value contains a small buffer and a length.
- */
-/* Use a larger buffer and keep layout simple (no trailing metadata) so the
- * verifier can reason about map value bounds when we write fixed-size slots.
- */
-// struct scratch_t {
-//     /* 10 slots * 17 bytes each (16 char comm + separator) = 170; round up to 192 */
-//     char buf[192];
-// };
-
-// struct {
-//     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-//     __uint(max_entries, 1);
-//     __type(key, u32);
-//     __type(value, struct scratch_t);
-// } scratch_buf_map SEC(".maps");
 
 /*
  * LSM hook: bprm_check_security
@@ -52,7 +30,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     char comm[16] = {0};
     u64 pid_tgid;
     u32 pid;
-    u8 digest[32] = {0};
     int ret;
     int cgroup_id;
     u32 scratch_key = 0;
@@ -121,42 +98,17 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     bpf_printk(" dependencies: %s\n", deps);
 
     struct file *file = BPF_CORE_READ(bprm, file);
-    if (file) {
-        u64 file_scalar = 0;
-        if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) == 0 && file_scalar != 0) {
-            ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
-            if (ret == 0) {
-                print_hex_digest(digest, 32);
-                char digest_hex[65] = {0};
-                
-                bpf_printk(" deps_actual=%d deps_max=%d\n", deps_actual, deps_max);
-
-                int written = bytes_to_hex_str(digest, 32, digest_hex, sizeof(digest_hex));
-                if (written < 0) {
-                    bpf_printk(" failed converting digest to hex string\n");
-                }
-                if (deps_actual < deps_max) {
-                    deps[deps_actual] = '\0';
-                } else {
-                    deps[deps_max - 1] = '\0';
-                }
-                digest_hex[64] = '\0';
-                ret = bpf_ima_extend_measurement(event_name, 
-                                                is_container_context ? cgroup_name : NULL, 
-                                                deps, 
-                                                digest_hex, 
-                                                64);
-                if (ret == 0) {
-                    bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
-                              event_name, is_container_context ? cgroup_name : "host");
-                } else {
-                    bpf_printk(" Failed to process measurement: %d\n", ret);
-                }
-            }
-            else {
-                bpf_printk(" failed hashing failed extending found data about it");
-            }
-        }
+    ret = measure_accessed_file(file, 
+                                  event_name, 
+                                  cgroup_name, 
+                                  is_container_context,
+                                  deps,
+                                  deps_actual,
+                                  deps_max);
+    if (ret < 0) {
+        bpf_printk("The file measurement failed: %d\n", ret);
+        return ret;
     }
+    
     return 0;
 }
