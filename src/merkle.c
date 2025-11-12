@@ -30,6 +30,8 @@ struct merkle_tree_root system_merkle_root;
  *
  * Computes SHA-256 hash of all measurement digests in the container's
  * measurement list. This hash becomes the container's leaf in the Merkle tree.
+ * This is used only for initialization or rebuilding from scratch.
+ * For normal operations, use extend_container_leaf_hash() instead.
  *
  * Returns: 0 on success, negative error code on failure
  */
@@ -77,10 +79,85 @@ cleanup:
 }
 
 /**
- * recalculate_merkle_root - Recalculate the Merkle tree root hash
+ * extend_container_leaf_hash - Extend container leaf hash with new measurement
+ * @container: Container node to extend
+ * @new_digest: New measurement digest to extend into the leaf hash
  *
- * Computes the Merkle root by hashing together all container leaf hashes.
- * The root hash represents the entire system state (virtual PCR value).
+ * Extends the container's leaf hash using PCR-style extend operation:
+ * new_leaf = hash(old_leaf || new_digest)
+ *
+ * This is more efficient than recomputing the hash from all measurements.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int extend_container_leaf_hash(struct container_node *container, const u8 *new_digest)
+{
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    unsigned long flags;
+    int ret = 0;
+    u8 old_leaf[MERKLE_HASH_SIZE];
+    u8 new_leaf[MERKLE_HASH_SIZE];
+    
+    if (!new_digest)
+        return -EINVAL;
+    
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm))
+        return PTR_ERR(tfm);
+    
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    if (!desc) {
+        crypto_free_shash(tfm);
+        return -ENOMEM;
+    }
+    
+    desc->tfm = tfm;
+    ret = crypto_shash_init(desc);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Get a copy of the old leaf hash */
+    spin_lock_irqsave(&container->measurement_lock, flags);
+    memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
+    spin_unlock_irqrestore(&container->measurement_lock, flags);
+    
+    /* Extend: new_leaf = hash(old_leaf || new_digest) */
+    ret = crypto_shash_update(desc, old_leaf, MERKLE_HASH_SIZE);
+    if (ret < 0)
+        goto cleanup;
+    
+    ret = crypto_shash_update(desc, new_digest, MERKLE_HASH_SIZE);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Finalize the new leaf hash */
+    ret = crypto_shash_final(desc, new_leaf);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Update the container's leaf hash */
+    spin_lock_irqsave(&container->measurement_lock, flags);
+    memcpy(container->leaf_hash, new_leaf, MERKLE_HASH_SIZE);
+    spin_unlock_irqrestore(&container->measurement_lock, flags);
+    
+    pr_debug("bpfima: Container %s leaf hash extended\n", container->id);
+    
+cleanup:
+    kfree(desc);
+    crypto_free_shash(tfm);
+    return ret;
+}
+
+/**
+ * extend_merkle_root - Extend the Merkle tree root with a new container leaf hash
+ * @container_leaf_hash: The new container leaf hash to extend into the root
+ *
+ * Computes the new Merkle root by extending the old root with the new leaf hash:
+ * root_new = hash(root_old || leaf_hash_new)
+ *
+ * This implements a PCR-style extend operation rather than recalculating from
+ * all leaves, making it more efficient and following TPM extend semantics.
  *
  * This function follows the same pattern as process_measurement:
  * 1. Check if we can sleep (atomic context detection)
@@ -88,6 +165,90 @@ cleanup:
  * 3. Update global state with spinlock protection
  * 4. Release lock before TPM operation (which can sleep)
  * 5. Defer TPM extension if called from atomic context
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int extend_merkle_root(const u8 *container_leaf_hash)
+{
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    unsigned long flags;
+    int ret = 0;
+    u8 old_root[MERKLE_HASH_SIZE];
+    u8 new_root[MERKLE_HASH_SIZE];
+    bool can_sleep = !in_atomic() && !irqs_disabled();
+    
+    if (!container_leaf_hash)
+        return -EINVAL;
+    
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm))
+        return PTR_ERR(tfm);
+    
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), 
+                   can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+    if (!desc) {
+        crypto_free_shash(tfm);
+        return -ENOMEM;
+    }
+    
+    desc->tfm = tfm;
+    ret = crypto_shash_init(desc);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Get a copy of the old root hash */
+    spin_lock_irqsave(&system_merkle_root.lock, flags);
+    memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
+    
+    /* Extend: new_root = hash(old_root || container_leaf_hash) */
+    ret = crypto_shash_update(desc, old_root, MERKLE_HASH_SIZE);
+    if (ret < 0)
+        goto cleanup;
+    
+    ret = crypto_shash_update(desc, container_leaf_hash, MERKLE_HASH_SIZE);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Finalize the new root hash */
+    ret = crypto_shash_final(desc, new_root);
+    if (ret < 0)
+        goto cleanup;
+    
+    /* Update the global Merkle root */
+    memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
+    spin_unlock_irqrestore(&system_merkle_root.lock, flags);
+    
+    pr_debug("bpfima: Merkle root extended with container leaf hash\n");
+    
+    if (!can_sleep) {
+        pr_info("bpfima: Called from atomic context, TPM extension deferred for merkle_root_update\n");
+    } else {
+        /* 
+         * Release lock before performing TPM extension which may sleep
+         * Following the same pattern as process_measurement
+         */
+        ret = extend_tpm_pcr_with_root(new_root, "merkle_root_update");
+        if (ret < 0 && ret != -ENODEV) {
+            /* Log error but don't fail - TPM extension is optional */
+            pr_warn("bpfima: Failed to extend TPM PCR with Merkle root: %d\n", ret);
+        }
+    }
+    
+    ret = 0; /* Success regardless of TPM extension result */
+    
+cleanup:
+    kfree(desc);
+    crypto_free_shash(tfm);
+    return ret;
+}
+
+/**
+ * recalculate_merkle_root - Recalculate the Merkle tree root hash from scratch
+ *
+ * Computes the Merkle root by hashing together all container leaf hashes.
+ * This is used for initialization or when the tree needs to be rebuilt.
+ * For normal operations, use extend_merkle_root() instead.
  *
  * Returns: 0 on success, negative error code on failure
  */
@@ -245,10 +406,10 @@ int add_container_measurement(struct container_node *container,
     
     atomic_inc(&container->measurement_count);
     
-    /* Recalculate container's leaf hash */
-    ret = compute_container_leaf_hash(container);
+    /* Extend container's leaf hash with the new measurement */
+    ret = extend_container_leaf_hash(container, digest);
     if (ret < 0) {
-        pr_err("bpfima: Failed to compute leaf hash for container %s: %d\n",
+        pr_err("bpfima: Failed to extend leaf hash for container %s: %d\n",
                container->id, ret);
         return ret;
     }
@@ -257,17 +418,15 @@ int add_container_measurement(struct container_node *container,
     ret = add_merkle_root_history_entry(container->leaf_hash, container->id);
     if (ret < 0) {
         pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
-        /* Continue anyway, this is not critical */
     }
     
-    /* Recalculate Merkle root */
-    ret = recalculate_merkle_root();
+    ret = extend_merkle_root(container->leaf_hash);
     if (ret < 0) {
-        pr_err("bpfima: Failed to recalculate merkle root: %d\n", ret);
+        pr_err("bpfima: Failed to extend merkle root: %d\n", ret);
         return ret;
     }
     
-    pr_debug("bpfima: Added measurement to container %s, leaf hash updated\n",
+    pr_debug("bpfima: Added measurement to container %s, leaf hash updated and root extended\n",
              container->id);
     
     return 0;
