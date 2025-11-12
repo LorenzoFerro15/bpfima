@@ -22,7 +22,7 @@ DEFINE_SPINLOCK(host_measurement_lock);
 LIST_HEAD(merkle_root_history);
 DEFINE_SPINLOCK(merkle_root_history_lock);
 
-struct merkle_tree_root system_merkle_root;
+struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
 
 /**
  * compute_container_leaf_hash - Compute the leaf hash for a container
