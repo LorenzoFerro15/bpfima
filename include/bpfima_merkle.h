@@ -11,6 +11,8 @@ extern struct merkle_tree_root system_merkle_root;
 
 /* Merkle tree functions */
 int compute_container_leaf_hash(struct container_node *container);
+int extend_container_leaf_hash(struct container_node *container, const u8 *new_digest);
+int extend_merkle_root(const u8 *container_leaf_hash);
 int recalculate_merkle_root(void);
 int add_merkle_root_history_entry(const u8 *value, const char *container_id);
 
