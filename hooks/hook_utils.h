@@ -18,7 +18,7 @@ extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size
     * Returns:
     * - 0 on success, -1 on failure
 */
-static __always_inline int measure_accessed_file (
+static __always_inline int measure_accessed_file(
                                                 struct file *file, 
                                                 const char *event_name,
                                                 const char *cgroup_name,

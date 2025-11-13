@@ -1,8 +1,4 @@
-#include "../../utils/headers_bpf.h"
-
-extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
-extern int bpf_ima_get_measurement_count(void) __ksym;
-extern int bpf_tpm_is_available(void) __ksym;
+#include "../hook_utils.h"
 
 #define AF_INET 2
 
@@ -12,98 +8,76 @@ extern int bpf_tpm_is_available(void) __ksym;
 char LICENSE[] SEC("license") = "GPL";
 
 SEC("lsm/socket_connect")
-int bpf_socket_connect(struct socket *sock, struct sockaddr *address, int addrlen)
+int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
-    struct sock *sk = NULL;
-    int state;
-    int proto;
-    int family;
-    u32 saddr = 0, daddr = 0;
-    u16 sport = 0, dport = 0;
-    u64 pid_tgid;
-    u32 pid;
-    u64 uid_gid;
-    u32 uid;
+    int proto, state;
+    u64 pid_tgid, uid_gid;
+    u32 pid, uid;
     char comm[16];
 
-    bpf_printk("=== SOCKET CONNECT VIA LSM ===\n");
-
-    if (!sock)
-    {
-        bpf_printk("Socket pointer is NULL\n");
+    if (!address) {
+        bpf_printk("bpf_socket_connect: No address provided.\n");
         return 0;
     }
 
-    /* try to read socket->sk (protocol core struct) */
-    sk = BPF_CORE_READ(sock, sk);
+    if (address->sa_family != AF_INET) {
+        return 0; /* Not AF_INET (for now, then add IPv6)*/
+    }
+
+    /* Cast to the IPv4-specific struct */
+    struct sockaddr_in *address_in = (struct sockaddr_in *)address;
+
+    /* 3. Get the kernel's internal sock struct */
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    if (!sk) {
+        bpf_printk("bpf_socket_connect: No sock struct found.\n");
+        return 0;
+    }
+
+    /* try to read socket->sk */
     state = BPF_CORE_READ(sock, state); /* some kernels store socket state here */
-    bpf_printk("socket->state (raw): %d\n", state);
+    proto = BPF_CORE_READ(sk, sk_protocol);
 
-    if (!sk)
-    {
-        bpf_printk("sk is NULL\n");
-        /* still emit an IMA measurement if you want */
-        char event_name[] = "socket_connect_lsm_no_socket";
-        char random_data[] = "socket_connect_no_socket_42";
-    int ret = bpf_ima_extend_measurement(event_name, NULL, NULL, random_data, sizeof(random_data));
-        bpf_printk("IMA measurement result (no socket): %d\n", ret);
-        return 0;
-    }
+    pid_tgid = bpf_get_current_pid_tgid();
+    pid = (u32)(pid_tgid >> 32);
+    uid_gid = bpf_get_current_uid_gid();
+    uid = (u32)(uid_gid & 0xFFFFFFFF);
 
-    /* Basic socket/core fields */
-    family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    proto = BPF_CORE_READ(sk, sk_protocol); /* protocol number, e.g. IPPROTO_TCP */
-    state = BPF_CORE_READ(sk, __sk_common.skc_state);
+    bpf_get_current_comm(comm, sizeof(comm));
 
-    /* IPv4 addresses & ports (most common case) */
-    if (family == AF_INET)
-    {
-        /* local port */
-        sport = (u16)BPF_CORE_READ(sk, __sk_common.skc_num);
-        /* remote port is stored in network order -> convert to host order */
-        dport = (u16)BPF_CORE_READ(sk, __sk_common.skc_dport);
-        dport = bpf_ntohs(dport);
+    /* --- Address Gathering --- */
 
-        /* addresses are stored as 32-bit integers */
-        saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-        daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    /* Get Source Info
+     * The source info lives in the 'sk' struct.
+     * Note: saddr and sport might be 0 if the socket was not
+     * explicitly bound before calling connect().
+     */
+    u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 
-        pid_tgid = bpf_get_current_pid_tgid();
-        pid = (u32)(pid_tgid >> 32);
-        uid_gid = bpf_get_current_uid_gid();
-        uid = (u32)(uid_gid & 0xFFFFFFFF);
+    /* Get Destination Info */
+    u32 daddr = BPF_CORE_READ(address_in, sin_addr.s_addr);
+    u16 dport = BPF_CORE_READ(address_in, sin_port);
+    
+    /* --- Print the Addresses --- */    
+    bpf_printk("\n=== SOCKET CONNECT (LSM) ===");
+    bpf_printk("  conn pid=%d uid=%d proto=%d state=%d comm=%s", pid, uid, proto, state, comm);
+    
+    bpf_printk("  SRC: %d.%d.%d.%d:%u",
+                (saddr >> 0) & 0xff,
+                (saddr >> 8) & 0xff,
+                (saddr >> 16) & 0xff,
+                (saddr >> 24) & 0xff,
+                sport
+            );
 
-        bpf_get_current_comm(comm, sizeof(comm));
-
-        bpf_printk("conn pid=%d uid=%d proto=%d state=%d\n", pid, uid, proto, state);
-        bpf_printk("local %pI4:%d -> remote %pI4:%d\n", &saddr, sport, &daddr, dport);
-        bpf_printk("comm=%s\n", comm);
-    }
-    else
-    {
-        /* IPv6 or other families: log family/proto/state and skip detailed addr extraction */
-        pid_tgid = bpf_get_current_pid_tgid();
-        pid = (u32)(pid_tgid >> 32);
-        uid_gid = bpf_get_current_uid_gid();
-        uid = (u32)(uid_gid & 0xFFFFFFFF);
-        bpf_get_current_comm(comm, sizeof(comm));
-
-        bpf_printk("conn (non-IPv4) pid=%d uid=%d family=%d proto=%d state=%d comm=%s\n",
-                   pid, uid, family, proto, state, comm);
-
-        /* OPTIONAL: attempt IPv6 extraction (careful with verifier / field names per kernel)
-           Example (may need tuning per kernel's vmlinux.h):
-           unsigned int v6_0 = BPF_CORE_READ(sk, __sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
-           ...
-         */
-    }
-
-    {
-        char event_name[] = "socket_connect_lsm_event";
-        char random_data[] = "socket_connect_seen_42";
-    int ret = bpf_ima_extend_measurement(event_name, NULL, NULL, random_data, sizeof(random_data));
-        bpf_printk("IMA measurement result: %d\n", ret);
-    }
+    bpf_printk("  DST: %d.%d.%d.%d:%u\n",
+                (daddr >> 0) & 0xff,
+                (daddr >> 8) & 0xff,
+                (daddr >> 16) & 0xff,
+                (daddr >> 24) & 0xff,
+                bpf_ntohs(dport) /* Convert network to host order for printing */
+            );
 
     return 0;
 }

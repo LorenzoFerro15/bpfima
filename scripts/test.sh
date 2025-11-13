@@ -335,6 +335,38 @@ for container in nginx redis postgres; do
 done
 log_info "Containers stopped"
 
+sleep 2
+
+# Socket creation tests
+log_info ""
+log_info "Testing socket creation"
+
+# Test TCP connection between two valid IPs (localhost)
+log_info "Testing TCP connection between two valid IPs (127.0.0.1)"
+python3 -c "
+import socket, threading, time
+def server():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 23456))
+    s.listen(1)
+    conn, addr = s.accept()
+    conn.send(b'hello')
+    conn.close()
+    s.close()
+threading.Thread(target=server, daemon=True).start()
+time.sleep(1)
+c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+c.connect(('127.0.0.1', 23456))
+data = c.recv(16)
+c.close()
+print('TCP connection test: received', data)
+"
+log_info "TCP connection test completed"
+
+log_info "Socket creation tests completed"
+# To see the socket hook output, use the following command:
+# tail -20 /sys/kernel/debug/tracing/trace_pipe
+
 # 8. Display summary
 log_info "Test completed successfully"
 log_info "Check logs with: dmesg | grep bpfima"
