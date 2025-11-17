@@ -3,6 +3,7 @@
 #include "bpfima_kfuncs.h"
 #include "bpfima_merkle.h"
 #include "bpfima_securityfs.h"
+#include "bpfima_policy.h"
 
 /*
  * bpfima_securityfs_init - Initialize SecurityFS interface for BPF-IMA
@@ -123,6 +124,13 @@ static int __init bpfima_init(void)
 
     printk(KERN_INFO "BPF-IMA module initializing...\n");
     
+    /* Initialize policy subsystem first */
+    ret = bpfima_policy_init();
+    if (ret) {
+        pr_err("bpfima: Failed to initialize policy subsystem: %d\n", ret);
+        return ret;
+    }
+    
     /* Initialize Merkle tree root */
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
     spin_lock_init(&system_merkle_root.lock);
@@ -131,18 +139,21 @@ static int __init bpfima_init(void)
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
+        bpfima_policy_cleanup();
         return ret;
     }
     
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
+        bpfima_policy_cleanup();
         return ret;
     }
     
     ret = bpfima_securityfs_init();
     if (ret) {
         pr_err("bpfima: Failed to initialize SecurityFS interface\n");
+        bpfima_policy_cleanup();
         return ret;
     }
     
@@ -176,6 +187,9 @@ static void __exit bpfima_exit(void)
     
     /* Now clean up main securityfs interface (after containers are gone) */
     bpfima_securityfs_cleanup();
+    
+    /* Clean up policy subsystem */
+    bpfima_policy_cleanup();
     
     /* Clean up original BPF measurement list */
     bpf_ima_print_measurement_list();

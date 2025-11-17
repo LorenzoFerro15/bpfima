@@ -3,7 +3,7 @@
 char LICENSE[] SEC("license") = "GPL";
 
 /*
- * LSM hook for monitoring file open operations
+ * LSM hook for monitoring file open operations with policy enforcement
  * Uses file_open hook which has access to the file structure
  */
 SEC("lsm/file_open")
@@ -20,6 +20,14 @@ int BPF_PROG(lsm_file_open, struct file *file)
         return 0;
     }
     
+    /* POLICY CHECK: First check if this hook should process */
+    if (!bpfima_should_process(HOOK_LSM_FILE_OPEN)) {
+        return 0; /* Hook disabled by policy */
+    }
+
+    struct bpfima_policy_config *policy = bpfima_get_policy();
+    struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_FILE_OPEN);
+    
     /* Get basic process info */
     bpf_get_current_comm(comm, sizeof(comm));
     pid = bpf_get_current_pid_tgid() >> 32;
@@ -35,21 +43,26 @@ int BPF_PROG(lsm_file_open, struct file *file)
         return 0;
     }
     
-    bpf_printk("=== LSM file_open: Regular file opened by %s (PID: %u) ===\n", comm, pid);
+    if (!policy || policy->log_level >= 2) {
+        bpf_printk("=== LSM file_open: Regular file opened by %s (PID: %u) ===\n", comm, pid);
+    }
     
-    /* Try bpf_ima_file_hash in LSM context */
-    hash_ret = bpf_ima_file_hash(file, file_hash, sizeof(file_hash));
-    
-    if (hash_ret > 0) {
-        bpf_printk("SUCCESS! bpf_ima_file_hash returned %ld bytes in LSM\n", hash_ret);
-        bpf_printk("Hash: %02x%02x%02x%02x%02x%02x%02x%02x...\n",
-                   file_hash[0] & 0xff, file_hash[1] & 0xff, file_hash[2] & 0xff, file_hash[3] & 0xff,
-                   file_hash[4] & 0xff, file_hash[5] & 0xff, file_hash[6] & 0xff, file_hash[7] & 0xff);
+    if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_MEASURE_HASH)) {
+        hash_ret = bpf_ima_file_hash(file, file_hash, sizeof(file_hash));
         
-        bpf_printk("✓ IMA file hash successfully obtained in LSM!\n");
-        
-    } else {
-        bpf_printk("⚠ bpf_ima_file_hash failed in LSM: %ld\n", hash_ret);
+        if (hash_ret > 0) {
+            if (!policy || policy->log_level >= 2) {
+                bpf_printk("SUCCESS! bpf_ima_file_hash returned %ld bytes in LSM\n", hash_ret);
+                bpf_printk("Hash: %02x%02x%02x%02x%02x%02x%02x%02x...\n",
+                           file_hash[0] & 0xff, file_hash[1] & 0xff, file_hash[2] & 0xff, file_hash[3] & 0xff,
+                           file_hash[4] & 0xff, file_hash[5] & 0xff, file_hash[6] & 0xff, file_hash[7] & 0xff);
+                bpf_printk("✓ IMA file hash successfully obtained in LSM!\n");
+            }
+        } else {
+            if (!policy || policy->log_level >= 1) {
+                bpf_printk("⚠ bpf_ima_file_hash failed in LSM: %ld\n", hash_ret);
+            }
+        }
     }
     
     return 0;

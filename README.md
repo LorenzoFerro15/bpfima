@@ -1,16 +1,20 @@
 # bpfima
 
-eBPF-based integrity monitoring system with container tracking, Merkle tree verification, and TPM integration.
+eBPF-based integrity monitoring system with container tracking, Merkle tree verification, TPM integration, and **policy-based configuration**.
 
 ## Overview
 
 This system monitors file operations and container events using eBPF LSM and kprobe hooks. Measurements are organized per-container in a Merkle tree structure, with the root hash extended to TPM PCR 23 for hardware-backed attestation.
+
+**NEW:** Policy-based configuration system allows fine-grained control over what gets measured, filtered, and how events are processed - all configurable via YAML while enforced at the kernel level.
 
 ## Directory Structure
 
 ```
 bpfima/
 ├── build/              # Build output (auto-generated)
+├── config/             # Policy configuration files
+│   ├── bpfima_policy.yaml      # Policy documentation
 ├── hooks/              # eBPF hook implementations
 │   ├── kprobe/         # Kprobe hooks
 │   └── lsm/            # LSM hooks
@@ -27,8 +31,8 @@ bpfima/
 
 ### eBPF Hooks
 - `lsm_container_events.c` - Container lifecycle tracking
-- `lsm_bprm_check_security.c` - Process execution monitoring
-- `lsm_file_open.c` / `lsm_file_post_open.c` - File access monitoring
+- `lsm_bprm_check_security.c` - Process execution monitoring (policy-enabled)
+- `lsm_file_open.c` / `lsm_file_post_open.c` - File access monitoring (policy-enabled)
 - `lsm_mmap_file.c` - Memory-mapped file monitoring
 - `lsm_socket_connect.c` - Network connection monitoring
 - `kprobe_file_open.c` - Alternative file open tracking
@@ -38,6 +42,7 @@ The module provides custom BPF kfuncs and manages:
 - Container tracking with per-container measurement lists
 - Merkle tree with SHA-256 hashing
 - TPM PCR 23 extensions
+- **Policy management and enforcement**
 - SecurityFS interface at `/sys/kernel/security/bpfima/`
 
 ### Loader
@@ -101,6 +106,7 @@ sudo rmmod bpfima
 /sys/kernel/security/bpfima/
 ├── merkle_root              # Current Merkle tree root hash
 ├── measurements             # Global measurement list
+├── status                   # Module status and configuration
 ├── container_list           # Tracked containers
 └── containers/
     └── <container_id>/
@@ -110,7 +116,47 @@ sudo rmmod bpfima
 Read example:
 ```bash
 cat /sys/kernel/security/bpfima/merkle_root
+cat /sys/kernel/security/bpfima/status
 cat /sys/kernel/security/bpfima/containers/*/measurements
+```
+
+## Policy Configuration
+
+BPF IMA supports a hybrid policy system for fine-grained control:
+
+- **User-level config**: Edit `config/bpfima_policy.yaml` to define policies
+- **Kernel-level enforcement**: Policies enforced in eBPF via BPF maps (secure, fast)
+- **Runtime control**: Enable/disable hooks, filters, and actions without reloading
+
+### Quick Start:
+
+```bash
+# View policy configuration
+cat config/bpfima_policy.yaml
+
+# Edit policy (configure filters, actions, patterns)
+vim config/bpfima_policy.yaml
+
+### Policy Features:
+
+- **Global enable/disable** - Master switch for all hooks
+- **Filter flags** - Skip system cgroups, /proc, /sys, /dev, etc.
+- **Action flags** - Control TPM extension, logging, container tracking
+- **Pattern matching** - Ignore specific cgroups or paths
+- **Per-hook config** - Enable/disable individual hooks
+- **Log levels** - Control verbosity (0=none, 1=errors, 2=info, 3=debug)
+
+**Example:** Filter system cgroups but track containers:
+```yaml
+bpfima_policy:
+  enabled: true
+  log_level: 2
+  filters:
+    filter_system_cgroups: true  # Skip init.scope, system.slice, etc.
+    filter_proc_sys: true         # Skip /proc and /sys
+  actions:
+    track_containers: true        # Enable per-container tracking
+    extend_tpm: true              # Extend TPM with measurements
 ```
 
 ## Architecture
