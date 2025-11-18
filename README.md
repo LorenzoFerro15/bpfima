@@ -14,13 +14,11 @@ This system monitors file operations and container events using eBPF LSM and kpr
 bpfima/
 ├── build/              # Build output (auto-generated)
 ├── hooks/              # eBPF hook implementations
-│   ├── kprobe/         # Kprobe hooks
 │   └── lsm/            # LSM hooks
 ├── include/            # Header files
 ├── src/                # Kernel module source (modular)
 ├── scripts/            # Test scripts
 ├── tools/              # Userspace tools (policy_init)
-├── templates/          # Code templates
 ├── utils/              # Utility headers
 ├── loader.c            # eBPF program loader
 └── Makefile            # Build system
@@ -34,7 +32,6 @@ bpfima/
 - `lsm_file_open.c` / `lsm_file_post_open.c` - File access monitoring (policy-enabled)
 - `lsm_mmap_file.c` - Memory-mapped file monitoring
 - `lsm_socket_connect.c` - Network connection monitoring
-- `kprobe_file_open.c` - Alternative file open tracking
 
 ### Kernel Module
 The module provides custom BPF kfuncs and manages:

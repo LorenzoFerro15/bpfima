@@ -1,17 +1,9 @@
-# Build directory - contains all compiled objects
+# Build directory - contains all compiled objects and executables
 build/
 
 # Kernel build system files (in case they end up in root)
 *.cmd
 .tmp_versions/
-
-# Compiled executables (legacy, now in build/)
-loader
-loader_simple
-loader_tmp
-loader_tpm
-loader_kprobe
-loader_lsm_ima
 
 vmlinux.h
 log.txt
