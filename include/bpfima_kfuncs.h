@@ -29,6 +29,13 @@ __bpf_kfunc int bpf_container_get_count(void);
 __bpf_kfunc int bpf_container_exists(const char *container_id);
 __bpf_kfunc int bpf_get_container_leaf_hash(const char *container_id, u8 *leaf_hash, u32 hash_size);
 
+/* Policy update kfuncs */
+__bpf_kfunc int bpf_policy_update_filter_flags(const char *namespace_id, u32 new_flags);
+__bpf_kfunc int bpf_policy_update_action_flags(const char *namespace_id, u32 new_flags);
+__bpf_kfunc int bpf_policy_update_min_file_size(const char *namespace_id, u32 new_size);
+__bpf_kfunc int bpf_policy_update_log_level(const char *namespace_id, u32 new_level);
+__bpf_kfunc int bpf_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
+
 extern const struct btf_kfunc_id_set bpf_kfunc_example_set;
 
 #endif /* BPFIMA_KFUNCS_H */

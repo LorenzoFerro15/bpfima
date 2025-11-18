@@ -205,6 +205,9 @@ int container_measurements_open(struct inode *inode, struct file *file)
  */
 void bpfima_securityfs_cleanup(void)
 {
+    /* Remove global policy file first */
+    remove_global_policy_securityfs();
+    
     if (merkle_root_history_file) {
         securityfs_remove(merkle_root_history_file);
         merkle_root_history_file = NULL;
@@ -232,7 +235,7 @@ void bpfima_securityfs_cleanup(void)
  * @container: Container node to create directory for
  *
  * Creates a subdirectory under /sys/kernel/security/bpfima/namespaces/<namespace_id>/
- * and a measurements file within it.
+ * with measurements file and policy file within it.
  *
  * Returns: 0 on success, negative error code on failure
  */
@@ -261,6 +264,16 @@ int create_container_securityfs(struct container_node *container)
         return PTR_ERR(container->securityfs_measurements_file);
     }
     
+    /* Create policy file for this container */
+    container->securityfs_policy_file = 
+        create_namespace_policy_securityfs(container->id, container->securityfs_dir);
+    if (IS_ERR(container->securityfs_policy_file)) {
+        pr_warn("bpfima: Failed to create policy file for container %s: %ld\n",
+                container->id, PTR_ERR(container->securityfs_policy_file));
+        /* Non-fatal - continue without policy file */
+        container->securityfs_policy_file = NULL;
+    }
+    
     pr_info("bpfima: Created securityfs for container %s\n", container->id);
     return 0;
 }
@@ -274,6 +287,11 @@ int create_container_securityfs(struct container_node *container)
  */
 void remove_container_securityfs(struct container_node *container)
 {
+    if (container->securityfs_policy_file && !IS_ERR(container->securityfs_policy_file)) {
+        remove_namespace_policy_securityfs(container->securityfs_policy_file);
+        container->securityfs_policy_file = NULL;
+    }
+    
     if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file)) {
         securityfs_remove(container->securityfs_measurements_file);
         container->securityfs_measurements_file = NULL;

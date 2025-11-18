@@ -6,21 +6,20 @@ eBPF-based integrity monitoring system with container tracking, Merkle tree veri
 
 This system monitors file operations and container events using eBPF LSM and kprobe hooks. Measurements are organized per-container in a Merkle tree structure, with the root hash extended to TPM PCR 23 for hardware-backed attestation.
 
-**NEW:** Policy-based configuration system allows fine-grained control over what gets measured, filtered, and how events are processed - all configurable via YAML while enforced at the kernel level.
+**NEW:** Policy-based configuration system allows fine-grained control over what gets measured, filtered, and how events are processed - configured via BPF maps and enforced at the kernel level.
 
 ## Directory Structure
 
 ```
 bpfima/
 ├── build/              # Build output (auto-generated)
-├── config/             # Policy configuration files
-│   ├── bpfima_policy.yaml      # Policy documentation
 ├── hooks/              # eBPF hook implementations
 │   ├── kprobe/         # Kprobe hooks
 │   └── lsm/            # LSM hooks
 ├── include/            # Header files
 ├── src/                # Kernel module source (modular)
 ├── scripts/            # Test scripts
+├── tools/              # Userspace tools (policy_init)
 ├── templates/          # Code templates
 ├── utils/              # Utility headers
 ├── loader.c            # eBPF program loader
@@ -87,18 +86,27 @@ sudo ./scripts/test.sh --validate
 ### Manual
 
 ```bash
-# Load kernel module
+# 1. Load kernel module
 sudo insmod build/bpfima.ko
 
-# Attach eBPF program
-sudo ./build/loader lsm_bprm_check_security
+# 2. Attach eBPF program (automatically pins policy maps)
+sudo ./build/loader build/lsm_bprm_check_security.o &
 
-# View trace output
+# 3. Initialize policy maps (REQUIRED!)
+sudo ./build/policy_init
+
+# 4. View trace output
 sudo cat /sys/kernel/debug/tracing/trace_pipe
 
+# 5. Check measurements
+sudo cat /sys/kernel/security/bpfima/status
+
 # Cleanup
+sudo pkill loader
 sudo rmmod bpfima
 ```
+
+**Note:** Step 3 (policy_init) is essential! Without it, policy maps remain empty and the system uses restrictive hardcoded fallbacks that filter out most activity.
 
 ## SecurityFS Interface
 
@@ -122,41 +130,152 @@ cat /sys/kernel/security/bpfima/containers/*/measurements
 
 ## Policy Configuration
 
-BPF IMA supports a hybrid policy system for fine-grained control:
+BPF IMA uses a policy system to control what gets measured and how:
 
-- **User-level config**: Edit `config/bpfima_policy.yaml` to define policies
-- **Kernel-level enforcement**: Policies enforced in eBPF via BPF maps (secure, fast)
-- **Runtime control**: Enable/disable hooks, filters, and actions without reloading
+### Architecture
 
-### Quick Start:
+- **BPF Maps**: Store policy configuration in pinned BPF maps at `/sys/fs/bpf/`
+- **Kernel Enforcement**: Policies enforced in eBPF hooks (secure, fast, kernel-level)
+- **Userspace Init**: `policy_init` tool populates maps with default values
+
+### Default Policy (as configured by policy_init)
+
+**What Gets Measured:**
+- Executable binaries
+- Scripts and interpreted code
+- Container workloads (Docker, Podman)
+- User processes (user.slice)
+- System services (system.slice)
+- Files in /dev/, /tmp/
+- Shared libraries (.so)
+
+**What Gets Filtered (too noisy):**
+- Files in /proc/
+- Files in /sys/
+- Root cgroup `/`
+- init.scope processes
+
+**Actions Enabled:**
+- TPM PCR 23 extension
+- SecurityFS logging
+- Kernel log output
+- Per-container tracking
+- Dependency chain building
+
+### Policy Configuration Options
+
+The policy system supports:
+
+1. **Filter Flags** - Control what to skip/ignore:
+   ```c
+   POLICY_FILTER_SYSTEM_CGROUPS   // Skip init.scope, system.slice
+   POLICY_FILTER_PROC_SYS         // Skip /proc/, /sys/
+   POLICY_FILTER_DEV              // Skip /dev/
+   POLICY_FILTER_READONLY_FILES   // Skip readonly opens
+   POLICY_FILTER_SMALL_FILES      // Skip files below min size
+   POLICY_FILTER_NON_EXECUTABLE   // Skip non-executable files
+   POLICY_FILTER_LIBRARIES        // Skip .so files
+   POLICY_FILTER_TMP_FILES        // Skip /tmp/ files
+   ```
+
+2. **Action Flags** - Control what actions to take:
+   ```c
+   POLICY_ACTION_EXTEND_TPM       // Extend measurements to TPM
+   POLICY_ACTION_LOG_SECURITYFS   // Log to securityfs
+   POLICY_ACTION_LOG_KERNEL       // Log to kernel (printk)
+   POLICY_ACTION_ALERT_SUSPICIOUS // Alert on suspicious activity
+   POLICY_ACTION_BLOCK            // Block operations (future)
+   POLICY_ACTION_TRACK_CONTAINER  // Track per-container
+   POLICY_ACTION_BUILD_DEPS       // Build dependency chains
+   ```
+
+3. **Pattern Matching** - Ignore specific cgroups or paths:
+   - Cgroup patterns: Exact match on cgroup names
+   - Path patterns: Prefix match on file paths
+
+4. **Per-Hook Configuration**:
+   - Enable/disable individual hooks
+   - Track containers per-hook
+   - Enable/disable hash calculation
+
+5. **Runtime Settings**:
+   - Log level (0=none, 1=errors, 2=info, 3=debug)
+   - Minimum file size threshold
+   - Maximum path depth
+
+### Customizing Policy
+
+There are three ways to customize the policy:
+
+#### 1. Edit policy_init.c (Recommended)
+
+Modify `tools/policy_init.c` to change default values:
+
+```c
+struct bpfima_policy_config policy = {
+    .enabled = 1,
+    .filter_flags = POLICY_FILTER_PROC_SYS | POLICY_FILTER_DEV,  // Add more filters
+    .action_flags = POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS,
+    .min_file_size = 1024,      // Only measure files > 1KB
+    .max_path_depth = 32,
+    .log_level = 3,             // Debug level
+};
+```
+
+Rebuild and run:
+```bash
+make build/policy_init
+sudo ./build/policy_init
+```
+
+#### 2. Use bpftool (Runtime)
+
+Directly update BPF maps at runtime:
+
+```bash
+# View current policy
+sudo bpftool map dump pinned /sys/fs/bpf/bpfima_policy_map
+
+# Update filter flags (example: add DEV filter)
+sudo bpftool map update pinned /sys/fs/bpf/bpfima_policy_map \
+    key 0 0 0 0 value 1 6 0 0 ...  # Complex, see bpftool docs
+
+# Add a new cgroup ignore pattern
+sudo bpftool map update pinned /sys/fs/bpf/bpfima_cgroup_patterns_map \
+    key 4 0 0 0 value ...
+```
+
+#### 3. Kernel Module Headers (Build-time)
+
+Edit default values in `include/bpfima_policy.h`:
+
+```c
+#define DEFAULT_FILTER_FLAGS (POLICY_FILTER_PROC_SYS | POLICY_FILTER_DEV)
+#define DEFAULT_ACTION_FLAGS (POLICY_ACTION_EXTEND_TPM | ...)
+#define DEFAULT_LOG_LEVEL 2
+```
+
+Rebuild the kernel module:
+```bash
+make clean && make all
+```
+
+### Verifying Policy
+
+Check current policy status:
 
 ```bash
 # View policy configuration
-cat config/bpfima_policy.yaml
+sudo bpftool map dump pinned /sys/fs/bpf/bpfima_policy_map
 
-# Edit policy (configure filters, actions, patterns)
-vim config/bpfima_policy.yaml
+# Check which hooks are enabled
+sudo bpftool map dump pinned /sys/fs/bpf/bpfima_hook_config_map
 
-### Policy Features:
+# View measurements (verify things are being recorded)
+sudo cat /sys/kernel/security/bpfima/status
 
-- **Global enable/disable** - Master switch for all hooks
-- **Filter flags** - Skip system cgroups, /proc, /sys, /dev, etc.
-- **Action flags** - Control TPM extension, logging, container tracking
-- **Pattern matching** - Ignore specific cgroups or paths
-- **Per-hook config** - Enable/disable individual hooks
-- **Log levels** - Control verbosity (0=none, 1=errors, 2=info, 3=debug)
-
-**Example:** Filter system cgroups but track containers:
-```yaml
-bpfima_policy:
-  enabled: true
-  log_level: 2
-  filters:
-    filter_system_cgroups: true  # Skip init.scope, system.slice, etc.
-    filter_proc_sys: true         # Skip /proc and /sys
-  actions:
-    track_containers: true        # Enable per-container tracking
-    extend_tpm: true              # Extend TPM with measurements
+# Check kernel logs for policy messages
+sudo dmesg | grep -i bpfima | grep -i policy
 ```
 
 ## Architecture

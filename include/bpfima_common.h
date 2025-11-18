@@ -70,6 +70,7 @@ struct measurement_entry {
  * @measurement_count: Number of measurements in this container's list
  * @securityfs_dir: SecurityFS directory for this container
  * @securityfs_measurements_file: SecurityFS file for container measurements
+ * @securityfs_policy_file: SecurityFS file for policy configuration
  */
 struct container_node {
     struct list_head list;
@@ -80,6 +81,7 @@ struct container_node {
     atomic_t measurement_count;
     struct dentry *securityfs_dir;
     struct dentry *securityfs_measurements_file;
+    struct dentry *securityfs_policy_file;
 };
 
 /**

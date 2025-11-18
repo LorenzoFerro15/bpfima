@@ -25,6 +25,7 @@
  */
 static int bpfima_securityfs_init(void)
 {
+    int ret = 0;
     bpfima_dir = securityfs_create_dir("bpfima", NULL);
     if (IS_ERR(bpfima_dir)) {
         long err = PTR_ERR(bpfima_dir);
@@ -77,7 +78,23 @@ static int bpfima_securityfs_init(void)
         return PTR_ERR(containers_dir);
     }
     
+    /* Create global policy file */
+    ret = create_global_policy_securityfs(bpfima_dir);
+    if (ret) {
+        pr_err("bpfima: Failed to create global policy file: %d\n", ret);
+        securityfs_remove(containers_dir);
+        securityfs_remove(merkle_root_history_file);
+        securityfs_remove(status_file);
+        securityfs_remove(bpfima_dir);
+        containers_dir = NULL;
+        merkle_root_history_file = NULL;
+        status_file = NULL;
+        bpfima_dir = NULL;
+        return ret;
+    }
+    
     pr_info("bpfima: SecurityFS interface created at /sys/kernel/security/%s/\n", bpfima_dir_name);
+    pr_info("bpfima: Global policy at /sys/kernel/security/%s/policy\n", bpfima_dir_name);
     pr_info("bpfima: Namespace tracking enabled at /sys/kernel/security/%s/namespaces/\n", bpfima_dir_name);
     return 0;
 }
@@ -97,6 +114,13 @@ BTF_ID_FLAGS(func, bpf_container_get_count)
 BTF_ID_FLAGS(func, bpf_container_get_measurement_count)
 BTF_ID_FLAGS(func, bpf_container_exists)
 BTF_ID_FLAGS(func, bpf_get_container_leaf_hash)
+
+/* Policy update kfuncs */
+BTF_ID_FLAGS(func, bpf_policy_update_filter_flags)
+BTF_ID_FLAGS(func, bpf_policy_update_action_flags)
+BTF_ID_FLAGS(func, bpf_policy_update_min_file_size)
+BTF_ID_FLAGS(func, bpf_policy_update_log_level)
+BTF_ID_FLAGS(func, bpf_policy_get_changes_hash)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
@@ -131,6 +155,14 @@ static int __init bpfima_init(void)
         return ret;
     }
     
+    /* Initialize per-namespace policy tracking */
+    ret = bpfima_policy_namespace_init();
+    if (ret) {
+        pr_err("bpfima: Failed to initialize namespace policy subsystem: %d\n", ret);
+        bpfima_policy_cleanup();
+        return ret;
+    }
+    
     /* Initialize Merkle tree root */
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
     spin_lock_init(&system_merkle_root.lock);
@@ -139,6 +171,7 @@ static int __init bpfima_init(void)
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
+        bpfima_policy_namespace_cleanup();
         bpfima_policy_cleanup();
         return ret;
     }
@@ -146,6 +179,7 @@ static int __init bpfima_init(void)
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
     if (ret) {
         pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
+        bpfima_policy_namespace_cleanup();
         bpfima_policy_cleanup();
         return ret;
     }
@@ -153,6 +187,7 @@ static int __init bpfima_init(void)
     ret = bpfima_securityfs_init();
     if (ret) {
         pr_err("bpfima: Failed to initialize SecurityFS interface\n");
+        bpfima_policy_namespace_cleanup();
         bpfima_policy_cleanup();
         return ret;
     }
@@ -189,6 +224,7 @@ static void __exit bpfima_exit(void)
     bpfima_securityfs_cleanup();
     
     /* Clean up policy subsystem */
+    bpfima_policy_namespace_cleanup();
     bpfima_policy_cleanup();
     
     /* Clean up original BPF measurement list */

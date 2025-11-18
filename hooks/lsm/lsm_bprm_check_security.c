@@ -100,11 +100,11 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
                 return 0;
             }
         } else {
-            const char *ignore_patterns[] = {"/", "init.scope", "system.slice", "user.slice"};
+            const char *ignore_patterns[] = {"/", "init.scope"};
             bool should_track = true;
             
             #pragma unroll
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 2; i++) {
                 if (__builtin_strcmp(cgroup_name, ignore_patterns[i]) == 0) {
                     should_track = false;
                     break;

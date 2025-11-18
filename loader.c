@@ -27,6 +27,7 @@ int main(int argc, char **argv)
     struct bpf_object *obj = NULL;
     struct bpf_program *prog;
     struct bpf_link *link = NULL;
+    struct bpf_map *map;
     const char *filename;
     int err = 0;
 
@@ -55,6 +56,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Set pin path for maps before loading */
+    bpf_object__for_each_map(map, obj) {
+        bpf_map__set_pin_path(map, NULL); /* Use default /sys/fs/bpf/<map_name> */
+    }
+
     /* Set LSM programs as sleepable */
     bpf_object__for_each_program(prog, obj) {
         if (bpf_program__type(prog) == BPF_PROG_TYPE_LSM) {
@@ -67,6 +73,23 @@ int main(int argc, char **argv)
     if (err) {
         fprintf(stderr, "Failed to load BPF object\n");
         goto cleanup;
+    }
+
+    /* Pin all maps after loading */
+    bpf_object__for_each_map(map, obj) {
+        const char *map_name = bpf_map__name(map);
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
+        
+        err = bpf_map__pin(map, pin_path);
+        if (err && err != -EEXIST) {
+            /* Skip warnings for read-only data maps - they can't be pinned */
+            if (strstr(map_name, ".rodata") == NULL && strstr(map_name, ".bss") == NULL) {
+                fprintf(stderr, "Warning: Failed to pin map %s: %d\n", map_name, err);
+            }
+        } else {
+            printf("Pinned map %s to %s\n", map_name, pin_path);
+        }
     }
 
     /* Attach all programs in the object */
@@ -96,6 +119,19 @@ int main(int argc, char **argv)
     /* Main loop */
     while (!exiting) {
         sleep(1);
+    }
+
+    printf("Cleaning up...\n");
+
+    /* Unpin all maps before cleanup */
+    bpf_object__for_each_map(map, obj) {
+        const char *map_name = bpf_map__name(map);
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
+        
+        if (bpf_map__unpin(map, pin_path) == 0) {
+            printf("Unpinned map %s\n", map_name);
+        }
     }
 
 cleanup:
