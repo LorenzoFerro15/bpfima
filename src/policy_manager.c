@@ -72,7 +72,6 @@ int bpfima_policy_init(void)
 
     /* Disable some hooks by default */
     hook_configs[HOOK_LSM_SOCKET_CONNECT].flags = 0; /* Disabled */
-    hook_configs[HOOK_KPROBE_FILE_OPEN].flags = 0;   /* Disabled - prefer LSM */
 
     spin_unlock_irqrestore(&policy_lock, flags);
 

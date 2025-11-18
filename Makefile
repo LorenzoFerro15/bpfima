@@ -5,10 +5,6 @@ bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o 
 # Add include directory for modular headers
 ccflags-y += -I$(src)/include
 
-# Modular version (refactored and modularized)
-# obj-m += bpfima_modular.o
-# bpfima_modular-y := src/container.o src/merkle.o src/measurements.o src/kfuncs_container.o src/hash_utils.o src/tpm_ops.o
-
 KBUILD_CFLAGS += -g -O2
 # Use BTF from sysfs if available
 KBUILD_MODPOST_WARN_MISSING_SYSCALLS := 1
@@ -40,8 +36,7 @@ BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
             $(BUILD_DIR)/lsm_socket_connect.o \
             $(BUILD_DIR)/lsm_file_post_open.o \
 			$(BUILD_DIR)/lsm_bprm_check_security.o \
-			$(BUILD_DIR)/lsm_container_events.o \
-            $(BUILD_DIR)/kprobe_file_open.o
+			$(BUILD_DIR)/lsm_container_events.o
 
 # Generic loader
 LOADER := $(BUILD_DIR)/loader
@@ -87,9 +82,6 @@ $(BUILD_DIR)/lsm_container_events.o: hooks/lsm/lsm_container_events.c | $(BUILD_
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lsm_socket_connect.o: hooks/lsm/lsm_socket_connect.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/kprobe_file_open.o: hooks/kprobe/kprobe_file_open.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 clean:
