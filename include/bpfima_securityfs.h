@@ -36,4 +36,13 @@ void bpfima_securityfs_cleanup(void);
 int create_container_securityfs(struct container_node *container);
 void remove_container_securityfs(struct container_node *container);
 
+/* Policy securityfs functions */
+struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
+                                                   struct dentry *parent_dir);
+void remove_namespace_policy_securityfs(struct dentry *policy_file);
+int create_global_policy_securityfs(struct dentry *parent_dir);
+void remove_global_policy_securityfs(void);
+extern const struct file_operations policy_fops;
+extern const struct file_operations global_policy_fops;
+
 #endif /* BPFIMA_SECURITYFS_H */

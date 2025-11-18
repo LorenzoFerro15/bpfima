@@ -1,6 +1,6 @@
 # Main module (now using shared components)
 obj-m += bpfima.o
-bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/policy_manager.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/policy_manager.o src/policy_namespace.o src/kfuncs_policy.o src/policy_securityfs.o
 
 # Add include directory for modular headers
 ccflags-y += -I$(src)/include
@@ -46,7 +46,10 @@ BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
 # Generic loader
 LOADER := $(BUILD_DIR)/loader
 
-all: $(BUILD_DIR) modules $(BPF_OBJS) $(LOADER)
+# Policy initializer tool
+POLICY_INIT := $(BUILD_DIR)/policy_init
+
+all: $(BUILD_DIR) modules $(BPF_OBJS) $(LOADER) $(POLICY_INIT)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -63,6 +66,10 @@ modules:
 # Generic loader
 $(LOADER): loader.c | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
+
+# Policy initializer
+$(POLICY_INIT): tools/policy_init.c | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -I. -o $@ $< $(LIBS)
 
 $(BUILD_DIR)/lsm_mmap_file.o: hooks/lsm/lsm_mmap_file.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@

@@ -201,6 +201,18 @@ if ! kill -0 $LOADER_PID 2>/dev/null; then
 fi
 log_info "eBPF program loaded (PID: $LOADER_PID)"
 
+# 3.5 Initialize policy maps
+log_info "Initializing BPF policy maps"
+if [ -f "$BUILD_DIR/policy_init" ]; then
+    if ! "$BUILD_DIR/policy_init"; then
+        log_warn "Failed to initialize policy maps (continuing anyway)"
+    else
+        log_info "Policy maps initialized successfully"
+    fi
+else
+    log_warn "policy_init tool not found (policy maps will be empty)"
+fi
+
 # 4. Run container test
 log_info "Starting container tests"
 
@@ -282,23 +294,23 @@ for i in "${!IMAGES[@]}"; do
     
     case "$CONTAINER" in
         nginx)
-            CMD="sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /usr/share/nginx/html/ > /dev/null'"
+            CMD=(sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /usr/share/nginx/html/ > /dev/null')
             ;;
         redis)
-            CMD="sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /data/ > /dev/null'"
+            CMD=(sh -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /data/ > /dev/null')
             ;;
         postgres)
-            CMD="bash -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /var/lib/postgresql/ > /dev/null'"
+            CMD=(bash -c 'echo test > /tmp/test.txt && cat /tmp/test.txt > /dev/null && ls -la /var/lib/postgresql/ > /dev/null')
             ;;
     esac
     
     if [ "$VERBOSE" -eq 1 ]; then
-        log_verbose "Executing in $CONTAINER_NAME: $CMD"
-        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" $CMD; then
+        log_verbose "Executing in $CONTAINER_NAME: ${CMD[*]}"
+        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" "${CMD[@]}"; then
             log_warn "Some operations failed in $CONTAINER_NAME"
         fi
     else
-        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" $CMD >/dev/null 2>&1; then
+        if ! $CONTAINER_CLI exec "$CONTAINER_NAME" "${CMD[@]}" >/dev/null 2>&1; then
             log_warn "Some operations failed in $CONTAINER_NAME"
         fi
     fi

@@ -94,18 +94,36 @@ enum bpfima_hook_id {
 };
 
 /* Default policy values */
-#define DEFAULT_FILTER_FLAGS (POLICY_FILTER_SYSTEM_CGROUPS | \
-                              POLICY_FILTER_PROC_SYS | \
-                              POLICY_FILTER_DEV)
+#define DEFAULT_FILTER_FLAGS (POLICY_FILTER_PROC_SYS)
 
 #define DEFAULT_ACTION_FLAGS (POLICY_ACTION_EXTEND_TPM | \
                               POLICY_ACTION_LOG_SECURITYFS | \
+                              POLICY_ACTION_LOG_KERNEL | \
                               POLICY_ACTION_TRACK_CONTAINER | \
                               POLICY_ACTION_BUILD_DEPS)
 
 #define DEFAULT_MIN_FILE_SIZE 0
 #define DEFAULT_MAX_PATH_DEPTH 32
 #define DEFAULT_LOG_LEVEL 2  /* Info level */
+
+/* Policy change tracking */
+#define MAX_POLICY_CHANGES_STR 1024
+
+/**
+ * struct bpfima_policy_namespace - Per-namespace policy configuration
+ * @namespace_id: Namespace/container identifier
+ * @policy: Policy configuration for this namespace
+ * @changes_str: Concatenated string of all policy changes (e.g., "filter_flags=0x7,action_flags=0x3F")
+ * @changes_hash: SHA-256 hash of the changes_str
+ * @list: Linked list node
+ */
+struct bpfima_policy_namespace {
+    char namespace_id[CONTAINER_ID_MAX_LEN];
+    struct bpfima_policy_config policy;
+    char changes_str[MAX_POLICY_CHANGES_STR];
+    u8 changes_hash[MERKLE_HASH_SIZE];
+    struct list_head list;
+};
 
 #ifdef __KERNEL__
 /* Kernel-side policy management functions */
@@ -122,6 +140,20 @@ int bpfima_policy_set_hook_config(enum bpfima_hook_id hook, struct bpfima_hook_c
 struct bpfima_pattern_entry *bpfima_policy_get_cgroup_patterns(void);
 struct bpfima_pattern_entry *bpfima_policy_get_path_patterns(void);
 struct bpfima_hook_config *bpfima_policy_get_hook_config(enum bpfima_hook_id hook);
+
+/* Per-namespace policy management */
+int bpfima_policy_namespace_init(void);
+void bpfima_policy_namespace_cleanup(void);
+struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char *namespace_id);
+int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 new_flags);
+int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 new_flags);
+int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
+int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
+int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
+
+/* Policy kfunc registration */
+int register_policy_kfuncs(void);
+void unregister_policy_kfuncs(void);
 #endif
 
 #endif /* BPFIMA_POLICY_H */

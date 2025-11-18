@@ -77,6 +77,7 @@ struct {
     __type(key, __u32);
     __type(value, struct bpfima_policy_config);
     __uint(max_entries, 1);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_policy_map SEC(".maps");
 
 /* Cgroup ignore patterns map */
@@ -85,6 +86,7 @@ struct {
     __type(key, __u32);
     __type(value, struct bpfima_pattern_entry);
     __uint(max_entries, MAX_IGNORE_PATTERNS);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_cgroup_patterns_map SEC(".maps");
 
 /* Path ignore patterns map */
@@ -93,6 +95,7 @@ struct {
     __type(key, __u32);
     __type(value, struct bpfima_pattern_entry);
     __uint(max_entries, MAX_PATH_FILTERS);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_path_patterns_map SEC(".maps");
 
 /* Per-hook configuration map */
@@ -101,6 +104,7 @@ struct {
     __type(key, __u32);
     __type(value, struct bpfima_hook_config);
     __uint(max_entries, HOOK_MAX);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_hook_config_map SEC(".maps");
 
 /* Policy helper functions for BPF hooks */
@@ -139,10 +143,7 @@ static __always_inline bool bpfima_should_ignore_cgroup(const char *cgroup_name)
         return true;
     if (bpfima_strcmp_n(cgroup_name, "init.scope", 11) == 0)
         return true;
-    if (bpfima_strcmp_n(cgroup_name, "system.slice", 13) == 0)
-        return true;
-    if (bpfima_strcmp_n(cgroup_name, "user.slice", 11) == 0)
-        return true;
+    /* Note: system.slice and user.slice are NOT filtered by default anymore */
     
     return false;
 }
@@ -154,8 +155,7 @@ static __always_inline bool bpfima_should_ignore_path(const char *path)
         return true;
     if (bpfima_starts_with(path, "/sys/"))
         return true;
-    if (bpfima_starts_with(path, "/dev/"))
-        return true;
+    /* Note: /dev/ is NOT filtered by default anymore */
     
     return false;
 }

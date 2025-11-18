@@ -5,15 +5,12 @@
 static const char *default_cgroup_patterns[] = {
     "/",
     "init.scope",
-    "system.slice",
-    "user.slice",
 };
 
 /* Default ignore patterns for paths */
 static const char *default_path_patterns[] = {
     "/proc/",
     "/sys/",
-    "/dev/",
 };
 
 /* Global policy configuration (kernel-side storage) */
@@ -51,7 +48,7 @@ int bpfima_policy_init(void)
 
     /* Initialize cgroup patterns */
     memset(cgroup_patterns, 0, sizeof(cgroup_patterns));
-    for (i = 0; i < 4 && i < MAX_IGNORE_PATTERNS; i++) {
+    for (i = 0; i < 2 && i < MAX_IGNORE_PATTERNS; i++) {
         strncpy(cgroup_patterns[i].pattern, default_cgroup_patterns[i], MAX_PATTERN_LEN - 1);
         cgroup_patterns[i].enabled = 1;
         cgroup_patterns[i].match_type = 0; /* Exact match */
@@ -59,7 +56,7 @@ int bpfima_policy_init(void)
 
     /* Initialize path patterns */
     memset(path_patterns, 0, sizeof(path_patterns));
-    for (i = 0; i < 3 && i < MAX_PATH_FILTERS; i++) {
+    for (i = 0; i < 2 && i < MAX_PATH_FILTERS; i++) {
         strncpy(path_patterns[i].pattern, default_path_patterns[i], MAX_PATTERN_LEN - 1);
         path_patterns[i].enabled = 1;
         path_patterns[i].match_type = 1; /* Prefix match */
