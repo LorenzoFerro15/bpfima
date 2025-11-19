@@ -1,16 +1,9 @@
 #include "../../utils/headers_bpf.h"
+#include "../../utils/bpf_kfunc_defs.h"
 
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & 0170000) == 0100000)
 #endif
-
-extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
-extern int bpf_ima_get_measurement_count(void) __ksym;
-extern int bpf_tpm_is_available(void) __ksym;
-extern int bpf_ima_custom_file_hash_scalar(struct file *file, u8 *digest, u32 digest_size) __ksym;
-extern int bpf_ima_hash_by_inode(u64 inode_number, u32 dev_id, u8 *digest, u32 digest_size) __ksym;
-extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
-extern int bpf_ima_hash_by_inode_content(u64 inode_number, u64 device_major, u64 device_minor, u8 *digest, u32 digest_size) __ksym;
 
 char LICENSE[] SEC("license") = "GPL";
 

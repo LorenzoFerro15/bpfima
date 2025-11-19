@@ -4,7 +4,7 @@ eBPF-based integrity monitoring system with container tracking, Merkle tree veri
 
 ## Overview
 
-This system monitors file operations and container events using eBPF LSM and kprobe hooks. Measurements are organized per-container in a Merkle tree structure, with the root hash extended to TPM PCR 23 for hardware-backed attestation.
+This system monitors file operations and container events using eBPF LSM and kprobe hooks. Measurements are organized per-container in a Merkle tree structure, with the root hash extended to a configurable TPM PCR (default: PCR 23) for hardware-backed attestation.
 
 **NEW:** Policy-based configuration system allows fine-grained control over what gets measured, filtered, and how events are processed - configured via BPF maps and enforced at the kernel level.
 
@@ -37,7 +37,7 @@ bpfima/
 The module provides custom BPF kfuncs and manages:
 - Container tracking with per-container measurement lists
 - Merkle tree with SHA-256 hashing
-- TPM PCR 23 extensions
+- TPM PCR extensions (configurable index, default: 23)
 - **Policy management and enforcement**
 - SecurityFS interface at `/sys/kernel/security/bpfima/`
 
@@ -86,6 +86,9 @@ sudo ./scripts/test.sh --validate
 # 1. Load kernel module
 sudo insmod build/bpfima.ko
 
+# Optional: Configure TPM PCR index (default: 23)
+# sudo insmod build/bpfima.ko tpm_pcr_index=10
+
 # 2. Attach eBPF program (automatically pins policy maps)
 sudo ./build/loader build/lsm_bprm_check_security.o &
 
@@ -104,6 +107,29 @@ sudo rmmod bpfima
 ```
 
 **Note:** Step 3 (policy_init) is essential! Without it, policy maps remain empty and the system uses restrictive hardcoded fallbacks that filter out most activity.
+
+## Module Parameters
+
+The bpfima kernel module supports the following runtime parameters:
+
+### TPM PCR Index
+
+Configure which TPM PCR (Platform Configuration Register) to use for measurements:
+
+```bash
+# Load with custom PCR index
+sudo insmod build/bpfima.ko tpm_pcr_index=10
+
+# View current PCR index
+cat /sys/module/bpfima/parameters/tpm_pcr_index
+
+# Change at runtime (if module was loaded with writable permissions)
+echo 15 | sudo tee /sys/module/bpfima/parameters/tpm_pcr_index
+```
+
+**Default:** PCR 23 (commonly used for custom measurements)  
+**Valid range:** 0-23 (most TPMs)  
+**Note:** PCR 0-15 are typically reserved for BIOS/bootloader. PCR 16-23 are available for OS and application use.
 
 ## SecurityFS Interface
 

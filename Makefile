@@ -20,7 +20,6 @@ BPF_TARGET := bpf
 KERNEL_VER := $(shell uname -r)
 BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
 
-# Task 6: Increase BPF stack size for enhanced communication features
 CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
 
 CC ?= gcc
@@ -32,11 +31,8 @@ BUILD_DIR := build
 
 # eBPF objects to compile
 BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
-            $(BUILD_DIR)/lsm_file_open.o \
-            $(BUILD_DIR)/lsm_socket_connect.o \
             $(BUILD_DIR)/lsm_file_post_open.o \
-			$(BUILD_DIR)/lsm_bprm_check_security.o \
-			$(BUILD_DIR)/lsm_container_events.o
+			$(BUILD_DIR)/lsm_bprm_check_security.o
 
 # Generic loader
 LOADER := $(BUILD_DIR)/loader
@@ -69,19 +65,10 @@ $(POLICY_INIT): tools/policy_init.c | $(BUILD_DIR)
 $(BUILD_DIR)/lsm_mmap_file.o: hooks/lsm/lsm_mmap_file.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/lsm_file_open.o: hooks/lsm/lsm_file_open.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
 $(BUILD_DIR)/lsm_file_post_open.o: hooks/lsm/lsm_file_post_open.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lsm_bprm_check_security.o: hooks/lsm/lsm_bprm_check_security.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/lsm_container_events.o: hooks/lsm/lsm_container_events.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/lsm_socket_connect.o: hooks/lsm/lsm_socket_connect.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 clean:
