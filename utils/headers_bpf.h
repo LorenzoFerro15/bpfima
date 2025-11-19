@@ -136,28 +136,74 @@ static __always_inline bool bpfima_starts_with(const char *str, const char *pref
     return true;
 }
 
-/* Check if cgroup should be ignored based on patterns */
-static __always_inline bool bpfima_should_ignore_cgroup(const char *cgroup_name)
+static __always_inline bool bpfima_should_ignore_cgroup(const char *cgroup_name, struct bpfima_policy_config *policy)
 {
-    if (bpfima_strcmp_n(cgroup_name, "/", 2) == 0)
-        return true;
+    if (!policy) {
+        if (bpfima_strcmp_n(cgroup_name, "/", 2) == 0 && cgroup_name[1] == '\0')
+            return true;  /* Exact match for "/" only */
+        if (bpfima_strcmp_n(cgroup_name, "init.scope", 11) == 0)
+            return true;
+        return false;
+    }
+    
+    if (!(policy->filter_flags & POLICY_FILTER_SYSTEM_CGROUPS)) {
+        return false;
+    }
+    
+    if (bpfima_strcmp_n(cgroup_name, "/", 2) == 0 && cgroup_name[1] == '\0')
+        return true;  
     if (bpfima_strcmp_n(cgroup_name, "init.scope", 11) == 0)
         return true;
-    /* Note: system.slice and user.slice are NOT filtered by default anymore */
     
     return false;
 }
 
-/* Check if path should be ignored based on patterns */
-static __always_inline bool bpfima_should_ignore_path(const char *path)
+static __always_inline bool bpfima_should_ignore_path(const char *path, struct bpfima_policy_config *policy)
 {
+    if (!policy) {
+        if (bpfima_starts_with(path, "/proc/"))
+            return true;
+        if (bpfima_starts_with(path, "/sys/"))
+            return true;
+        return false;
+    }
+    
+    if (!(policy->filter_flags & POLICY_FILTER_PROC_SYS)) {
+        return false;
+    }
+    
     if (bpfima_starts_with(path, "/proc/"))
         return true;
     if (bpfima_starts_with(path, "/sys/"))
         return true;
-    /* Note: /dev/ is NOT filtered by default anymore */
     
     return false;
+}
+
+/* Check if cgroup name represents an actual container (not just any cgroup) */
+static __always_inline bool bpfima_is_container_cgroup(const char *cgroup_name)
+{
+    if (!cgroup_name || cgroup_name[0] == '\0')
+        return false;
+    
+    /* Filter out root and system management cgroups */
+    if (bpfima_strcmp_n(cgroup_name, "/", 2) == 0 && cgroup_name[1] == '\0')
+        return false;  /* Root cgroup */
+    if (bpfima_strcmp_n(cgroup_name, "init.scope", 11) == 0)
+        return false;
+    if (bpfima_strcmp_n(cgroup_name, "system.slice", 13) == 0)
+        return false;  /* System services, not containers */
+    if (bpfima_strcmp_n(cgroup_name, "user.slice", 11) == 0)
+        return false;  /* User processes, not containers */
+    
+    /* Any other cgroup name is likely a container */
+    /* Real containers typically have names like:
+     * - docker-<hash>.scope
+     * - libpod-<hash>.scope  
+     * - cri-containerd-<hash>.scope
+     * - Or custom names
+     */
+    return true;
 }
 
 /* Get main policy configuration */

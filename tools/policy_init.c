@@ -135,7 +135,7 @@ int main(int argc, char **argv)
     /* Initialize main policy configuration */
     struct bpfima_policy_config policy = {
         .enabled = 1,
-        .filter_flags = POLICY_FILTER_PROC_SYS,  /* Only filter /proc and /sys by default */
+        .filter_flags = 0, 
         .action_flags = POLICY_ACTION_EXTEND_TPM | 
                        POLICY_ACTION_LOG_SECURITYFS | 
                        POLICY_ACTION_LOG_KERNEL |
@@ -239,9 +239,15 @@ int main(int argc, char **argv)
 
     printf("\n✓ Policy initialization complete!\n");
     printf("  Policy enabled: Yes\n");
-    printf("  Filter flags: 0x%x (only /proc and /sys filtered)\n", policy.filter_flags);
+    printf("  Filter flags: 0x%x (NO filtering - tracks all user processes, containers, etc.)\n", policy.filter_flags);
     printf("  Action flags: 0x%x (TPM extend, log to securityfs+kernel, track containers, build deps)\n", policy.action_flags);
     printf("  Log level: %u (Info)\n", policy.log_level);
+    printf("\n  What gets measured:\n");
+    printf("    - All user processes (user.slice)\n");
+    printf("    - All containers (Docker, Podman, etc.)\n");
+    printf("    - System services (system.slice)\n");
+    printf("    - Files in /dev/, /tmp/\n");
+    printf("    - Everything except: /, init.scope (minimal system overhead)\n");
 
 cleanup:
     close(policy_fd);

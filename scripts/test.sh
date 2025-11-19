@@ -127,6 +127,13 @@ cleanup() {
     # Wait a bit for BPF programs to detach
     sleep 1
     
+    # Clean up pinned BPF maps
+    log_verbose "Cleaning up pinned BPF maps"
+    rm -f /sys/fs/bpf/bpfima_policy_map 2>/dev/null || true
+    rm -f /sys/fs/bpf/bpfima_hook_config_map 2>/dev/null || true
+    rm -f /sys/fs/bpf/bpfima_cgroup_patterns_map 2>/dev/null || true
+    rm -f /sys/fs/bpf/bpfima_path_patterns_map 2>/dev/null || true
+    
     # Try to remove module
     if lsmod | grep -q "^bpfima "; then
         log_info "Removing kernel module"
@@ -201,16 +208,41 @@ if ! kill -0 $LOADER_PID 2>/dev/null; then
 fi
 log_info "eBPF program loaded (PID: $LOADER_PID)"
 
-# 3.5 Initialize policy maps
-log_info "Initializing BPF policy maps"
+# 3.5 Wait for BPF maps to be pinned
+log_verbose "Waiting for BPF maps to be available..."
+sleep 1
+
+# 3.6 Initialize policy maps with less strict defaults
+log_info "Initializing BPF policy maps (less strict policy - tracks everything)"
 if [ -f "$BUILD_DIR/policy_init" ]; then
-    if ! "$BUILD_DIR/policy_init"; then
-        log_warn "Failed to initialize policy maps (continuing anyway)"
+    if [ "$VERBOSE" -eq 1 ]; then
+        if ! "$BUILD_DIR/policy_init"; then
+            log_err "Failed to initialize policy maps"
+            log_err "This may cause issues with event recording"
+            log_warn "Continuing anyway..."
+        else
+            log_info "✓ Policy maps initialized successfully"
+            log_info "  - Filter flags: 0x0 (no filtering)"
+            log_info "  - All user processes, containers, and system services will be tracked"
+        fi
     else
-        log_info "Policy maps initialized successfully"
+        if ! "$BUILD_DIR/policy_init" > /dev/null 2>&1; then
+            log_warn "Failed to initialize policy maps (continuing anyway)"
+        else
+            log_info "Policy maps initialized successfully"
+        fi
     fi
 else
-    log_warn "policy_init tool not found (policy maps will be empty)"
+    log_err "policy_init tool not found at $BUILD_DIR/policy_init"
+    log_err "Policy maps will be empty - events may not be recorded!"
+    log_warn "Run 'make' to build policy_init"
+fi
+
+# Verify policy map is accessible
+if [ -e "/sys/fs/bpf/bpfima_policy_map" ]; then
+    log_verbose "✓ Policy map pinned and accessible"
+else
+    log_warn "Policy map not found at /sys/fs/bpf/bpfima_policy_map"
 fi
 
 # 4. Run container test
