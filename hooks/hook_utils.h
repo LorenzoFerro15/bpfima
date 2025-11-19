@@ -1,8 +1,6 @@
 #include "../utils/headers_bpf.h"
 #include "../utils/utils.h"
-
-extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
-extern int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
+#include "../utils/bpf_kfunc_defs.h"
 
 /* Measure file access and extend IMA measurement
     * 
