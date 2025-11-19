@@ -13,14 +13,15 @@ This system monitors file operations and container events using eBPF LSM and kpr
 ```
 bpfima/
 ├── build/              # Build output (auto-generated)
+├── config/             # Policy configuration files
 ├── hooks/              # eBPF hook implementations
 │   └── lsm/            # LSM hooks
 ├── include/            # Header files
 ├── src/                # Kernel module source (modular)
 ├── scripts/            # Test scripts
-├── tools/              # Userspace tools (policy_init)
+├── tools/              # Userspace management tool (bpfima-tool)
+├── config/             # YAML policy configuration files
 ├── utils/              # Utility headers
-├── loader.c            # eBPF program loader
 └── Makefile            # Build system
 ```
 
@@ -41,8 +42,12 @@ The module provides custom BPF kfuncs and manages:
 - **Policy management and enforcement**
 - SecurityFS interface at `/sys/kernel/security/bpfima/`
 
-### Loader
-Generic userspace loader that automatically attaches eBPF programs (LSM, kprobe, tracepoint, fentry/fexit).
+### Management Tool (bpfima-tool)
+Unified userspace tool that handles:
+- Loading and attaching eBPF programs (LSM, kprobe, tracepoint, fentry/fexit)
+- Policy initialization and management
+- System status monitoring
+- Daemon mode for background operation
 
 ## Build
 
@@ -60,24 +65,21 @@ sudo dnf debuginfo-install kernel
 make all
 ```
 
-Output: `build/bpfima.ko`, `build/loader`, `build/*.o`
+Output: `build/bpfima.ko`, `build/bpfima-tool`, `build/*.o`
 
 ## Usage
 
 ### Testing
 
 ```bash
-# script helper
+# Script helper
 ./scripts/test.sh --help
 
-# verbose mode
-sudo ./scripts/test.sh --verbose
+# Verbose mode
+sudo ./scripts/test.sh -v
 
-# Test hook
-sudo ./scripts/test.sh lsm_bprm_check_security 
-
-# Validation mode
-sudo ./scripts/test.sh --validate
+# Test specific hook
+sudo ./scripts/test.sh lsm_bprm_check_security -v
 ```
 
 ### Manual
@@ -89,24 +91,24 @@ sudo insmod build/bpfima.ko
 # Optional: Configure TPM PCR index (default: 23)
 # sudo insmod build/bpfima.ko tpm_pcr_index=10
 
-# 2. Attach eBPF program (automatically pins policy maps)
-sudo ./build/loader build/lsm_bprm_check_security.o &
+# 2. Load eBPF program (daemon mode)
+sudo ./build/bpfima-tool load build/lsm_bprm_check_security.o -d
 
 # 3. Initialize policy maps (REQUIRED!)
-sudo ./build/policy_init
+sudo ./build/bpfima-tool policy-init
 
-# 4. View trace output
-sudo cat /sys/kernel/debug/tracing/trace_pipe
+# 4. Check status
+sudo ./build/bpfima-tool status
 
-# 5. Check measurements
+# 5. View measurements
 sudo cat /sys/kernel/security/bpfima/status
 
 # Cleanup
-sudo pkill loader
+sudo ./build/bpfima-tool unload
 sudo rmmod bpfima
 ```
 
-**Note:** Step 3 (policy_init) is essential! Without it, policy maps remain empty and the system uses restrictive hardcoded fallbacks that filter out most activity.
+**Note:** The unified `bpfima-tool` replaces the old separate `loader` and `policy_init` utilities.
 
 ## Module Parameters
 
@@ -159,9 +161,10 @@ BPF IMA uses a policy system to control what gets measured and how:
 
 - **BPF Maps**: Store policy configuration in pinned BPF maps at `/sys/fs/bpf/`
 - **Kernel Enforcement**: Policies enforced in eBPF hooks (secure, fast, kernel-level)
-- **Userspace Init**: `policy_init` tool populates maps with default values
+- **Userspace Management**: `bpfima-tool` manages policies (init defaults or load from YAML)
+- **YAML Configuration**: Policies can be defined in `config/*.yaml` files
 
-### Default Policy (as configured by policy_init)
+### Default Policy
 
 **What Gets Measured:**
 - Executable binaries
@@ -240,57 +243,66 @@ The policy system supports:
 
 There are three ways to customize the policy:
 
-#### 1. Edit policy_init.c (Recommended)
+#### 1. Use YAML Configuration Files (Recommended)
 
-Modify `tools/policy_init.c` to change default values:
+Edit `config/policy.yaml` or `config/policy-minimal.yaml`:
 
-```c
-struct bpfima_policy_config policy = {
-    .enabled = 1,
-    .filter_flags = POLICY_FILTER_PROC_SYS | POLICY_FILTER_DEV,  // Add more filters
-    .action_flags = POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS,
-    .min_file_size = 1024,      // Only measure files > 1KB
-    .max_path_depth = 32,
-    .log_level = 3,             // Debug level
-};
+```yaml
+policy:
+  enabled: true
+  log_level: 2
+  measure_enabled: true
+  appraise_enabled: false
+  enforce_enabled: false
+  container_tracking: true
+
+filters:
+  cgroup_patterns:
+    - "/system.slice/"
+    - "/docker/"
+  path_patterns:
+    - "/usr/bin/"
+    - "/usr/sbin/"
+
+hooks:
+  - name: "lsm_bprm_check_security"
+    enabled: true
+    measure: true
 ```
 
-Rebuild and run:
+Load the policy:
 ```bash
-make build/policy_init
-sudo ./build/policy_init
+sudo ./build/bpfima-tool policy-update config/policy.yaml
 ```
 
-#### 2. Use bpftool (Runtime)
+#### 2. Use SecurityFS Interface (Runtime)
 
-Directly update BPF maps at runtime:
+#### 2. Use SecurityFS Interface (Runtime)
+
+Update policy through the securityfs interface:
+
+```bash
+# View current policy
+cat /sys/kernel/security/bpfima/policy
+
+# Update individual settings
+echo "log_level=3" | sudo tee /sys/kernel/security/bpfima/policy
+echo "filter_flags=0x7" | sudo tee /sys/kernel/security/bpfima/policy
+echo "action_flags=0x1F" | sudo tee /sys/kernel/security/bpfima/policy
+echo "min_file_size=4096" | sudo tee /sys/kernel/security/bpfima/policy
+```
+
+#### 3. Use bpftool (Advanced)
+
+Directly update BPF maps at runtime (advanced users):
 
 ```bash
 # View current policy
 sudo bpftool map dump pinned /sys/fs/bpf/bpfima_policy_map
 
-# Update filter flags (example: add DEV filter)
+# Update with bpftool (requires knowledge of struct layout)
 sudo bpftool map update pinned /sys/fs/bpf/bpfima_policy_map \
-    key 0 0 0 0 value 1 6 0 0 ...  # Complex, see bpftool docs
-
-# Add a new cgroup ignore pattern
-sudo bpftool map update pinned /sys/fs/bpf/bpfima_cgroup_patterns_map \
-    key 4 0 0 0 value ...
-```
-
-#### 3. Kernel Module Headers (Build-time)
-
-Edit default values in `include/bpfima_policy.h`:
-
-```c
-#define DEFAULT_FILTER_FLAGS (POLICY_FILTER_PROC_SYS | POLICY_FILTER_DEV)
-#define DEFAULT_ACTION_FLAGS (POLICY_ACTION_EXTEND_TPM | ...)
-#define DEFAULT_LOG_LEVEL 2
-```
-
-Rebuild the kernel module:
-```bash
-make clean && make all
+    key 0 0 0 0 value 1 6 0 0 ...
 ```
 
 ### Verifying Policy

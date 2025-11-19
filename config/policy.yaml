@@ -1,0 +1,107 @@
+# BPF IMA Policy Configuration
+#
+# This file defines the policy for the BPF IMA system.
+# After modifying, reload with: sudo bpfima-tool policy-update config/policy.yaml
+
+---
+# Main policy configuration
+policy:
+  enabled: true
+  log_level: 2  # 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG
+  min_file_size: 0
+  max_path_depth: 32
+
+# Filter flags - Control what to skip/filter out
+# Set to true to enable filtering (skip these items)
+filters:
+  system_cgroups: false      # Filter system cgroups (/, init.scope)
+  proc_sys: false            # Filter /proc, /sys paths
+  dev: false                 # Filter /dev paths
+  readonly_files: false      # Filter readonly file opens
+  small_files: false         # Filter files below min_file_size
+  non_executable: false      # Filter non-executable files
+  libraries: false           # Filter .so libraries
+  tmp_files: false           # Filter /tmp files
+
+# Action flags - What to do when an event is captured
+actions:
+  extend_tpm: true           # Extend measurement to TPM PCR
+  log_securityfs: true       # Log to /sys/kernel/security/bpfima/
+  log_kernel: true           # Log to kernel log (dmesg)
+  alert_suspicious: false    # Alert on suspicious activity
+  block: false               # Block the operation (requires kernel support)
+  track_container: true      # Track per-container measurements
+  build_deps: true           # Build dependency chain
+
+# Cgroup ignore patterns
+# These patterns will be matched against cgroup paths
+# match_type: 0 = exact match, 1 = prefix match
+cgroup_patterns:
+  - pattern: "/"
+    enabled: true
+    match_type: 0  # exact
+  - pattern: "init.scope"
+    enabled: true
+    match_type: 0  # exact
+
+# Path ignore patterns
+# These patterns will be matched against file paths
+path_patterns:
+  - pattern: "/proc/"
+    enabled: true
+    match_type: 1  # prefix
+  - pattern: "/sys/"
+    enabled: true
+    match_type: 1  # prefix
+
+# Hook-specific configuration
+# Each hook can be individually configured
+hooks:
+  lsm_bprm_check_security:
+    enabled: true
+    track_containers: true
+    measure_hash: true
+    filter_override: 0
+    action_override: 0
+
+  lsm_file_open:
+    enabled: true
+    track_containers: true
+    measure_hash: true
+    filter_override: 0
+    action_override: 0
+
+  lsm_file_post_open:
+    enabled: true
+    track_containers: true
+    measure_hash: true
+    filter_override: 0
+    action_override: 0
+
+  lsm_mmap_file:
+    enabled: true
+    track_containers: true
+    measure_hash: true
+    filter_override: 0
+    action_override: 0
+
+  lsm_socket_connect:
+    enabled: false
+    track_containers: false
+    measure_hash: false
+    filter_override: 0
+    action_override: 0
+
+  lsm_container_events:
+    enabled: true
+    track_containers: true
+    measure_hash: true
+    filter_override: 0
+    action_override: 0
+
+  kprobe_file_open:
+    enabled: false
+    track_containers: false
+    measure_hash: false
+    filter_override: 0
+    action_override: 0
