@@ -24,23 +24,19 @@ CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror $(BPF_HEADERS) -mllvm -bpf-
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
-LIBS := -lbpf -lelf -lz
+LIBS := -lbpf -lelf -lz -lyaml
 
 # Build directory for all output files
 BUILD_DIR := build
 
-# eBPF objects to compile
-BPF_OBJS := $(BUILD_DIR)/lsm_mmap_file.o \
-            $(BUILD_DIR)/lsm_file_post_open.o \
-			$(BUILD_DIR)/lsm_bprm_check_security.o
+# eBPF source files (auto-discover from hooks/lsm/)
+BPF_SRCS := $(wildcard hooks/lsm/*.c)
+BPF_OBJS := $(patsubst hooks/lsm/%.c,$(BUILD_DIR)/%.o,$(BPF_SRCS))
 
-# Generic loader
-LOADER := $(BUILD_DIR)/loader
+# Userspace tools
+BPFIMA_TOOL := $(BUILD_DIR)/bpfima-tool
 
-# Policy initializer tool
-POLICY_INIT := $(BUILD_DIR)/policy_init
-
-all: $(BUILD_DIR) modules $(BPF_OBJS) $(LOADER) $(POLICY_INIT)
+all: $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -54,22 +50,14 @@ modules:
 	@mv -f src/.*.cmd $(BUILD_DIR)/ 2>/dev/null || true
 	@rm -rf .tmp_versions 2>/dev/null || true
 
-# Generic loader
-$(LOADER): loader.c | $(BUILD_DIR)
-	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
+# Unified management tool (replaces old loader + policy_init)
+$(BPFIMA_TOOL): tools/bpfima_tool.c tools/yaml_parser.c | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -I. -o $@ tools/bpfima_tool.c tools/yaml_parser.c $(LIBS)
 
-# Policy initializer
-$(POLICY_INIT): tools/policy_init.c | $(BUILD_DIR)
-	$(CC) $(USER_CFLAGS) -I. -o $@ $< $(LIBS)
-
-$(BUILD_DIR)/lsm_mmap_file.o: hooks/lsm/lsm_mmap_file.c | $(BUILD_DIR)
+# Generic rule for compiling eBPF programs from hooks/lsm/
+$(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/lsm_file_post_open.o: hooks/lsm/lsm_file_post_open.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/lsm_bprm_check_security.o: hooks/lsm/lsm_bprm_check_security.c | $(BUILD_DIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
+	@echo "Built eBPF object: $@"
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean

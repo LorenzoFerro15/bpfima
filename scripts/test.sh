@@ -7,6 +7,16 @@ set -e
 VERBOSE=0
 BPF_HOOK=""
 
+# Get paths first
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="$PROJECT_ROOT/build"
+TEST_DIR="/tmp/bpfima_test"
+CONTAINER_NAME_PREFIX="bpfima_test"
+
+# Source utility functions
+source "$SCRIPT_DIR/test_utils.sh"
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -15,21 +25,21 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS] [BPF_HOOK]"
+            echo "Usage: $0 [BPF_HOOK] [OPTIONS]"
+            echo ""
+            echo "Arguments:"
+            echo "  BPF_HOOK         Name of the BPF object file to load (with or without .o extension)"
+            echo "                   Default: lsm_bprm_check_security"
             echo ""
             echo "Options:"
             echo "  -v, --verbose    Enable verbose output"
             echo "  -h, --help       Show this help message"
             echo ""
-            echo "Arguments:"
-            echo "  BPF_HOOK         Name of the BPF object file to load (with or without .o extension)"
-            echo "                   Default: lsm_container_events"
-            echo ""
             echo "Examples:"
             echo "  $0                                    # Use default hook"
-            echo "  $0 -v                                 # Use default hook with verbose output"
             echo "  $0 lsm_mmap_file                     # Load specific hook"
-            echo "  $0 -v lsm_bprm_check_security        # Load hook with verbose output"
+            echo "  $0 lsm_bprm_check_security -v        # Load hook with verbose output"
+            echo "  $0 -v                                 # Use default hook with verbose output"
             exit 0
             ;;
         *)
@@ -46,7 +56,7 @@ done
 
 # Set default BPF hook if not specified
 if [ -z "$BPF_HOOK" ]; then
-    BPF_HOOK="lsm_container_events"
+    BPF_HOOK="lsm_bprm_check_security"
 fi
 
 # Check root
@@ -55,12 +65,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Get paths
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/build"
-TEST_DIR="/tmp/bpfima_test"
-CONTAINER_NAME_PREFIX="bpfima_test"
+# Re-set paths after argument parsing
+cd "$PROJECT_ROOT"
 
 # Add .o extension if not already present
 if [[ "$BPF_HOOK" == *.o ]]; then
@@ -94,18 +100,26 @@ log_err() {
 cleanup() {
     log_info "Cleanup started"
     
-    # Kill loader process first
+    # Kill bpfima-tool process first
     if [ -n "$LOADER_PID" ] && kill -0 "$LOADER_PID" 2>/dev/null; then
-        log_info "Stopping loader process (PID: $LOADER_PID)"
-        kill -9 "$LOADER_PID" 2>/dev/null || true
-        sleep 1
+        log_info "Stopping bpfima-tool process (PID: $LOADER_PID)"
+        kill -TERM "$LOADER_PID" 2>/dev/null || true
+        
+        # Wait for graceful exit
+        if ! wait_for_process_exit "$LOADER_PID" 3; then
+            log_warn "bpfima-tool didn't exit gracefully, forcing..."
+            kill -9 "$LOADER_PID" 2>/dev/null || true
+        fi
     fi
     
-    # Also kill any remaining loader processes
-    if pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null; then
-        log_info "Stopped additional loader processes"
-        sleep 1
+    # Also kill any remaining bpfima-tool or old loader processes
+    if pkill -TERM -f "$BUILD_DIR/bpfima-tool" 2>/dev/null; then
+        log_info "Stopping additional bpfima-tool processes"
+        sleep 0.5
+        pkill -9 -f "$BUILD_DIR/bpfima-tool" 2>/dev/null || true
     fi
+    # Clean up old loader processes if any
+    pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null || true
     
     if [ -n "$CONTAINER_CLI" ]; then
         log_info "Removing test containers"
@@ -123,9 +137,6 @@ cleanup() {
             fi
         done
     fi
-    
-    # Wait a bit for BPF programs to detach
-    sleep 1
     
     # Clean up pinned BPF maps
     log_verbose "Cleaning up pinned BPF maps"
@@ -173,21 +184,39 @@ log_info "Build successful"
 log_info "Loading kernel module..."
 if lsmod | grep -q "^bpfima "; then
     log_info "Module already loaded, removing..."
-    pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null || true
-    sleep 1
-    if ! rmmod -f bpfima 2>/dev/null; then
-        log_err "Cannot remove existing module - it may be in use"
-        log_err "Please run: sudo pkill -9 loader && sudo rmmod -f bpfima"
+    pkill -9 -f "$BUILD_DIR/bpfima-tool" 2>/dev/null || true
+    pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null || true  # Clean up old loader too
+    
+    if ! wait_for_module_unload bpfima 2; then
+        if ! rmmod -f bpfima 2>/dev/null; then
+            log_err "Cannot remove existing module - it may be in use"
+            log_err "Please run: sudo pkill -9 bpfima-tool && sudo rmmod -f bpfima"
+            exit 1
+        fi
+    fi
+    
+    if ! wait_for_module_unload bpfima 5; then
+        log_err "Module did not unload in time"
         exit 1
     fi
-    sleep 1
 fi
 
 if ! insmod "$BUILD_DIR/bpfima.ko"; then
     log_err "Failed to load module"
     exit 1
 fi
-log_info "Module loaded"
+
+if ! wait_for_module bpfima 5; then
+    log_err "Module did not load in time"
+    exit 1
+fi
+
+if ! wait_for_securityfs bpfima 5; then
+    log_err "SecurityFS not available"
+    exit 1
+fi
+
+log_info "Module loaded and ready"
 
 # 3. Load eBPF program
 if [ ! -f "$BPF_OBJECT" ]; then
@@ -198,44 +227,44 @@ if [ ! -f "$BPF_OBJECT" ]; then
 fi
 
 log_info "Starting eBPF program: $(basename $BPF_OBJECT)"
-"$BUILD_DIR/loader" "$BPF_OBJECT" &
-LOADER_PID=$!
-sleep 2
 
-if ! kill -0 $LOADER_PID 2>/dev/null; then
-    log_err "Loader process died"
+# Use bpfima-tool instead of old loader
+"$BUILD_DIR/bpfima-tool" load "$BPF_OBJECT" -d &
+LOADER_PID=$!
+
+if ! wait_for_process $LOADER_PID 5; then
+    log_err "bpfima-tool process failed to start"
     exit 1
 fi
 log_info "eBPF program loaded (PID: $LOADER_PID)"
 
-# 3.5 Wait for BPF maps to be pinned
+# Wait for BPF maps to be pinned
 log_verbose "Waiting for BPF maps to be available..."
-sleep 1
+if ! wait_for_bpf_maps bpfima_policy_map bpfima_hook_config_map bpfima_cgroup_patterns_map bpfima_path_patterns_map; then
+    log_err "BPF maps not available in time"
+    log_err "bpfima-tool may have failed"
+    exit 1
+fi
+log_verbose "✓ BPF maps available"
 
-# 3.6 Initialize policy maps with less strict defaults
-log_info "Initializing BPF policy maps (less strict policy - tracks everything)"
-if [ -f "$BUILD_DIR/policy_init" ]; then
-    if [ "$VERBOSE" -eq 1 ]; then
-        if ! "$BUILD_DIR/policy_init"; then
-            log_err "Failed to initialize policy maps"
-            log_err "This may cause issues with event recording"
-            log_warn "Continuing anyway..."
-        else
-            log_info "✓ Policy maps initialized successfully"
-            log_info "  - Filter flags: 0x0 (no filtering)"
-            log_info "  - All user processes, containers, and system services will be tracked"
-        fi
+# Initialize policy maps using bpfima-tool
+log_info "Initializing BPF policy maps (comprehensive policy - tracks everything)"
+if [ "$VERBOSE" -eq 1 ]; then
+    if ! "$BUILD_DIR/bpfima-tool" policy-init; then
+        log_err "Failed to initialize policy maps"
+        log_err "This may cause issues with event recording"
+        log_warn "Continuing anyway..."
     else
-        if ! "$BUILD_DIR/policy_init" > /dev/null 2>&1; then
-            log_warn "Failed to initialize policy maps (continuing anyway)"
-        else
-            log_info "Policy maps initialized successfully"
-        fi
+        log_info "✓ Policy maps initialized successfully"
+        log_info "  - Filter flags: 0x0 (no filtering)"
+        log_info "  - All user processes, containers, and system services will be tracked"
     fi
 else
-    log_err "policy_init tool not found at $BUILD_DIR/policy_init"
-    log_err "Policy maps will be empty - events may not be recorded!"
-    log_warn "Run 'make' to build policy_init"
+    if ! "$BUILD_DIR/bpfima-tool" policy-init > /dev/null 2>&1; then
+        log_warn "Failed to initialize policy maps (continuing anyway)"
+    else
+        log_info "Policy maps initialized successfully"
+    fi
 fi
 
 # Verify policy map is accessible
@@ -243,6 +272,50 @@ if [ -e "/sys/fs/bpf/bpfima_policy_map" ]; then
     log_verbose "✓ Policy map pinned and accessible"
 else
     log_warn "Policy map not found at /sys/fs/bpf/bpfima_policy_map"
+fi
+
+# 3.6 Test YAML Policy Update
+log_info ""
+log_info "=== Testing YAML Policy Update ==="
+log_info "This will test loading policy configuration from YAML files"
+
+# Test with default comprehensive policy
+if [ -f "config/policy.yaml" ]; then
+    log_info "Testing policy update with config/policy.yaml"
+    if [ "$VERBOSE" -eq 1 ]; then
+        if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml; then
+            log_info "✓ Successfully loaded comprehensive policy from YAML"
+        else
+            log_warn "Failed to load YAML policy (may not be fully implemented yet)"
+        fi
+    else
+        if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml > /dev/null 2>&1; then
+            log_info "✓ YAML policy loaded successfully"
+        else
+            log_warn "YAML policy update failed (continuing with hardcoded defaults)"
+        fi
+    fi
+    
+    # Verify the policy was updated
+    if [ -f "/sys/kernel/security/bpfima/policy" ]; then
+        log_verbose "Current policy after YAML update:"
+        if [ "$VERBOSE" -eq 1 ]; then
+            cat /sys/kernel/security/bpfima/policy | head -10
+        fi
+    fi
+else
+    log_warn "config/policy.yaml not found, skipping YAML policy test"
+fi
+
+# Test with minimal policy if available
+if [ -f "config/policy-minimal.yaml" ] && [ "$VERBOSE" -eq 1 ]; then
+    log_info ""
+    log_info "Testing with minimal policy (config/policy-minimal.yaml)"
+    if "$BUILD_DIR/bpfima-tool" policy-update config/policy-minimal.yaml; then
+        log_info "✓ Successfully loaded minimal policy from YAML"
+    else
+        log_warn "Failed to load minimal YAML policy"
+    fi
 fi
 
 # 3.7 Test global policy changes
@@ -259,25 +332,21 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     # Change 1: Update filter_flags
     log_info "Test 1: Changing filter_flags to 0x7"
     echo "filter_flags=0x7" > /sys/kernel/security/bpfima/policy
-    sleep 1
     log_info "✓ filter_flags updated"
     
     # Change 2: Update action_flags
     log_info "Test 2: Changing action_flags to 0x1F"
     echo "action_flags=0x1F" > /sys/kernel/security/bpfima/policy
-    sleep 1
     log_info "✓ action_flags updated"
     
     # Change 3: Update min_file_size
     log_info "Test 3: Changing min_file_size to 4096"
     echo "min_file_size=4096" > /sys/kernel/security/bpfima/policy
-    sleep 1
     log_info "✓ min_file_size updated"
     
     # Change 4: Update log_level
     log_info "Test 4: Changing log_level to 3"
     echo "log_level=3" > /sys/kernel/security/bpfima/policy
-    sleep 1
     log_info "✓ log_level updated"
     
     # Display policy changes
@@ -381,7 +450,13 @@ for i in "${!IMAGES[@]}"; do
     esac
     
     log_info "Container started: $CONTAINER_NAME"
-    sleep 2
+    
+    # Wait for container to be fully running
+    if ! wait_for_container "$CONTAINER_NAME" "$CONTAINER_CLI" 30; then
+        log_err "Container $CONTAINER_NAME not ready in time"
+        continue
+    fi
+    log_verbose "✓ Container $CONTAINER_NAME is running"
     
     # Perform file operations in container
     log_info "Performing file operations in $CONTAINER_NAME"
@@ -410,10 +485,10 @@ for i in "${!IMAGES[@]}"; do
     fi
     
     log_info "File operations completed in $CONTAINER_NAME"
-    sleep 1
 done
 
-sleep 2
+# Give a moment for all measurements to be processed
+sleep 0.5
 log_info "All container operations completed"
 
 # 6. Check securityfs
@@ -452,19 +527,16 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             # Change 1: Update filter_flags
             log_info "Test 1: Changing namespace filter_flags to 0x3"
             echo "filter_flags=0x3" > "$POLICY_FILE"
-            sleep 1
             log_info "✓ Namespace filter_flags updated"
             
             # Change 2: Update action_flags
             log_info "Test 2: Changing namespace action_flags to 0x3E"
             echo "action_flags=0x3E" > "$POLICY_FILE"
-            sleep 1
             log_info "✓ Namespace action_flags updated"
             
             # Change 3: Update min_file_size
             log_info "Test 3: Changing namespace min_file_size to 8192"
             echo "min_file_size=8192" > "$POLICY_FILE"
-            sleep 1
             log_info "✓ Namespace min_file_size updated"
             
             # Display policy changes
@@ -515,7 +587,8 @@ for container in nginx redis postgres; do
 done
 log_info "Containers stopped"
 
-sleep 2
+# Give system a moment to process container shutdown
+sleep 0.5
 
 # Socket creation tests
 log_info ""
