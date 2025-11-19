@@ -93,8 +93,8 @@ enum bpfima_hook_id {
     HOOK_MAX
 };
 
-/* Default policy values */
-#define DEFAULT_FILTER_FLAGS (POLICY_FILTER_PROC_SYS)
+/* Default policy values - LESS STRICT: track everything by default */
+#define DEFAULT_FILTER_FLAGS 0  /* No filtering - track all user processes and containers */
 
 #define DEFAULT_ACTION_FLAGS (POLICY_ACTION_EXTEND_TPM | \
                               POLICY_ACTION_LOG_SECURITYFS | \

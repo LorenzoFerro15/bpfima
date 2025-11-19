@@ -145,12 +145,20 @@ BPF IMA uses a policy system to control what gets measured and how:
 - System services (system.slice)
 - Files in /dev/, /tmp/
 - Shared libraries (.so)
+- **Everything except the minimal filters below**
 
-**What Gets Filtered (too noisy):**
-- Files in /proc/
-- Files in /sys/
-- Root cgroup `/`
+**What Gets Filtered (minimal - only truly noisy system internals):**
+- Root cgroup `/` (exact match only)
 - init.scope processes
+
+**Optional Filters (disabled by default, can be enabled via policy):**
+- Files in /proc/ (enable with POLICY_FILTER_PROC_SYS)
+- Files in /sys/ (enable with POLICY_FILTER_PROC_SYS)
+- System cgroups (enable with POLICY_FILTER_SYSTEM_CGROUPS)
+- /dev/ files (enable with POLICY_FILTER_DEV)
+- Small files (enable with POLICY_FILTER_SMALL_FILES)
+- Libraries (enable with POLICY_FILTER_LIBRARIES)
+- /tmp/ files (enable with POLICY_FILTER_TMP_FILES)
 
 **Actions Enabled:**
 - TPM PCR 23 extension
@@ -165,15 +173,17 @@ The policy system supports:
 
 1. **Filter Flags** - Control what to skip/ignore:
    ```c
-   POLICY_FILTER_SYSTEM_CGROUPS   // Skip init.scope, system.slice
-   POLICY_FILTER_PROC_SYS         // Skip /proc/, /sys/
-   POLICY_FILTER_DEV              // Skip /dev/
-   POLICY_FILTER_READONLY_FILES   // Skip readonly opens
-   POLICY_FILTER_SMALL_FILES      // Skip files below min size
-   POLICY_FILTER_NON_EXECUTABLE   // Skip non-executable files
-   POLICY_FILTER_LIBRARIES        // Skip .so files
-   POLICY_FILTER_TMP_FILES        // Skip /tmp/ files
+   POLICY_FILTER_SYSTEM_CGROUPS   // Skip /, init.scope (already minimal by default)
+   POLICY_FILTER_PROC_SYS         // Skip /proc/, /sys/ (disabled by default)
+   POLICY_FILTER_DEV              // Skip /dev/ (disabled by default)
+   POLICY_FILTER_READONLY_FILES   // Skip readonly opens (disabled by default)
+   POLICY_FILTER_SMALL_FILES      // Skip files below min size (disabled by default)
+   POLICY_FILTER_NON_EXECUTABLE   // Skip non-executable files (disabled by default)
+   POLICY_FILTER_LIBRARIES        // Skip .so files (disabled by default)
+   POLICY_FILTER_TMP_FILES        // Skip /tmp/ files (disabled by default)
    ```
+   
+   **Default: ALL filters disabled (0x0) - tracks everything except / and init.scope**
 
 2. **Action Flags** - Control what actions to take:
    ```c

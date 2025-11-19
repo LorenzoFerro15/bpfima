@@ -92,34 +92,25 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        if (policy && (policy->filter_flags & POLICY_FILTER_SYSTEM_CGROUPS)) {
-            if (bpfima_should_ignore_cgroup(cgroup_name)) {
-                if (policy->log_level >= 3) {
-                    bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
-                }
-                return 0;
+        /* Check if this cgroup should be ignored based on policy */
+        if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
+            if (!policy || policy->log_level >= 3) {
+                bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }
-        } else {
-            const char *ignore_patterns[] = {"/", "init.scope"};
-            bool should_track = true;
-            
-            #pragma unroll
-            for (int i = 0; i < 2; i++) {
-                if (__builtin_strcmp(cgroup_name, ignore_patterns[i]) == 0) {
-                    should_track = false;
-                    break;
-                }
-            }
-            
-            if (!should_track) {
-                return 0;
-            }
+            return 0;
         }
         
+        /* Check if this is actually a container, not just any cgroup */
         if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
-            is_container_context = true;
-            if (!policy || policy->log_level >= 2) {
-                bpf_printk("Container context detected: %s\n", cgroup_name);
+            if (bpfima_is_container_cgroup(cgroup_name)) {
+                is_container_context = true;
+                if (!policy || policy->log_level >= 2) {
+                    bpf_printk("Container context detected: %s\n", cgroup_name);
+                }
+            } else {
+                if (!policy || policy->log_level >= 3) {
+                    bpf_printk("Non-container cgroup (using host measurement): %s\n", cgroup_name);
+                }
             }
         }
     }
