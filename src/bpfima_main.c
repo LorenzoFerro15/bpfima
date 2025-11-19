@@ -93,8 +93,25 @@ static int bpfima_securityfs_init(void)
         return ret;
     }
     
+    /* Create global policy_changes file */
+    ret = create_global_policy_changes_securityfs(bpfima_dir);
+    if (ret) {
+        pr_err("bpfima: Failed to create global policy_changes file: %d\n", ret);
+        remove_global_policy_securityfs();
+        securityfs_remove(containers_dir);
+        securityfs_remove(merkle_root_history_file);
+        securityfs_remove(status_file);
+        securityfs_remove(bpfima_dir);
+        containers_dir = NULL;
+        merkle_root_history_file = NULL;
+        status_file = NULL;
+        bpfima_dir = NULL;
+        return ret;
+    }
+    
     pr_info("bpfima: SecurityFS interface created at /sys/kernel/security/%s/\n", bpfima_dir_name);
     pr_info("bpfima: Global policy at /sys/kernel/security/%s/policy\n", bpfima_dir_name);
+    pr_info("bpfima: Global policy changes at /sys/kernel/security/%s/policy_changes\n", bpfima_dir_name);
     pr_info("bpfima: Namespace tracking enabled at /sys/kernel/security/%s/namespaces/\n", bpfima_dir_name);
     return 0;
 }

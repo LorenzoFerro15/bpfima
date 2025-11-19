@@ -245,6 +245,68 @@ else
     log_warn "Policy map not found at /sys/fs/bpf/bpfima_policy_map"
 fi
 
+# 3.7 Test global policy changes
+log_info ""
+log_info "=== Testing Global Policy Changes ==="
+log_info "This will trigger policy change tracking and Merkle tree extensions"
+
+if [ -f "/sys/kernel/security/bpfima/policy" ]; then
+    log_info "Initial global policy:"
+    if [ "$VERBOSE" -eq 1 ]; then
+        cat /sys/kernel/security/bpfima/policy | head -10
+    fi
+    
+    # Change 1: Update filter_flags
+    log_info "Test 1: Changing filter_flags to 0x7"
+    echo "filter_flags=0x7" > /sys/kernel/security/bpfima/policy
+    sleep 1
+    log_info "✓ filter_flags updated"
+    
+    # Change 2: Update action_flags
+    log_info "Test 2: Changing action_flags to 0x1F"
+    echo "action_flags=0x1F" > /sys/kernel/security/bpfima/policy
+    sleep 1
+    log_info "✓ action_flags updated"
+    
+    # Change 3: Update min_file_size
+    log_info "Test 3: Changing min_file_size to 4096"
+    echo "min_file_size=4096" > /sys/kernel/security/bpfima/policy
+    sleep 1
+    log_info "✓ min_file_size updated"
+    
+    # Change 4: Update log_level
+    log_info "Test 4: Changing log_level to 3"
+    echo "log_level=3" > /sys/kernel/security/bpfima/policy
+    sleep 1
+    log_info "✓ log_level updated"
+    
+    # Display policy changes
+    if [ -f "/sys/kernel/security/bpfima/policy_changes" ]; then
+        log_info ""
+        log_info "Global policy changes recorded:"
+        if [ "$VERBOSE" -eq 1 ]; then
+            cat /sys/kernel/security/bpfima/policy_changes
+        else
+            CHANGE_COUNT=$(grep -v '^#' /sys/kernel/security/bpfima/policy_changes 2>/dev/null | wc -l)
+            log_info "  Total changes recorded: $CHANGE_COUNT"
+            log_info "  (use -v to see full details)"
+        fi
+    else
+        log_warn "policy_changes file not found"
+    fi
+    
+    # Check kernel messages for Merkle extensions
+    if [ "$VERBOSE" -eq 1 ]; then
+        log_verbose "Recent Merkle root extensions:"
+        dmesg | grep -i "merkle root extended" | tail -5 || log_verbose "No Merkle extensions found in logs"
+    fi
+else
+    log_warn "Global policy file not found at /sys/kernel/security/bpfima/policy"
+fi
+
+log_info "Global policy tests completed"
+log_info ""
+
 # 4. Run container test
 log_info "Starting container tests"
 
@@ -366,6 +428,80 @@ else
     log_warn "securityfs directory not found"
 fi
 
+# 6.5 Test namespace-specific policy changes
+log_info ""
+log_info "=== Testing Namespace Policy Changes ==="
+
+if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
+    # Get the first namespace ID
+    NAMESPACE_IDS=($(ls -1 /sys/kernel/security/bpfima/namespaces/ 2>/dev/null))
+    
+    if [ ${#NAMESPACE_IDS[@]} -gt 0 ]; then
+        TEST_NAMESPACE="${NAMESPACE_IDS[0]}"
+        log_info "Testing policy changes for namespace: ${TEST_NAMESPACE:0:12}..."
+        
+        POLICY_FILE="/sys/kernel/security/bpfima/namespaces/$TEST_NAMESPACE/policy"
+        CHANGES_FILE="/sys/kernel/security/bpfima/namespaces/$TEST_NAMESPACE/policy_changes"
+        
+        if [ -f "$POLICY_FILE" ]; then
+            log_info "Initial namespace policy:"
+            if [ "$VERBOSE" -eq 1 ]; then
+                cat "$POLICY_FILE" | head -10
+            fi
+            
+            # Change 1: Update filter_flags
+            log_info "Test 1: Changing namespace filter_flags to 0x3"
+            echo "filter_flags=0x3" > "$POLICY_FILE"
+            sleep 1
+            log_info "✓ Namespace filter_flags updated"
+            
+            # Change 2: Update action_flags
+            log_info "Test 2: Changing namespace action_flags to 0x3E"
+            echo "action_flags=0x3E" > "$POLICY_FILE"
+            sleep 1
+            log_info "✓ Namespace action_flags updated"
+            
+            # Change 3: Update min_file_size
+            log_info "Test 3: Changing namespace min_file_size to 8192"
+            echo "min_file_size=8192" > "$POLICY_FILE"
+            sleep 1
+            log_info "✓ Namespace min_file_size updated"
+            
+            # Display policy changes
+            if [ -f "$CHANGES_FILE" ]; then
+                log_info ""
+                log_info "Namespace policy changes recorded:"
+                if [ "$VERBOSE" -eq 1 ]; then
+                    cat "$CHANGES_FILE"
+                else
+                    CHANGE_COUNT=$(grep -v '^#' "$CHANGES_FILE" 2>/dev/null | wc -l)
+                    log_info "  Total changes recorded: $CHANGE_COUNT"
+                    log_info "  (use -v to see full details)"
+                fi
+            else
+                log_warn "policy_changes file not found for namespace"
+            fi
+            
+            # Check kernel messages for leaf hash extensions
+            if [ "$VERBOSE" -eq 1 ]; then
+                log_verbose "Recent container leaf hash extensions:"
+                dmesg | grep -i "extended leaf hash" | tail -5 || log_verbose "No leaf hash extensions found in logs"
+                log_verbose "Recent Merkle root extensions (from namespace changes):"
+                dmesg | grep -i "extended merkle root for policy" | tail -5 || log_verbose "No policy-related Merkle extensions found"
+            fi
+        else
+            log_warn "Policy file not found for namespace: $TEST_NAMESPACE"
+        fi
+    else
+        log_warn "No namespaces found to test policy changes"
+    fi
+else
+    log_warn "Namespaces directory not found"
+fi
+
+log_info "Namespace policy tests completed"
+log_info ""
+
 # 7. Stop containers
 log_info "Stopping containers"
 for container in nginx redis postgres; do
@@ -412,14 +548,65 @@ log_info "Socket creation tests completed"
 # tail -20 /sys/kernel/debug/tracing/trace_pipe
 
 # 8. Display summary
+log_info ""
+log_info "==================================="
+log_info "===  TEST SUMMARY  ==="
+log_info "==================================="
+
+# Show policy change statistics
+log_info ""
+log_info "Policy Change Statistics:"
+
+if [ -f "/sys/kernel/security/bpfima/policy_changes" ]; then
+    GLOBAL_CHANGES=$(grep -v '^#' /sys/kernel/security/bpfima/policy_changes 2>/dev/null | wc -l)
+    log_info "  Global policy changes: $GLOBAL_CHANGES"
+else
+    log_info "  Global policy changes: N/A"
+fi
+
+if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
+    TOTAL_NS_CHANGES=0
+    for ns_dir in /sys/kernel/security/bpfima/namespaces/*/; do
+        if [ -f "${ns_dir}policy_changes" ]; then
+            NS_CHANGES=$(grep -v '^#' "${ns_dir}policy_changes" 2>/dev/null | wc -l)
+            TOTAL_NS_CHANGES=$((TOTAL_NS_CHANGES + NS_CHANGES))
+        fi
+    done
+    log_info "  Namespace policy changes: $TOTAL_NS_CHANGES"
+else
+    log_info "  Namespace policy changes: N/A"
+fi
+
+# Show Merkle root history
+log_info ""
+log_info "Merkle Root History:"
+if [ -f "/sys/kernel/security/bpfima/merkle_root_history" ]; then
+    MERKLE_ENTRIES=$(wc -l < /sys/kernel/security/bpfima/merkle_root_history 2>/dev/null || echo "0")
+    log_info "  Total Merkle root extensions: $MERKLE_ENTRIES"
+    
+    if [ "$VERBOSE" -eq 1 ]; then
+        log_info ""
+        log_info "Full Merkle root history:"
+        cat /sys/kernel/security/bpfima/merkle_root_history
+    else
+        log_info "  (use -v to see full history)"
+        log_info "  Last 3 extensions:"
+        tail -3 /sys/kernel/security/bpfima/merkle_root_history 2>/dev/null || log_info "    (none)"
+    fi
+else
+    log_info "  Merkle root history: N/A"
+fi
+
+log_info ""
 log_info "Test completed successfully"
 log_info "Check logs with: dmesg | grep bpfima"
 
 # Show recent kernel messages
 if dmesg | grep -q bpfima; then
+    log_info ""
     log_info "Recent kernel messages:"
     if [ "$VERBOSE" -eq 1 ]; then
-        dmesg | grep bpfima | tail -20
+        dmesg | grep bpfima | tail -30
     else
         dmesg | grep bpfima | tail -10
     fi

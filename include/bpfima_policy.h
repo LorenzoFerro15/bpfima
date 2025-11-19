@@ -108,6 +108,20 @@ enum bpfima_hook_id {
 
 /* Policy change tracking */
 #define MAX_POLICY_CHANGES_STR 1024
+#define MAX_POLICY_STRING_SIZE 512
+
+/**
+ * struct policy_change_entry - Single policy change record
+ * @list: Linked list node
+ * @change_hash: SHA-256 hash of the policy_string
+ * @policy_string: Full policy configuration string (e.g., "enabled=1,filter_flags=0x0,action_flags=0x3F,min_file_size=0,log_level=2")
+ * @timestamp: Timestamp when change occurred (jiffies)
+ */
+struct policy_change_entry {
+    struct list_head list;
+    u8 change_hash[MERKLE_HASH_SIZE];
+    char policy_string[MAX_POLICY_STRING_SIZE];
+};
 
 /**
  * struct bpfima_policy_namespace - Per-namespace policy configuration
@@ -116,6 +130,8 @@ enum bpfima_hook_id {
  * @changes_str: Concatenated string of all policy changes (e.g., "filter_flags=0x7,action_flags=0x3F")
  * @changes_hash: SHA-256 hash of the changes_str
  * @list: Linked list node
+ * @change_history: List of policy_change_entry records
+ * @change_history_lock: Spinlock protecting the change history list
  */
 struct bpfima_policy_namespace {
     char namespace_id[CONTAINER_ID_MAX_LEN];
@@ -123,6 +139,8 @@ struct bpfima_policy_namespace {
     char changes_str[MAX_POLICY_CHANGES_STR];
     u8 changes_hash[MERKLE_HASH_SIZE];
     struct list_head list;
+    struct list_head change_history;
+    spinlock_t change_history_lock;
 };
 
 #ifdef __KERNEL__
@@ -150,6 +168,13 @@ int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 ne
 int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
 int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
 int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
+
+/* Global policy change history management */
+int bpfima_global_policy_init_history(void);
+void bpfima_global_policy_cleanup_history(void);
+int bpfima_global_policy_record_change(struct bpfima_policy_config *policy);
+struct list_head *bpfima_global_policy_get_history(void);
+spinlock_t *bpfima_global_policy_get_history_lock(void);
 
 /* Policy kfunc registration */
 int register_policy_kfuncs(void);
