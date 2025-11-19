@@ -271,11 +271,7 @@ static int policy_show(struct seq_file *s, void *v)
 static int global_policy_show(struct seq_file *s, void *v)
 {
     struct bpfima_policy_config *policy = bpfima_policy_get();
-
-    seq_printf(s, "# Global Policy Configuration\n");
-    seq_printf(s, "# New namespaces will inherit these values\n");
-    seq_printf(s, "# Per-namespace policies override these defaults\n\n");
-    
+ 
     seq_printf(s, "enabled=%u\n", policy->enabled);
     seq_printf(s, "filter_flags=0x%x\n", policy->filter_flags);
     seq_printf(s, "action_flags=0x%x\n", policy->action_flags);
@@ -300,6 +296,51 @@ const struct file_operations global_policy_fops = {
     .release = single_release,
 };
 
+/**
+ * global_policy_changes_show - Display global policy change history
+ * @s: seq_file structure for output
+ * @v: Unused
+ *
+ * Shows all global policy changes with format: HASH POLICY_STRING per line
+ */
+static int global_policy_changes_show(struct seq_file *s, void *v)
+{
+    struct policy_change_entry *change;
+    struct list_head *history;
+    spinlock_t *history_lock;
+    unsigned long flags;
+    int i;
+
+    history = bpfima_global_policy_get_history();
+    history_lock = bpfima_global_policy_get_history_lock();
+
+    spin_lock_irqsave(history_lock, flags);
+    list_for_each_entry(change, history, list) {
+        /* Print hash */
+        for (i = 0; i < MERKLE_HASH_SIZE; i++)
+            seq_printf(s, "%02x", change->change_hash[i]);
+        
+        /* Print space and policy string */
+        seq_printf(s, " %s\n", change->policy_string);
+    }
+    spin_unlock_irqrestore(history_lock, flags);
+
+    return 0;
+}
+
+static int global_policy_changes_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, global_policy_changes_show, NULL);
+}
+
+const struct file_operations global_policy_changes_fops = {
+    .owner = THIS_MODULE,
+    .open = global_policy_changes_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+
 static int policy_open(struct inode *inode, struct file *file)
 {
     return single_open(file, policy_show, inode->i_private);
@@ -310,6 +351,55 @@ const struct file_operations policy_fops = {
     .open = policy_open,
     .read = seq_read,
     .write = policy_update_write,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+
+/**
+ * policy_changes_show - Display policy change history for a namespace
+ * @s: seq_file structure for output
+ * @v: Unused
+ *
+ * Shows all policy changes with format: HASH POLICY_STRING per line
+ */
+static int policy_changes_show(struct seq_file *s, void *v)
+{
+    char *namespace_id = s->private;
+    struct bpfima_policy_namespace *policy_ns;
+    struct policy_change_entry *change;
+    unsigned long flags;
+    int i;
+
+    if (!namespace_id)
+        return -EINVAL;
+
+    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
+    if (IS_ERR(policy_ns))
+        return PTR_ERR(policy_ns);
+
+    spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+    list_for_each_entry(change, &policy_ns->change_history, list) {
+        /* Print hash */
+        for (i = 0; i < MERKLE_HASH_SIZE; i++)
+            seq_printf(s, "%02x", change->change_hash[i]);
+        
+        /* Print space and policy string */
+        seq_printf(s, " %s\n", change->policy_string);
+    }
+    spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+
+    return 0;
+}
+
+static int policy_changes_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, policy_changes_show, inode->i_private);
+}
+
+const struct file_operations policy_changes_fops = {
+    .owner = THIS_MODULE,
+    .open = policy_changes_open,
+    .read = seq_read,
     .llseek = seq_lseek,
     .release = single_release,
 };
@@ -375,6 +465,66 @@ void remove_namespace_policy_securityfs(struct dentry *policy_file)
 }
 
 /**
+ * create_namespace_policy_changes_securityfs - Create policy_changes file for a namespace
+ * @namespace_id: Namespace identifier
+ * @parent_dir: Parent securityfs directory
+ *
+ * Creates a "policy_changes" file in the namespace directory that shows
+ * the history of all policy changes with hash and policy string per line.
+ *
+ * Returns: Pointer to policy_changes file dentry, or ERR_PTR on failure
+ */
+struct dentry *create_namespace_policy_changes_securityfs(const char *namespace_id,
+                                                          struct dentry *parent_dir)
+{
+    struct dentry *policy_changes_file;
+    char *ns_copy;
+
+    if (!namespace_id || !parent_dir)
+        return ERR_PTR(-EINVAL);
+
+    /* Allocate persistent copy of namespace_id for inode private data */
+    ns_copy = kstrdup(namespace_id, GFP_KERNEL);
+    if (!ns_copy)
+        return ERR_PTR(-ENOMEM);
+
+    /* Create policy_changes file (read-only) */
+    policy_changes_file = securityfs_create_file("policy_changes", 0444, parent_dir,
+                                                 ns_copy, &policy_changes_fops);
+    if (IS_ERR(policy_changes_file)) {
+        pr_err("bpfima: Failed to create policy_changes file for %s: %ld\n",
+               namespace_id, PTR_ERR(policy_changes_file));
+        kfree(ns_copy);
+        return policy_changes_file;
+    }
+
+    pr_info("bpfima: Created policy_changes interface for namespace %s\n", namespace_id);
+    return policy_changes_file;
+}
+
+/**
+ * remove_namespace_policy_changes_securityfs - Remove policy_changes file for a namespace
+ * @policy_changes_file: Dentry of the policy_changes file to remove
+ *
+ * Removes the policy_changes file and frees the associated namespace_id copy.
+ */
+void remove_namespace_policy_changes_securityfs(struct dentry *policy_changes_file)
+{
+    void *ns_copy;
+
+    if (!policy_changes_file || IS_ERR(policy_changes_file))
+        return;
+
+    /* Get and free the namespace_id copy from inode private data */
+    if (policy_changes_file->d_inode) {
+        ns_copy = policy_changes_file->d_inode->i_private;
+        kfree(ns_copy);
+    }
+
+    securityfs_remove(policy_changes_file);
+}
+
+/**
  * create_global_policy_securityfs - Create global policy file
  * @parent_dir: Parent securityfs directory (bpfima root)
  *
@@ -407,5 +557,44 @@ void remove_global_policy_securityfs(void)
     if (global_policy_file && !IS_ERR(global_policy_file)) {
         securityfs_remove(global_policy_file);
         global_policy_file = NULL;
+    }
+}
+
+/* Global policy changes file dentry */
+static struct dentry *global_policy_changes_file = NULL;
+
+/**
+ * create_global_policy_changes_securityfs - Create global policy_changes file
+ * @parent_dir: Parent securityfs directory (bpfima root)
+ *
+ * Creates /sys/kernel/security/bpfima/policy_changes for global policy change history.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int create_global_policy_changes_securityfs(struct dentry *parent_dir)
+{
+    if (!parent_dir)
+        return -EINVAL;
+
+    global_policy_changes_file = securityfs_create_file("policy_changes", 0444, parent_dir,
+                                                         NULL, &global_policy_changes_fops);
+    if (IS_ERR(global_policy_changes_file)) {
+        pr_err("bpfima: Failed to create global policy_changes file: %ld\n",
+               PTR_ERR(global_policy_changes_file));
+        return PTR_ERR(global_policy_changes_file);
+    }
+
+    pr_info("bpfima: Created global policy_changes interface at /sys/kernel/security/bpfima/policy_changes\n");
+    return 0;
+}
+
+/**
+ * remove_global_policy_changes_securityfs - Remove global policy_changes file
+ */
+void remove_global_policy_changes_securityfs(void)
+{
+    if (global_policy_changes_file && !IS_ERR(global_policy_changes_file)) {
+        securityfs_remove(global_policy_changes_file);
+        global_policy_changes_file = NULL;
     }
 }

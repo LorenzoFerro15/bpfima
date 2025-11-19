@@ -205,7 +205,8 @@ int container_measurements_open(struct inode *inode, struct file *file)
  */
 void bpfima_securityfs_cleanup(void)
 {
-    /* Remove global policy file first */
+    /* Remove global policy files first */
+    remove_global_policy_changes_securityfs();
     remove_global_policy_securityfs();
     
     if (merkle_root_history_file) {
@@ -274,6 +275,16 @@ int create_container_securityfs(struct container_node *container)
         container->securityfs_policy_file = NULL;
     }
     
+    /* Create policy_changes file for this container */
+    container->securityfs_policy_changes_file = 
+        create_namespace_policy_changes_securityfs(container->id, container->securityfs_dir);
+    if (IS_ERR(container->securityfs_policy_changes_file)) {
+        pr_warn("bpfima: Failed to create policy_changes file for container %s: %ld\n",
+                container->id, PTR_ERR(container->securityfs_policy_changes_file));
+        /* Non-fatal - continue without policy_changes file */
+        container->securityfs_policy_changes_file = NULL;
+    }
+    
     pr_info("bpfima: Created securityfs for container %s\n", container->id);
     return 0;
 }
@@ -287,6 +298,11 @@ int create_container_securityfs(struct container_node *container)
  */
 void remove_container_securityfs(struct container_node *container)
 {
+    if (container->securityfs_policy_changes_file && !IS_ERR(container->securityfs_policy_changes_file)) {
+        remove_namespace_policy_changes_securityfs(container->securityfs_policy_changes_file);
+        container->securityfs_policy_changes_file = NULL;
+    }
+    
     if (container->securityfs_policy_file && !IS_ERR(container->securityfs_policy_file)) {
         remove_namespace_policy_securityfs(container->securityfs_policy_file);
         container->securityfs_policy_file = NULL;

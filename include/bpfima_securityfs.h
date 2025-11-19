@@ -40,9 +40,16 @@ void remove_container_securityfs(struct container_node *container);
 struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
                                                    struct dentry *parent_dir);
 void remove_namespace_policy_securityfs(struct dentry *policy_file);
+struct dentry *create_namespace_policy_changes_securityfs(const char *namespace_id,
+                                                          struct dentry *parent_dir);
+void remove_namespace_policy_changes_securityfs(struct dentry *policy_changes_file);
 int create_global_policy_securityfs(struct dentry *parent_dir);
 void remove_global_policy_securityfs(void);
+int create_global_policy_changes_securityfs(struct dentry *parent_dir);
+void remove_global_policy_changes_securityfs(void);
 extern const struct file_operations policy_fops;
 extern const struct file_operations global_policy_fops;
+extern const struct file_operations policy_changes_fops;
+extern const struct file_operations global_policy_changes_fops;
 
 #endif /* BPFIMA_SECURITYFS_H */

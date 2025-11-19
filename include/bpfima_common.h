@@ -71,6 +71,7 @@ struct measurement_entry {
  * @securityfs_dir: SecurityFS directory for this container
  * @securityfs_measurements_file: SecurityFS file for container measurements
  * @securityfs_policy_file: SecurityFS file for policy configuration
+ * @securityfs_policy_changes_file: SecurityFS file for policy change history
  */
 struct container_node {
     struct list_head list;
@@ -82,6 +83,7 @@ struct container_node {
     struct dentry *securityfs_dir;
     struct dentry *securityfs_measurements_file;
     struct dentry *securityfs_policy_file;
+    struct dentry *securityfs_policy_changes_file;
 };
 
 /**

@@ -1,5 +1,6 @@
 #include "bpfima_common.h"
 #include "bpfima_policy.h"
+#include "bpfima_merkle.h"
 
 /* Default ignore patterns for cgroups */
 static const char *default_cgroup_patterns[] = {
@@ -19,6 +20,10 @@ static struct bpfima_pattern_entry cgroup_patterns[MAX_IGNORE_PATTERNS];
 static struct bpfima_pattern_entry path_patterns[MAX_PATH_FILTERS];
 static struct bpfima_hook_config hook_configs[HOOK_MAX];
 static DEFINE_SPINLOCK(policy_lock);
+
+/* Global policy change history */
+static LIST_HEAD(global_policy_change_history);
+static DEFINE_SPINLOCK(global_policy_history_lock);
 
 /**
  * bpfima_policy_init - Initialize policy subsystem with default values
@@ -85,7 +90,127 @@ int bpfima_policy_init(void)
 void bpfima_policy_cleanup(void)
 {
     pr_info("bpfima: Cleaning up policy subsystem\n");
-    /* Nothing to do for now - everything is statically allocated */
+    /* Cleanup global policy change history */
+    bpfima_global_policy_cleanup_history();
+}
+
+/**
+ * bpfima_global_policy_init_history - Initialize global policy change history
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int bpfima_global_policy_init_history(void)
+{
+    pr_info("bpfima: Initializing global policy change history\n");
+    return 0;
+}
+
+/**
+ * bpfima_global_policy_cleanup_history - Clean up global policy change history
+ */
+void bpfima_global_policy_cleanup_history(void)
+{
+    struct policy_change_entry *change, *tmp;
+    unsigned long flags;
+
+    pr_info("bpfima: Cleaning up global policy change history\n");
+
+    spin_lock_irqsave(&global_policy_history_lock, flags);
+    list_for_each_entry_safe(change, tmp, &global_policy_change_history, list) {
+        list_del(&change->list);
+        kfree(change);
+    }
+    spin_unlock_irqrestore(&global_policy_history_lock, flags);
+}
+
+/**
+ * bpfima_global_policy_get_history - Get pointer to global policy change history list
+ *
+ * Returns: Pointer to the global policy change history list
+ */
+struct list_head *bpfima_global_policy_get_history(void)
+{
+    return &global_policy_change_history;
+}
+
+/**
+ * bpfima_global_policy_get_history_lock - Get pointer to global policy history lock
+ *
+ * Returns: Pointer to the global policy history spinlock
+ */
+spinlock_t *bpfima_global_policy_get_history_lock(void)
+{
+    return &global_policy_history_lock;
+}
+
+/**
+ * bpfima_global_policy_record_change - Record global policy change and extend Merkle root
+ * @policy: Current policy configuration
+ *
+ * Creates a policy change entry with full policy string, hashes it,
+ * and extends the Merkle root directly (global policy has no container leaf).
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
+{
+    struct policy_change_entry *change_entry;
+    unsigned long flags;
+    int ret;
+    char policy_string[MAX_POLICY_STRING_SIZE];
+
+    if (!policy)
+        return -EINVAL;
+
+    /* Format the full policy string */
+    ret = snprintf(policy_string, sizeof(policy_string),
+                   "enabled=%u,filter_flags=0x%x,action_flags=0x%x,min_file_size=%u,max_path_depth=%u,log_level=%u",
+                   policy->enabled,
+                   policy->filter_flags,
+                   policy->action_flags,
+                   policy->min_file_size,
+                   policy->max_path_depth,
+                   policy->log_level);
+    
+    if (ret < 0 || ret >= sizeof(policy_string)) {
+        pr_err("bpfima: Failed to format global policy string\n");
+        return -EINVAL;
+    }
+
+    /* Create a new policy change entry */
+    change_entry = kzalloc(sizeof(*change_entry), GFP_KERNEL);
+    if (!change_entry)
+        return -ENOMEM;
+
+    /* Copy the policy string */
+    strscpy(change_entry->policy_string, policy_string, MAX_POLICY_STRING_SIZE);
+
+    /* Calculate hash of the policy string */
+    ret = calculate_sha256_hash(policy_string, strlen(policy_string),
+                                change_entry->change_hash);
+    if (ret < 0) {
+        pr_err("bpfima: Failed to calculate global policy change hash: %d\n", ret);
+        kfree(change_entry);
+        return ret;
+    }
+
+    /* Add to change history */
+    spin_lock_irqsave(&global_policy_history_lock, flags);
+    list_add_tail(&change_entry->list, &global_policy_change_history);
+    spin_unlock_irqrestore(&global_policy_history_lock, flags);
+
+    pr_info("bpfima: Recorded global policy change\n");
+
+    /* Extend Merkle root directly with the policy change hash */
+    ret = extend_merkle_root(change_entry->change_hash);
+    if (ret < 0) {
+        pr_err("bpfima: Failed to extend Merkle root for global policy: %d\n", ret);
+        return ret;
+    }
+
+    pr_info("bpfima: Extended Merkle root for global policy change\n");
+
+    return 0;
 }
 
 /**
@@ -132,6 +257,7 @@ struct bpfima_policy_config *bpfima_policy_get(void)
 int bpfima_policy_update(struct bpfima_policy_config *new_config)
 {
     unsigned long flags;
+    int ret;
 
     if (!new_config)
         return -EINVAL;
@@ -141,6 +267,14 @@ int bpfima_policy_update(struct bpfima_policy_config *new_config)
     spin_unlock_irqrestore(&policy_lock, flags);
 
     pr_info("bpfima: Policy configuration updated\n");
+    
+    /* Record the change and extend Merkle root */
+    ret = bpfima_global_policy_record_change(new_config);
+    if (ret < 0) {
+        pr_warn("bpfima: Failed to record global policy change: %d\n", ret);
+        /* Don't fail the update, just log the warning */
+    }
+    
     return 0;
 }
 
