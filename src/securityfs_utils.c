@@ -67,19 +67,20 @@ int status_show(struct seq_file *s, void *unused)
 {
     struct tpm_chip *chip;
     bool tpm_available = false;
-    
+
     chip = tpm_default_chip();
-    if (chip) {
+    if (chip)
+    {
         tpm_available = true;
         tpm_put_ops(chip);
     }
-    
+
     seq_printf(s, "module=bpfima\n");
     seq_printf(s, "measurement_count=%d\n", atomic_read(&measurement_count));
     seq_printf(s, "pcr_index=%d\n", TPM_PCR_INDEX);
     seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
     seq_printf(s, "digest_algorithm=sha256\n");
-    
+
     return 0;
 }
 
@@ -108,10 +109,10 @@ int merkle_root_history_seq_show(struct seq_file *s, void *v)
 {
     struct merkle_root_entry *entry = list_entry(v, struct merkle_root_entry, list);
     int i;
-    
+
     for (i = 0; i < MERKLE_HASH_SIZE; i++)
         seq_printf(s, "%02x", entry->value[i]);
-    
+
     seq_printf(s, "\n");
     return 0;
 }
@@ -144,15 +145,18 @@ int container_measurements_seq_show(struct seq_file *s, void *v)
 {
     struct measurement_entry *entry = list_entry(v, struct measurement_entry, list);
     int i;
-    
+
     for (i = 0; i < MERKLE_HASH_SIZE; i++)
         seq_printf(s, "%02x", entry->digest[i]);
-    
+
     seq_printf(s, " %s", entry->event_name);
-    
+
     if (entry->event_data[0] != '\0')
         seq_printf(s, " %s", entry->event_data);
-    
+
+    if (entry->dependencies[0] != '\0')
+        seq_printf(s, " %s", entry->dependencies);
+
     seq_printf(s, "\n");
     return 0;
 }
@@ -180,7 +184,8 @@ int container_measurements_open(struct inode *inode, struct file *file)
 {
     struct container_node *container = inode->i_private;
     int ret = seq_open(file, &container_measurements_seq_ops);
-    if (ret == 0) {
+    if (ret == 0)
+    {
         struct seq_file *sf = file->private_data;
         sf->private = container;
     }
@@ -208,26 +213,30 @@ void bpfima_securityfs_cleanup(void)
     /* Remove global policy files first */
     remove_global_policy_changes_securityfs();
     remove_global_policy_securityfs();
-    
-    if (merkle_root_history_file) {
+
+    if (merkle_root_history_file)
+    {
         securityfs_remove(merkle_root_history_file);
         merkle_root_history_file = NULL;
     }
-    if (status_file) {
+    if (status_file)
+    {
         securityfs_remove(status_file);
         status_file = NULL;
     }
-    
-    if (containers_dir && !IS_ERR(containers_dir)) {
+
+    if (containers_dir && !IS_ERR(containers_dir))
+    {
         securityfs_recursive_remove(containers_dir);
         containers_dir = NULL;
     }
-    
-    if (bpfima_dir && !IS_ERR(bpfima_dir)) {
+
+    if (bpfima_dir && !IS_ERR(bpfima_dir))
+    {
         securityfs_recursive_remove(bpfima_dir);
         bpfima_dir = NULL;
     }
-    
+
     pr_info("bpfima: SecurityFS interface removed\n");
 }
 
@@ -242,49 +251,54 @@ void bpfima_securityfs_cleanup(void)
  */
 int create_container_securityfs(struct container_node *container)
 {
-    if (!containers_dir) {
+    if (!containers_dir)
+    {
         pr_err("bpfima: containers_dir not initialized\n");
         return -EINVAL;
     }
-    
+
     container->securityfs_dir = securityfs_create_dir(container->id, containers_dir);
-    if (IS_ERR(container->securityfs_dir)) {
+    if (IS_ERR(container->securityfs_dir))
+    {
         pr_err("bpfima: Failed to create securityfs dir for container %s: %ld\n",
                container->id, PTR_ERR(container->securityfs_dir));
         return PTR_ERR(container->securityfs_dir);
     }
-    
-    container->securityfs_measurements_file = 
+
+    container->securityfs_measurements_file =
         securityfs_create_file("measurements", 0444, container->securityfs_dir,
-                              container, &container_measurements_fops);
-    if (IS_ERR(container->securityfs_measurements_file)) {
+                               container, &container_measurements_fops);
+    if (IS_ERR(container->securityfs_measurements_file))
+    {
         pr_err("bpfima: Failed to create measurements file for container %s: %ld\n",
                container->id, PTR_ERR(container->securityfs_measurements_file));
         securityfs_remove(container->securityfs_dir);
         container->securityfs_dir = NULL;
         return PTR_ERR(container->securityfs_measurements_file);
     }
-    
+
     /* Create policy file for this container */
-    container->securityfs_policy_file = 
+    container->securityfs_policy_file =
         create_namespace_policy_securityfs(container->id, container->securityfs_dir);
-    if (IS_ERR(container->securityfs_policy_file)) {
+    if (IS_ERR(container->securityfs_policy_file))
+    {
         pr_warn("bpfima: Failed to create policy file for container %s: %ld\n",
                 container->id, PTR_ERR(container->securityfs_policy_file));
         /* Non-fatal - continue without policy file */
         container->securityfs_policy_file = NULL;
     }
-    
+
     /* Create policy_changes file for this container */
-    container->securityfs_policy_changes_file = 
+    container->securityfs_policy_changes_file =
         create_namespace_policy_changes_securityfs(container->id, container->securityfs_dir);
-    if (IS_ERR(container->securityfs_policy_changes_file)) {
+    if (IS_ERR(container->securityfs_policy_changes_file))
+    {
         pr_warn("bpfima: Failed to create policy_changes file for container %s: %ld\n",
                 container->id, PTR_ERR(container->securityfs_policy_changes_file));
         /* Non-fatal - continue without policy_changes file */
         container->securityfs_policy_changes_file = NULL;
     }
-    
+
     pr_info("bpfima: Created securityfs for container %s\n", container->id);
     return 0;
 }
@@ -298,24 +312,27 @@ int create_container_securityfs(struct container_node *container)
  */
 void remove_container_securityfs(struct container_node *container)
 {
-    if (container->securityfs_policy_changes_file && !IS_ERR(container->securityfs_policy_changes_file)) {
+    if (container->securityfs_policy_changes_file && !IS_ERR(container->securityfs_policy_changes_file))
+    {
         remove_namespace_policy_changes_securityfs(container->securityfs_policy_changes_file);
         container->securityfs_policy_changes_file = NULL;
     }
-    
-    if (container->securityfs_policy_file && !IS_ERR(container->securityfs_policy_file)) {
+
+    if (container->securityfs_policy_file && !IS_ERR(container->securityfs_policy_file))
+    {
         remove_namespace_policy_securityfs(container->securityfs_policy_file);
         container->securityfs_policy_file = NULL;
     }
-    
-    if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file)) {
+
+    if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file))
+    {
         securityfs_remove(container->securityfs_measurements_file);
         container->securityfs_measurements_file = NULL;
     }
-    
-    if (container->securityfs_dir && !IS_ERR(container->securityfs_dir)) {
+
+    if (container->securityfs_dir && !IS_ERR(container->securityfs_dir))
+    {
         securityfs_remove(container->securityfs_dir);
         container->securityfs_dir = NULL;
     }
 }
-

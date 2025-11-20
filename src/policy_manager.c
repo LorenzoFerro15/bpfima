@@ -1,6 +1,8 @@
 #include "bpfima_common.h"
 #include "bpfima_policy.h"
 #include "bpfima_merkle.h"
+#include "bpfima_container.h"
+#include "bpfima_measurements.h"
 
 /* Default ignore patterns for cgroups */
 static const char *default_cgroup_patterns[] = {
@@ -53,7 +55,8 @@ int bpfima_policy_init(void)
 
     /* Initialize cgroup patterns */
     memset(cgroup_patterns, 0, sizeof(cgroup_patterns));
-    for (i = 0; i < 2 && i < MAX_IGNORE_PATTERNS; i++) {
+    for (i = 0; i < 2 && i < MAX_IGNORE_PATTERNS; i++)
+    {
         strncpy(cgroup_patterns[i].pattern, default_cgroup_patterns[i], MAX_PATTERN_LEN - 1);
         cgroup_patterns[i].enabled = 1;
         cgroup_patterns[i].match_type = 0; /* Exact match */
@@ -61,7 +64,8 @@ int bpfima_policy_init(void)
 
     /* Initialize path patterns */
     memset(path_patterns, 0, sizeof(path_patterns));
-    for (i = 0; i < 2 && i < MAX_PATH_FILTERS; i++) {
+    for (i = 0; i < 2 && i < MAX_PATH_FILTERS; i++)
+    {
         strncpy(path_patterns[i].pattern, default_path_patterns[i], MAX_PATTERN_LEN - 1);
         path_patterns[i].enabled = 1;
         path_patterns[i].match_type = 1; /* Prefix match */
@@ -69,7 +73,8 @@ int bpfima_policy_init(void)
 
     /* Initialize hook configurations - all enabled by default */
     memset(hook_configs, 0, sizeof(hook_configs));
-    for (i = 0; i < HOOK_MAX; i++) {
+    for (i = 0; i < HOOK_MAX; i++)
+    {
         hook_configs[i].flags = HOOK_FLAG_ENABLED | HOOK_FLAG_TRACK_CONTAINERS | HOOK_FLAG_MEASURE_HASH;
         hook_configs[i].filter_override = 0;
         hook_configs[i].action_override = 0;
@@ -116,7 +121,8 @@ void bpfima_global_policy_cleanup_history(void)
     pr_info("bpfima: Cleaning up global policy change history\n");
 
     spin_lock_irqsave(&global_policy_history_lock, flags);
-    list_for_each_entry_safe(change, tmp, &global_policy_change_history, list) {
+    list_for_each_entry_safe(change, tmp, &global_policy_change_history, list)
+    {
         list_del(&change->list);
         kfree(change);
     }
@@ -162,7 +168,6 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (!policy)
         return -EINVAL;
 
-    /* Format the full policy string */
     ret = snprintf(policy_string, sizeof(policy_string),
                    "enabled=%u,filter_flags=0x%x,action_flags=0x%x,min_file_size=%u,max_path_depth=%u,log_level=%u",
                    policy->enabled,
@@ -171,24 +176,23 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
                    policy->min_file_size,
                    policy->max_path_depth,
                    policy->log_level);
-    
-    if (ret < 0 || ret >= sizeof(policy_string)) {
+
+    if (ret < 0 || ret >= sizeof(policy_string))
+    {
         pr_err("bpfima: Failed to format global policy string\n");
         return -EINVAL;
     }
 
-    /* Create a new policy change entry */
     change_entry = kzalloc(sizeof(*change_entry), GFP_KERNEL);
     if (!change_entry)
         return -ENOMEM;
 
-    /* Copy the policy string */
     strscpy(change_entry->policy_string, policy_string, MAX_POLICY_STRING_SIZE);
 
-    /* Calculate hash of the policy string */
     ret = calculate_sha256_hash(policy_string, strlen(policy_string),
                                 change_entry->change_hash);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("bpfima: Failed to calculate global policy change hash: %d\n", ret);
         kfree(change_entry);
         return ret;
@@ -201,10 +205,32 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
 
     pr_info("bpfima: Recorded global policy change\n");
 
-    /* Extend Merkle root directly with the policy change hash */
-    ret = extend_merkle_root(change_entry->change_hash);
-    if (ret < 0) {
-        pr_err("bpfima: Failed to extend Merkle root for global policy: %d\n", ret);
+    char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
+    u8 measurement_digest[MERKLE_HASH_SIZE];
+    char measurement_data[512];
+    int i;
+
+    /* Convert policy change hash to hex string */
+    for (i = 0; i < MERKLE_HASH_SIZE; i++)
+    {
+        snprintf(&policy_hash_hex[i * 2], 3, "%02x", change_entry->change_hash[i]);
+    }
+    policy_hash_hex[MERKLE_HASH_SIZE * 2] = '\0';
+
+    snprintf(measurement_data, sizeof(measurement_data), "policy_update %s", policy_hash_hex);
+
+    ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
+    if (ret < 0)
+    {
+        pr_err("bpfima: Failed to calculate measurement hash for global policy update: %d\n", ret);
+        return ret;
+    }
+
+    /* Add to host measurement list with policy hash as event_data */
+    ret = add_host_measurement("policy_update", policy_hash_hex, "", measurement_digest);
+    if (ret < 0)
+    {
+        pr_err("bpfima: Failed to add global policy change to host measurements: %d\n", ret);
         return ret;
     }
 
@@ -223,7 +249,7 @@ int bpfima_policy_set_default(void)
     unsigned long flags;
 
     spin_lock_irqsave(&policy_lock, flags);
-    
+
     /* Re-initialize to defaults */
     global_policy.enabled = 1;
     global_policy.filter_flags = DEFAULT_FILTER_FLAGS;
@@ -267,14 +293,15 @@ int bpfima_policy_update(struct bpfima_policy_config *new_config)
     spin_unlock_irqrestore(&policy_lock, flags);
 
     pr_info("bpfima: Policy configuration updated\n");
-    
+
     /* Record the change and extend Merkle root */
     ret = bpfima_global_policy_record_change(new_config);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_warn("bpfima: Failed to record global policy change: %d\n", ret);
         /* Don't fail the update, just log the warning */
     }
-    
+
     return 0;
 }
 
@@ -295,18 +322,22 @@ int bpfima_policy_add_cgroup_pattern(const char *pattern)
     spin_lock_irqsave(&policy_lock, flags);
 
     /* Check if pattern already exists or find empty slot */
-    for (i = 0; i < MAX_IGNORE_PATTERNS; i++) {
-        if (cgroup_patterns[i].enabled && 
-            strcmp(cgroup_patterns[i].pattern, pattern) == 0) {
+    for (i = 0; i < MAX_IGNORE_PATTERNS; i++)
+    {
+        if (cgroup_patterns[i].enabled &&
+            strcmp(cgroup_patterns[i].pattern, pattern) == 0)
+        {
             spin_unlock_irqrestore(&policy_lock, flags);
             return 0; /* Pattern already exists */
         }
-        if (!cgroup_patterns[i].enabled && empty_slot == -1) {
+        if (!cgroup_patterns[i].enabled && empty_slot == -1)
+        {
             empty_slot = i;
         }
     }
 
-    if (empty_slot == -1) {
+    if (empty_slot == -1)
+    {
         spin_unlock_irqrestore(&policy_lock, flags);
         pr_err("bpfima: No space for new cgroup pattern\n");
         return -ENOMEM;
@@ -339,18 +370,22 @@ int bpfima_policy_add_path_pattern(const char *pattern)
     spin_lock_irqsave(&policy_lock, flags);
 
     /* Check if pattern already exists or find empty slot */
-    for (i = 0; i < MAX_PATH_FILTERS; i++) {
-        if (path_patterns[i].enabled && 
-            strcmp(path_patterns[i].pattern, pattern) == 0) {
+    for (i = 0; i < MAX_PATH_FILTERS; i++)
+    {
+        if (path_patterns[i].enabled &&
+            strcmp(path_patterns[i].pattern, pattern) == 0)
+        {
             spin_unlock_irqrestore(&policy_lock, flags);
             return 0; /* Pattern already exists */
         }
-        if (!path_patterns[i].enabled && empty_slot == -1) {
+        if (!path_patterns[i].enabled && empty_slot == -1)
+        {
             empty_slot = i;
         }
     }
 
-    if (empty_slot == -1) {
+    if (empty_slot == -1)
+    {
         spin_unlock_irqrestore(&policy_lock, flags);
         pr_err("bpfima: No space for new path pattern\n");
         return -ENOMEM;

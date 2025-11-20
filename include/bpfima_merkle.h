@@ -20,11 +20,13 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id);
 int add_container_measurement(struct container_node *container,
                               const char *event_name,
                               const char *event_data,
+                              const char *dependencies,
                               const u8 *digest);
 
 
 int add_host_measurement(const char *event_name,
                         const char *event_data,
+                        const char *dependencies,
                         const u8 *digest);
 
 /* Cleanup functions */

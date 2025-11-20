@@ -11,6 +11,7 @@
 #include "bpfima_policy.h"
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
+#include "bpfima_measurements.h"
 
 /* Global list of per-namespace policies */
 static LIST_HEAD(policy_namespace_list);
@@ -193,15 +194,53 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 
     pr_info("bpfima: Recorded policy change for namespace %s\n", namespace_id);
 
-    /* Find the container to extend its leaf hash */
+    /* Find the container to add measurement and extend its leaf hash */
     spin_lock_irqsave(&container_list_lock, container_flags);
     container = find_container_by_id(namespace_id);
     
     if (container) {
+        char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
+        struct measurement_entry *meas_entry;
+        int i;
+        
         spin_unlock_irqrestore(&container_list_lock, container_flags);
         
-        /* Extend container leaf hash with the policy change hash */
-        ret = extend_container_leaf_hash(container, change_entry->change_hash);
+        /* Convert policy change hash to hex string */
+        for (i = 0; i < MERKLE_HASH_SIZE; i++) {
+            snprintf(&policy_hash_hex[i * 2], 3, "%02x", change_entry->change_hash[i]);
+        }
+        policy_hash_hex[MERKLE_HASH_SIZE * 2] = '\0';
+        
+        /* Create a measurement entry for the policy update
+         * Format: hash policy_update hash_of_policy_change
+         * The digest is the hash of ("policy_update" + policy_hash_hex) */
+        u8 measurement_digest[MERKLE_HASH_SIZE];
+        char measurement_data[512];
+        
+        snprintf(measurement_data, sizeof(measurement_data), "policy_update %s", policy_hash_hex);
+        
+        ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
+        if (ret < 0) {
+            pr_err("bpfima: Failed to calculate measurement hash for policy update: %d\n", ret);
+            return ret;
+        }
+        
+        /* Create measurement entry with policy hash as event_data */
+        meas_entry = create_measurement_entry("policy_update", policy_hash_hex, "", measurement_digest, GFP_KERNEL);
+        if (!meas_entry) {
+            pr_err("bpfima: Failed to create measurement entry for policy update\n");
+            return -ENOMEM;
+        }
+        
+        /* Add to container's measurement list */
+        spin_lock_irqsave(&container->measurement_lock, flags);
+        list_add_tail(&meas_entry->list, &container->measurement_list);
+        spin_unlock_irqrestore(&container->measurement_lock, flags);
+        
+        atomic_inc(&container->measurement_count);
+        
+        /* Extend container leaf hash with the measurement digest */
+        ret = extend_container_leaf_hash(container, measurement_digest);
         if (ret < 0) {
             pr_err("bpfima: Failed to extend container leaf hash: %d\n", ret);
             return ret;
@@ -209,6 +248,12 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 
         pr_info("bpfima: Extended leaf hash for namespace %s\n", namespace_id);
 
+        /* Add to Merkle root history */
+        ret = add_merkle_root_history_entry(container->leaf_hash, container->id);
+        if (ret < 0) {
+            pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
+        }
+        
         /* Extend Merkle root with the updated container leaf hash */
         ret = extend_merkle_root(container->leaf_hash);
         if (ret < 0) {
