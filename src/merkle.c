@@ -16,9 +16,6 @@
 #include "bpfima_securityfs.h"
 
 /* Global state */
-LIST_HEAD(host_measurement_list);
-DEFINE_SPINLOCK(host_measurement_lock);
-
 LIST_HEAD(merkle_root_history);
 DEFINE_SPINLOCK(merkle_root_history_lock);
 

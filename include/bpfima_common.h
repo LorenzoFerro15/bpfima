@@ -36,10 +36,6 @@
 #define CONTAINER_ID_MAX_LEN 128
 #define MERKLE_HASH_SIZE SHA256_DIGEST_SIZE
 
-/* Host measurement tracking - defined in merkle.c */
-extern struct list_head host_measurement_list;
-extern spinlock_t host_measurement_lock;
-
 /* TPM serialization mutex - defined in tpm_ops.c */
 extern struct mutex tpm_ops_mutex;
 
