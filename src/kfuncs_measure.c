@@ -142,7 +142,9 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name,
         }
     }
 
-    ret = add_container_measurement(container, event_name, concat_data,
+    ret = add_container_measurement(container, event_name,
+                                    additional_data && additional_data_len > 0 ? (const char *)additional_data : "",
+                                    dependencies ? dependencies : "",
                                     hash_value);
     if (ret < 0)
     {

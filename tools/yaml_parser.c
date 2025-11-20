@@ -22,8 +22,9 @@
  */
 static int parse_bool(const char *value)
 {
-    if (strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0 || 
-        strcmp(value, "1") == 0) {
+    if (strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0 ||
+        strcmp(value, "1") == 0)
+    {
         return 1;
     }
     return 0;
@@ -38,36 +39,53 @@ int parse_policy_section(yaml_parser_t *parser, struct yaml_policy *policy)
     char key[MAX_KEY_LEN] = {0};
     int in_policy = 1;
 
-    while (in_policy) {
-        if (!yaml_parser_parse(parser, &event)) {
+    while (in_policy)
+    {
+        if (!yaml_parser_parse(parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser->problem);
             return -1;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_SCALAR_EVENT:
-            if (key[0] == '\0') {
+            if (key[0] == '\0')
+            {
                 // This is a key
                 strncpy(key, (char *)event.data.scalar.value, MAX_KEY_LEN - 1);
-            } else {
+            }
+            else
+            {
                 // This is a value
                 const char *value = (char *)event.data.scalar.value;
-                
-                if (strcmp(key, "enabled") == 0) {
+
+                if (strcmp(key, "enabled") == 0)
+                {
                     policy->enabled = parse_bool(value);
-                } else if (strcmp(key, "log_level") == 0) {
+                }
+                else if (strcmp(key, "log_level") == 0)
+                {
                     policy->log_level = atoi(value);
-                } else if (strcmp(key, "measure_enabled") == 0) {
+                }
+                else if (strcmp(key, "measure_enabled") == 0)
+                {
                     policy->measure_enabled = parse_bool(value);
-                } else if (strcmp(key, "appraise_enabled") == 0) {
+                }
+                else if (strcmp(key, "appraise_enabled") == 0)
+                {
                     policy->appraise_enabled = parse_bool(value);
-                } else if (strcmp(key, "enforce_enabled") == 0) {
+                }
+                else if (strcmp(key, "enforce_enabled") == 0)
+                {
                     policy->enforce_enabled = parse_bool(value);
-                } else if (strcmp(key, "container_tracking") == 0) {
+                }
+                else if (strcmp(key, "container_tracking") == 0)
+                {
                     policy->container_tracking = parse_bool(value);
                 }
-                
-                key[0] = '\0';  // Reset key
+
+                key[0] = '\0'; // Reset key
             }
             break;
 
@@ -94,19 +112,25 @@ static int parse_string_sequence(yaml_parser_t *parser, char patterns[][256], in
     int count = 0;
     int in_sequence = 1;
 
-    while (in_sequence) {
-        if (!yaml_parser_parse(parser, &event)) {
+    while (in_sequence)
+    {
+        if (!yaml_parser_parse(parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser->problem);
             return -1;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_SCALAR_EVENT:
-            if (count < max_patterns) {
+            if (count < max_patterns)
+            {
                 strncpy(patterns[count], (char *)event.data.scalar.value, 255);
                 patterns[count][255] = '\0';
                 count++;
-            } else {
+            }
+            else
+            {
                 fprintf(stderr, "Warning: Too many patterns, skipping\n");
             }
             break;
@@ -129,28 +153,34 @@ static int parse_string_sequence(yaml_parser_t *parser, char patterns[][256], in
  * @brief Parse the filters section
  */
 int parse_filters_section(yaml_parser_t *parser,
-                         char cgroup_filters[][256], int max_cgroups,
-                         char path_filters[][256], int max_paths)
+                          char cgroup_filters[][256], int max_cgroups,
+                          char path_filters[][256], int max_paths)
 {
     yaml_event_t event;
     char key[MAX_KEY_LEN] = {0};
     int in_filters = 1;
 
-    while (in_filters) {
-        if (!yaml_parser_parse(parser, &event)) {
+    while (in_filters)
+    {
+        if (!yaml_parser_parse(parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser->problem);
             return -1;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_SCALAR_EVENT:
             strncpy(key, (char *)event.data.scalar.value, MAX_KEY_LEN - 1);
             break;
 
         case YAML_SEQUENCE_START_EVENT:
-            if (strcmp(key, "cgroup_patterns") == 0) {
+            if (strcmp(key, "cgroup_patterns") == 0)
+            {
                 parse_string_sequence(parser, cgroup_filters, max_cgroups);
-            } else if (strcmp(key, "path_patterns") == 0) {
+            }
+            else if (strcmp(key, "path_patterns") == 0)
+            {
                 parse_string_sequence(parser, path_filters, max_paths);
             }
             key[0] = '\0';
@@ -179,31 +209,46 @@ static int parse_hook_config(yaml_parser_t *parser, struct yaml_hook_config *con
     char key[MAX_KEY_LEN] = {0};
     int in_hook = 1;
 
-    while (in_hook) {
-        if (!yaml_parser_parse(parser, &event)) {
+    while (in_hook)
+    {
+        if (!yaml_parser_parse(parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser->problem);
             return -1;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_SCALAR_EVENT:
-            if (key[0] == '\0') {
+            if (key[0] == '\0')
+            {
                 strncpy(key, (char *)event.data.scalar.value, MAX_KEY_LEN - 1);
-            } else {
+            }
+            else
+            {
                 const char *value = (char *)event.data.scalar.value;
-                
-                if (strcmp(key, "name") == 0) {
+
+                if (strcmp(key, "name") == 0)
+                {
                     strncpy(config->hook_name, value, sizeof(config->hook_name) - 1);
-                } else if (strcmp(key, "enabled") == 0) {
+                }
+                else if (strcmp(key, "enabled") == 0)
+                {
                     config->enabled = parse_bool(value);
-                } else if (strcmp(key, "measure") == 0) {
+                }
+                else if (strcmp(key, "measure") == 0)
+                {
                     config->measure = parse_bool(value);
-                } else if (strcmp(key, "appraise") == 0) {
+                }
+                else if (strcmp(key, "appraise") == 0)
+                {
                     config->appraise = parse_bool(value);
-                } else if (strcmp(key, "enforce") == 0) {
+                }
+                else if (strcmp(key, "enforce") == 0)
+                {
                     config->enforce = parse_bool(value);
                 }
-                
+
                 key[0] = '\0';
             }
             break;
@@ -226,23 +271,28 @@ static int parse_hook_config(yaml_parser_t *parser, struct yaml_hook_config *con
  * @brief Parse the hooks section
  */
 int parse_hooks_section(yaml_parser_t *parser,
-                       struct yaml_hook_config *hook_configs,
-                       int max_hooks)
+                        struct yaml_hook_config *hook_configs,
+                        int max_hooks)
 {
     yaml_event_t event;
     int count = 0;
     int in_hooks = 1;
 
-    while (in_hooks) {
-        if (!yaml_parser_parse(parser, &event)) {
+    while (in_hooks)
+    {
+        if (!yaml_parser_parse(parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser->problem);
             return -1;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_MAPPING_START_EVENT:
-            if (count < max_hooks) {
-                if (parse_hook_config(parser, &hook_configs[count]) == 0) {
+            if (count < max_hooks)
+            {
+                if (parse_hook_config(parser, &hook_configs[count]) == 0)
+                {
                     count++;
                 }
             }
@@ -279,14 +329,16 @@ int parse_yaml_policy(const char *config_file,
 
     // Open the YAML file
     file = fopen(config_file, "r");
-    if (!file) {
-        fprintf(stderr, "Error: Cannot open config file '%s': %s\n", 
+    if (!file)
+    {
+        fprintf(stderr, "Error: Cannot open config file '%s': %s\n",
                 config_file, strerror(errno));
         return -1;
     }
 
     // Initialize the YAML parser
-    if (!yaml_parser_initialize(&parser)) {
+    if (!yaml_parser_initialize(&parser))
+    {
         fprintf(stderr, "Error: Failed to initialize YAML parser\n");
         fclose(file);
         return -1;
@@ -302,13 +354,16 @@ int parse_yaml_policy(const char *config_file,
 
     // Parse the YAML document
     int done = 0;
-    while (!done) {
-        if (!yaml_parser_parse(&parser, &event)) {
+    while (!done)
+    {
+        if (!yaml_parser_parse(&parser, &event))
+        {
             fprintf(stderr, "YAML parser error: %s\n", parser.problem);
             goto cleanup;
         }
 
-        switch (event.type) {
+        switch (event.type)
+        {
         case YAML_STREAM_START_EVENT:
         case YAML_DOCUMENT_START_EVENT:
             break;
@@ -318,13 +373,18 @@ int parse_yaml_policy(const char *config_file,
             break;
 
         case YAML_MAPPING_START_EVENT:
-            if (strcmp(key, "policy") == 0) {
-                if (parse_policy_section(&parser, policy) < 0) {
+            if (strcmp(key, "policy") == 0)
+            {
+                if (parse_policy_section(&parser, policy) < 0)
+                {
                     goto cleanup;
                 }
-            } else if (strcmp(key, "filters") == 0) {
+            }
+            else if (strcmp(key, "filters") == 0)
+            {
                 if (parse_filters_section(&parser, cgroup_filters, max_cgroups,
-                                         path_filters, max_paths) < 0) {
+                                          path_filters, max_paths) < 0)
+                {
                     goto cleanup;
                 }
             }
@@ -332,8 +392,10 @@ int parse_yaml_policy(const char *config_file,
             break;
 
         case YAML_SEQUENCE_START_EVENT:
-            if (strcmp(key, "hooks") == 0) {
-                if (parse_hooks_section(&parser, hook_configs, max_hooks) < 0) {
+            if (strcmp(key, "hooks") == 0)
+            {
+                if (parse_hooks_section(&parser, hook_configs, max_hooks) < 0)
+                {
                     goto cleanup;
                 }
             }
@@ -384,82 +446,106 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
     };
 
     /* Set action flags based on YAML settings */
-    if (policy->measure_enabled) {
+    if (policy->measure_enabled)
+    {
         bpf_policy.action_flags |= POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS;
     }
-    if (policy->appraise_enabled) {
+    if (policy->appraise_enabled)
+    {
         bpf_policy.action_flags |= POLICY_ACTION_ALERT_SUSPICIOUS;
     }
-    if (policy->enforce_enabled) {
+    if (policy->enforce_enabled)
+    {
         bpf_policy.action_flags |= POLICY_ACTION_BLOCK;
     }
-    if (policy->container_tracking) {
+    if (policy->container_tracking)
+    {
         bpf_policy.action_flags |= POLICY_ACTION_TRACK_CONTAINER;
     }
 
-    // Update policy map
-    if (bpf_map_update_elem(policy_fd, &key, &bpf_policy, BPF_ANY) < 0) {
+    // set the build dependencies flag as default
+    bpf_policy.action_flags |= POLICY_ACTION_BUILD_DEPS;
+
+    if (bpf_map_update_elem(policy_fd, &key, &bpf_policy, BPF_ANY) < 0)
+    {
         fprintf(stderr, "Error: Failed to update policy map: %s\n", strerror(errno));
         return -1;
     }
     printf("✓ Updated global policy configuration\n");
 
     // Update cgroup filters
-    for (int i = 0; i < num_cgroups; i++) {
-        if (strlen(cgroup_filters[i]) > 0) {
+    for (int i = 0; i < num_cgroups; i++)
+    {
+        if (strlen(cgroup_filters[i]) > 0)
+        {
             struct bpfima_pattern_entry entry = {0};
             strncpy(entry.pattern, cgroup_filters[i], MAX_PATTERN_LEN - 1);
             entry.enabled = 1;
-            entry.match_type = 1;  /* prefix match */
-            
+            entry.match_type = 1; /* prefix match */
+
             __u32 idx = i;
-            if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update cgroup filter %d: %s\n", 
+            if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0)
+            {
+                fprintf(stderr, "Warning: Failed to update cgroup filter %d: %s\n",
                         i, strerror(errno));
-            } else {
+            }
+            else
+            {
                 printf("✓ Added cgroup filter: %s\n", cgroup_filters[i]);
             }
         }
     }
 
     // Update path filters
-    for (int i = 0; i < num_paths; i++) {
-        if (strlen(path_filters[i]) > 0) {
+    for (int i = 0; i < num_paths; i++)
+    {
+        if (strlen(path_filters[i]) > 0)
+        {
             struct bpfima_pattern_entry entry = {0};
             strncpy(entry.pattern, path_filters[i], MAX_PATTERN_LEN - 1);
             entry.enabled = 1;
-            entry.match_type = 1;  /* prefix match */
-            
+            entry.match_type = 1; /* prefix match */
+
             __u32 idx = i;
-            if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update path filter %d: %s\n", 
+            if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0)
+            {
+                fprintf(stderr, "Warning: Failed to update path filter %d: %s\n",
                         i, strerror(errno));
-            } else {
+            }
+            else
+            {
                 printf("✓ Added path filter: %s\n", path_filters[i]);
             }
         }
     }
 
     // Update hook configurations
-    for (int i = 0; i < num_hooks; i++) {
-        if (strlen(hook_configs[i].hook_name) > 0) {
+    for (int i = 0; i < num_hooks; i++)
+    {
+        if (strlen(hook_configs[i].hook_name) > 0)
+        {
             struct bpfima_hook_config bpf_hook = {0};
-            
+
             /* Set flags based on YAML hook config */
-            if (hook_configs[i].enabled) {
+            if (hook_configs[i].enabled)
+            {
                 bpf_hook.flags |= HOOK_FLAG_ENABLED;
             }
-            if (hook_configs[i].measure) {
+            if (hook_configs[i].measure)
+            {
                 bpf_hook.flags |= HOOK_FLAG_MEASURE_HASH;
             }
-            
+
             __u32 idx = i;
-            if (bpf_map_update_elem(hook_fd, &idx, &bpf_hook, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update hook config %d (%s): %s\n", 
+            if (bpf_map_update_elem(hook_fd, &idx, &bpf_hook, BPF_ANY) < 0)
+            {
+                fprintf(stderr, "Warning: Failed to update hook config %d (%s): %s\n",
                         i, hook_configs[i].hook_name, strerror(errno));
-            } else {
+            }
+            else
+            {
                 printf("✓ Configured hook: %s (enabled=%d, measure=%d)\n",
-                       hook_configs[i].hook_name, 
+                       hook_configs[i].hook_name,
                        hook_configs[i].enabled,
                        hook_configs[i].measure);
             }

@@ -51,12 +51,15 @@ extern struct mutex tpm_ops_mutex;
  * @list: Linked list node for maintaining measurement list
  * @event_name: Event name/description
  * @event_data: Additional event data
+ * @dependencies: Dependencies string (e.g., previous measurement hash)
  * @digest: SHA-256 hash of the measurement
  */
-struct measurement_entry {
+struct measurement_entry
+{
     struct list_head list;
     char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
     char event_data[256];
+    char dependencies[256];
     u8 digest[MERKLE_HASH_SIZE];
 };
 
@@ -73,7 +76,8 @@ struct measurement_entry {
  * @securityfs_policy_file: SecurityFS file for policy configuration
  * @securityfs_policy_changes_file: SecurityFS file for policy change history
  */
-struct container_node {
+struct container_node
+{
     struct list_head list;
     char id[CONTAINER_ID_MAX_LEN];
     struct list_head measurement_list;
@@ -92,7 +96,8 @@ struct container_node {
  * @value: Hash value that was added to the Merkle root calculation
  * @source_container_id: ID of the container that triggered this extension
  */
-struct merkle_root_entry {
+struct merkle_root_entry
+{
     struct list_head list;
     u8 value[MERKLE_HASH_SIZE];
     char source_container_id[CONTAINER_ID_MAX_LEN];
@@ -104,24 +109,27 @@ struct merkle_root_entry {
  * @lock: Spinlock for thread-safe tree operations
  * @leaf_count: Number of leaf nodes (containers) in the tree
  */
-struct merkle_tree_root {
+struct merkle_tree_root
+{
     u8 root_hash[MERKLE_HASH_SIZE];
     spinlock_t lock;
     u32 leaf_count;
 };
 
 /* Legacy BPF-IMA structures */
-struct bpf_ima_template_entry {
+struct bpf_ima_template_entry
+{
     struct list_head list;
     char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
     char event_data[256];
     u8 digest[IMA_DIGEST_SIZE];
 };
 
-struct hash_entry {
+struct hash_entry
+{
     struct hlist_node hash_node;
     u8 sha256_hash[SHA256_DIGEST_SIZE];
-    char namespace_id[CONTAINER_ID_MAX_LEN]; 
+    char namespace_id[CONTAINER_ID_MAX_LEN];
 };
 
 /* Hash utility functions */
