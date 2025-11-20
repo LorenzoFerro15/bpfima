@@ -36,12 +36,9 @@
 #define CONTAINER_ID_MAX_LEN 128
 #define MERKLE_HASH_SIZE SHA256_DIGEST_SIZE
 
-/* Global measurement tracking - defined in kfuncs_measure.c */
-extern atomic_t measurement_count;
+/* Host measurement tracking - defined in merkle.c */
 extern struct list_head host_measurement_list;
 extern spinlock_t host_measurement_lock;
-extern spinlock_t measurement_list_lock;
-extern struct list_head bpf_measurement_list;
 
 /* TPM serialization mutex - defined in tpm_ops.c */
 extern struct mutex tpm_ops_mutex;
@@ -68,7 +65,8 @@ struct measurement_entry
  * @list: Linked list node for maintaining list of all containers
  * @id: Unique container identifier
  * @measurement_list: List of measurements specific to this container
- * @measurement_lock: Spinlock protecting the measurement list
+ * @measurement_lock: Spinlock protecting the measurement list data structure
+ * @measurement_mutex: Mutex for serializing measurement additions including Merkle updates
  * @leaf_hash: Current SHA-256 hash representing this container (Merkle leaf)
  * @measurement_count: Number of measurements in this container's list
  * @securityfs_dir: SecurityFS directory for this container
@@ -82,6 +80,7 @@ struct container_node
     char id[CONTAINER_ID_MAX_LEN];
     struct list_head measurement_list;
     spinlock_t measurement_lock;
+    struct mutex measurement_mutex;
     u8 leaf_hash[MERKLE_HASH_SIZE];
     atomic_t measurement_count;
     struct dentry *securityfs_dir;
@@ -116,15 +115,6 @@ struct merkle_tree_root
     u32 leaf_count;
 };
 
-/* Legacy BPF-IMA structures */
-struct bpf_ima_template_entry
-{
-    struct list_head list;
-    char event_name[IMA_EVENT_NAME_LEN_MAX + 1];
-    char event_data[256];
-    u8 digest[IMA_DIGEST_SIZE];
-};
-
 struct hash_entry
 {
     struct hlist_node hash_node;
@@ -132,13 +122,11 @@ struct hash_entry
     char namespace_id[CONTAINER_ID_MAX_LEN];
 };
 
-/* Hash utility functions */
 int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
 bool hash_exists(const u8 *hash_value, const char *namespace_id);
 int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep);
 void cleanup_hash_table(void);
 
-/* TPM operations */
 int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
 int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name);
 

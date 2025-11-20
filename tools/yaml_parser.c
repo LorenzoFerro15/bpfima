@@ -1,8 +1,3 @@
-/**
- * @file yaml_parser.c
- * @brief YAML policy configuration parser implementation
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,12 +47,10 @@ int parse_policy_section(yaml_parser_t *parser, struct yaml_policy *policy)
         case YAML_SCALAR_EVENT:
             if (key[0] == '\0')
             {
-                // This is a key
                 strncpy(key, (char *)event.data.scalar.value, MAX_KEY_LEN - 1);
             }
             else
             {
-                // This is a value
                 const char *value = (char *)event.data.scalar.value;
 
                 if (strcmp(key, "enabled") == 0)
@@ -85,7 +78,7 @@ int parse_policy_section(yaml_parser_t *parser, struct yaml_policy *policy)
                     policy->container_tracking = parse_bool(value);
                 }
 
-                key[0] = '\0'; // Reset key
+                key[0] = '\0';
             }
             break;
 
@@ -327,7 +320,6 @@ int parse_yaml_policy(const char *config_file,
     int ret = -1;
     char key[MAX_KEY_LEN] = {0};
 
-    // Open the YAML file
     file = fopen(config_file, "r");
     if (!file)
     {
@@ -336,7 +328,6 @@ int parse_yaml_policy(const char *config_file,
         return -1;
     }
 
-    // Initialize the YAML parser
     if (!yaml_parser_initialize(&parser))
     {
         fprintf(stderr, "Error: Failed to initialize YAML parser\n");
@@ -346,13 +337,11 @@ int parse_yaml_policy(const char *config_file,
 
     yaml_parser_set_input_file(&parser, file);
 
-    // Initialize outputs
     memset(policy, 0, sizeof(*policy));
     memset(cgroup_filters, 0, max_cgroups * 256);
     memset(path_filters, 0, max_paths * 256);
     memset(hook_configs, 0, max_hooks * sizeof(struct bpfima_hook_config));
 
-    // Parse the YAML document
     int done = 0;
     while (!done)
     {
@@ -435,7 +424,6 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
     int ret = 0;
     __u32 key = 0;
 
-    /* Convert YAML policy to BPF policy structure */
     struct bpfima_policy_config bpf_policy = {
         .enabled = policy->enabled,
         .log_level = policy->log_level,
@@ -445,7 +433,6 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
         .max_path_depth = 10,
     };
 
-    /* Set action flags based on YAML settings */
     if (policy->measure_enabled)
     {
         bpf_policy.action_flags |= POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS;
@@ -463,7 +450,6 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
         bpf_policy.action_flags |= POLICY_ACTION_TRACK_CONTAINER;
     }
 
-    // set the build dependencies flag as default
     bpf_policy.action_flags |= POLICY_ACTION_BUILD_DEPS;
 
     if (bpf_map_update_elem(policy_fd, &key, &bpf_policy, BPF_ANY) < 0)
@@ -471,9 +457,8 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
         fprintf(stderr, "Error: Failed to update policy map: %s\n", strerror(errno));
         return -1;
     }
-    printf("✓ Updated global policy configuration\n");
+    printf("  Updated global policy configuration\n");
 
-    // Update cgroup filters
     for (int i = 0; i < num_cgroups; i++)
     {
         if (strlen(cgroup_filters[i]) > 0)
@@ -481,7 +466,7 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             struct bpfima_pattern_entry entry = {0};
             strncpy(entry.pattern, cgroup_filters[i], MAX_PATTERN_LEN - 1);
             entry.enabled = 1;
-            entry.match_type = 1; /* prefix match */
+            entry.match_type = 1;
 
             __u32 idx = i;
             if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0)
@@ -491,12 +476,11 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             }
             else
             {
-                printf("✓ Added cgroup filter: %s\n", cgroup_filters[i]);
+                printf("  Added cgroup filter: %s\n", cgroup_filters[i]);
             }
         }
     }
 
-    // Update path filters
     for (int i = 0; i < num_paths; i++)
     {
         if (strlen(path_filters[i]) > 0)
@@ -504,7 +488,7 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             struct bpfima_pattern_entry entry = {0};
             strncpy(entry.pattern, path_filters[i], MAX_PATTERN_LEN - 1);
             entry.enabled = 1;
-            entry.match_type = 1; /* prefix match */
+            entry.match_type = 1;
 
             __u32 idx = i;
             if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0)
@@ -514,19 +498,17 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             }
             else
             {
-                printf("✓ Added path filter: %s\n", path_filters[i]);
+                printf("  Added path filter: %s\n", path_filters[i]);
             }
         }
     }
 
-    // Update hook configurations
     for (int i = 0; i < num_hooks; i++)
     {
         if (strlen(hook_configs[i].hook_name) > 0)
         {
             struct bpfima_hook_config bpf_hook = {0};
 
-            /* Set flags based on YAML hook config */
             if (hook_configs[i].enabled)
             {
                 bpf_hook.flags |= HOOK_FLAG_ENABLED;
@@ -544,7 +526,7 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             }
             else
             {
-                printf("✓ Configured hook: %s (enabled=%d, measure=%d)\n",
+                printf("  Configured hook: %s (enabled=%d, measure=%d)\n",
                        hook_configs[i].hook_name,
                        hook_configs[i].enabled,
                        hook_configs[i].measure);

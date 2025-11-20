@@ -236,18 +236,18 @@ verify_bpfima_ready() {
     
     # Check module
     if ! lsmod | grep -q "^bpfima "; then
-        echo -e "${RED}✗${NC} Kernel module not loaded" >&2
+        echo -e "${RED}  ${NC} Kernel module not loaded" >&2
         errors=$((errors + 1))
     else
-        echo -e "${GREEN}✓${NC} Kernel module loaded"
+        echo -e "${GREEN} ${NC} Kernel module loaded"
     fi
     
     # Check securityfs
     if [ ! -d "/sys/kernel/security/bpfima" ]; then
-        echo -e "${RED}✗${NC} SecurityFS not available" >&2
+        echo -e "${RED}  ${NC} SecurityFS not available" >&2
         errors=$((errors + 1))
     else
-        echo -e "${GREEN}✓${NC} SecurityFS available"
+        echo -e "${GREEN} ${NC} SecurityFS available"
     fi
     
     # Check essential BPF maps
@@ -256,7 +256,7 @@ verify_bpfima_ready() {
         if [ ! -e "/sys/fs/bpf/$map" ]; then
             echo -e "${YELLOW}⚠${NC} BPF map not found: $map" >&2
         else
-            echo -e "${GREEN}✓${NC} BPF map: $map"
+            echo -e "${GREEN} ${NC} BPF map: $map"
         fi
     done
     

@@ -76,7 +76,6 @@ int status_show(struct seq_file *s, void *unused)
     }
 
     seq_printf(s, "module=bpfima\n");
-    seq_printf(s, "measurement_count=%d\n", atomic_read(&measurement_count));
     seq_printf(s, "pcr_index=%d\n", TPM_PCR_INDEX);
     seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
     seq_printf(s, "digest_algorithm=sha256\n");
@@ -210,7 +209,6 @@ int container_measurements_open(struct inode *inode, struct file *file)
  */
 void bpfima_securityfs_cleanup(void)
 {
-    /* Remove global policy files first */
     remove_global_policy_changes_securityfs();
     remove_global_policy_securityfs();
 
@@ -277,25 +275,21 @@ int create_container_securityfs(struct container_node *container)
         return PTR_ERR(container->securityfs_measurements_file);
     }
 
-    /* Create policy file for this container */
     container->securityfs_policy_file =
         create_namespace_policy_securityfs(container->id, container->securityfs_dir);
     if (IS_ERR(container->securityfs_policy_file))
     {
         pr_warn("bpfima: Failed to create policy file for container %s: %ld\n",
                 container->id, PTR_ERR(container->securityfs_policy_file));
-        /* Non-fatal - continue without policy file */
         container->securityfs_policy_file = NULL;
     }
 
-    /* Create policy_changes file for this container */
     container->securityfs_policy_changes_file =
         create_namespace_policy_changes_securityfs(container->id, container->securityfs_dir);
     if (IS_ERR(container->securityfs_policy_changes_file))
     {
         pr_warn("bpfima: Failed to create policy_changes file for container %s: %ld\n",
                 container->id, PTR_ERR(container->securityfs_policy_changes_file));
-        /* Non-fatal - continue without policy_changes file */
         container->securityfs_policy_changes_file = NULL;
     }
 

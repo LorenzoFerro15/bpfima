@@ -3,11 +3,6 @@
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
 
-/* Global measurement tracking */
-LIST_HEAD(bpf_measurement_list);
-DEFINE_SPINLOCK(measurement_list_lock);
-atomic_t measurement_count = ATOMIC_INIT(0);
-
 /*
  * bpf_ima_extend_measurement - BPF kfunc to add measurement and extend TPM PCR
  * @event_name: Name/identifier of the event being measured
@@ -170,20 +165,6 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name,
 }
 
 /*
- * bpf_ima_get_measurement_count - BPF kfunc to get number of measurements
- *
- * Returns the current count of measurements stored in the measurement list.
- * This is an atomic operation that reads the measurement count without locking.
- * Safe to call from any context including atomic contexts.
- *
- * Returns: Current number of measurements as integer
- */
-__bpf_kfunc int bpf_ima_get_measurement_count(void)
-{
-    return atomic_read(&measurement_count);
-}
-
-/*
  * bpf_ima_get_pcr_value - BPF kfunc to retrieve TPM PCR value or simulation
  * @pcr_buf: Output buffer to store PCR value string (minimum 80 bytes)
  * @buf_size: Size of output buffer in bytes
@@ -216,8 +197,8 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 
     if (!can_sleep)
     {
-        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_ATOMIC_CONTEXT",
-                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        snprintf(pcr_buf, buf_size, "PCR%d_ATOMIC_CONTEXT",
+                 TPM_PCR_INDEX);
         printk(KERN_INFO "Called from atomic context, using simulation\n");
         return 0;
     }
@@ -228,8 +209,8 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     if (!chip)
     {
         mutex_unlock(&tpm_ops_mutex);
-        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION",
-                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        snprintf(pcr_buf, buf_size, "PCR%d_HASH_SIMULATION",
+                 TPM_PCR_INDEX);
         printk(KERN_INFO "TPM not available, using simulation\n");
         return 0;
     }
@@ -244,8 +225,8 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 
     if (ret < 0)
     {
-        snprintf(pcr_buf, buf_size, "PCR%d_MEASUREMENTS_%d_HASH_SIMULATION",
-                 TPM_PCR_INDEX, atomic_read(&measurement_count));
+        snprintf(pcr_buf, buf_size, "PCR%d_HASH_SIMULATION",
+                 TPM_PCR_INDEX);
         printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
         return ret;
     }
@@ -283,66 +264,6 @@ __bpf_kfunc int bpf_tpm_is_available(void)
     return 1;
 }
 
-/*
- * bpf_ima_print_measurement_list - BPF kfunc to print all measurements
- *  in structured format
- *
- * Outputs a formatted list of all recorded measurements to kernel log (dmesg).
- * Uses interrupt-disabling spinlock to safely traverse the measurement list.
- * Each measurement entry shows event name, truncated data (50 chars max),
- * and full digest.
- *
- * Output format:
- * === BPF-IMA Measurement List ===
- * Total measurements: N
- * PCR Index: 23
- * ----------------------------------------
- * [1] Event: event_name
- *     Data: event_data...
- *     Digest: abc123def456...
- *     --------
- * === End of Measurement List ===
- *
- * Safe to call from any context. Uses irqsave locking for list traversal.
- *
- * Returns: Total number of measurements printed
- */
-__bpf_kfunc int bpf_ima_print_measurement_list(void)
-{
-    struct bpf_ima_template_entry *entry;
-    int count = 0;
-    unsigned long flags;
-
-    printk(KERN_INFO "=== BPF-IMA Measurement List ===");
-    printk(KERN_INFO "Total measurements: %d", atomic_read(&measurement_count));
-    printk(KERN_INFO "PCR Index: %d", TPM_PCR_INDEX);
-    printk(KERN_INFO "----------------------------------------");
-
-    spin_lock_irqsave(&measurement_list_lock, flags);
-
-    if (list_empty(&bpf_measurement_list))
-    {
-        printk(KERN_INFO "No measurements recorded.");
-    }
-    else
-    {
-        list_for_each_entry(entry, &bpf_measurement_list, list)
-        {
-            count++;
-            printk(KERN_INFO "[%d] Event: %s", count, entry->event_name);
-            printk(KERN_INFO "    Data: %.50s%s", entry->event_data,
-                   strlen(entry->event_data) > 50 ? "..." : "");
-            printk(KERN_INFO "    Digest: %*ph", IMA_DIGEST_SIZE, entry->digest);
-            printk(KERN_INFO "    --------");
-        }
-    }
-
-    spin_unlock_irqrestore(&measurement_list_lock, flags);
-
-    printk(KERN_INFO "=== End of Measurement List ===");
-
-    return atomic_read(&measurement_count);
-}
 /*
  * bpf_ima_file_hash_simple - Simple file hash using scalar file representation
  * @file_scalar: File pointer cast to u64 scalar (to bypass eBPF verifier)

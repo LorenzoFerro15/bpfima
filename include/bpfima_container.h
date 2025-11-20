@@ -20,9 +20,5 @@ int add_container_measurement(struct container_node *container,
                               const char *event_data,
                               const char *dependencies,
                               const u8 *digest);
-int add_host_measurement(const char *event_name,
-                         const char *event_data,
-                         const char *dependencies,
-                         const u8 *digest);
 
 #endif /* BPFIMA_CONTAINER_H */
