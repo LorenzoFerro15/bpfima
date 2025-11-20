@@ -5,7 +5,7 @@
 #include "bpfima_measurements.h"
 
 static LIST_HEAD(policy_namespace_list);
-static DEFINE_MUTEX(policy_namespace_mutex);
+static DEFINE_MUTEX(bpfima_policy_namespace_mutex);
 
 /**
  * bpfima_policy_namespace_init - Initialize namespace policy subsystem
@@ -28,7 +28,7 @@ void bpfima_policy_namespace_cleanup(void)
 
     pr_info("bpfima: Cleaning up per-namespace policy subsystem\n");
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     list_for_each_entry_safe(policy_ns, tmp, &policy_namespace_list, list) {
         spin_lock(&policy_ns->change_history_lock);
         list_for_each_entry_safe(change, tmp_change, &policy_ns->change_history, list) {
@@ -40,14 +40,14 @@ void bpfima_policy_namespace_cleanup(void)
         list_del(&policy_ns->list);
         kfree(policy_ns);
     }
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 }
 
 /**
  * find_policy_namespace - Find policy configuration for a namespace
  * @namespace_id: Namespace identifier to search for
  *
- * Must be called with policy_namespace_mutex held.
+ * Must be called with bpfima_policy_namespace_mutex held.
  *
  * Returns: Pointer to policy_namespace if found, NULL otherwise
  */
@@ -73,7 +73,7 @@ static struct bpfima_policy_namespace *find_policy_namespace(const char *namespa
  * @new_value: New value of the field
  *
  * Appends "field_name=new_value," to the changes_str and recalculates hash.
- * Must be called with policy_namespace_mutex held.
+ * Must be called with bpfima_policy_namespace_mutex held.
  *
  * Returns: 0 on success, negative error code on failure
  */
@@ -123,7 +123,7 @@ static int update_changes_string(struct bpfima_policy_namespace *policy_ns,
  *
  * Creates a policy change entry with full policy string, hashes it,
  * extends the container leaf hash, and extends the Merkle root.
- * Must be called with policy_namespace_mutex held.
+ * Must be called with bpfima_policy_namespace_mutex held.
  *
  * Returns: 0 on success, negative error code on failure
  */
@@ -259,17 +259,17 @@ struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char
     if (!namespace_id || strlen(namespace_id) == 0)
         return ERR_PTR(-EINVAL);
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
 
     policy_ns = find_policy_namespace(namespace_id);
     if (policy_ns) {
-        mutex_unlock(&policy_namespace_mutex);
+        mutex_unlock(&bpfima_policy_namespace_mutex);
         return policy_ns;
     }
 
     policy_ns = kzalloc(sizeof(*policy_ns), GFP_KERNEL);
     if (!policy_ns) {
-        mutex_unlock(&policy_namespace_mutex);
+        mutex_unlock(&bpfima_policy_namespace_mutex);
         return ERR_PTR(-ENOMEM);
     }
 
@@ -289,13 +289,13 @@ struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char
                                 policy_ns->changes_hash);
     if (ret < 0) {
         pr_err("bpfima: Failed to calculate initial policy hash: %d\n", ret);
-        mutex_unlock(&policy_namespace_mutex);
+        mutex_unlock(&bpfima_policy_namespace_mutex);
         kfree(policy_ns);
         return ERR_PTR(ret);
     }
 
     list_add(&policy_ns->list, &policy_namespace_list);
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     pr_info("bpfima: Created policy namespace for %s\n", namespace_id);
 
@@ -318,13 +318,13 @@ int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 ne
     if (IS_ERR(policy_ns))
         return PTR_ERR(policy_ns);
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     policy_ns->policy.filter_flags = new_flags;
     ret = update_changes_string(policy_ns, "filter_flags", new_flags);
     if (ret == 0) {
         ret = record_policy_change_and_extend(policy_ns, namespace_id);
     }
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     return ret;
 }
@@ -345,13 +345,13 @@ int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 ne
     if (IS_ERR(policy_ns))
         return PTR_ERR(policy_ns);
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     policy_ns->policy.action_flags = new_flags;
     ret = update_changes_string(policy_ns, "action_flags", new_flags);
     if (ret == 0) {
         ret = record_policy_change_and_extend(policy_ns, namespace_id);
     }
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     return ret;
 }
@@ -372,13 +372,13 @@ int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 n
     if (IS_ERR(policy_ns))
         return PTR_ERR(policy_ns);
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     policy_ns->policy.min_file_size = new_size;
     ret = update_changes_string(policy_ns, "min_file_size", new_size);
     if (ret == 0) {
         ret = record_policy_change_and_extend(policy_ns, namespace_id);
     }
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     return ret;
 }
@@ -399,13 +399,13 @@ int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_l
     if (IS_ERR(policy_ns))
         return PTR_ERR(policy_ns);
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     policy_ns->policy.log_level = new_level;
     ret = update_changes_string(policy_ns, "log_level", new_level);
     if (ret == 0) {
         ret = record_policy_change_and_extend(policy_ns, namespace_id);
     }
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     return ret;
 }
@@ -425,15 +425,15 @@ int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_
     if (!hash_out || hash_size < MERKLE_HASH_SIZE)
         return -EINVAL;
 
-    mutex_lock(&policy_namespace_mutex);
+    mutex_lock(&bpfima_policy_namespace_mutex);
     policy_ns = find_policy_namespace(namespace_id);
     if (!policy_ns) {
-        mutex_unlock(&policy_namespace_mutex);
+        mutex_unlock(&bpfima_policy_namespace_mutex);
         return -ENOENT;
     }
 
     memcpy(hash_out, policy_ns->changes_hash, MERKLE_HASH_SIZE);
-    mutex_unlock(&policy_namespace_mutex);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
 
     return 0;
 }

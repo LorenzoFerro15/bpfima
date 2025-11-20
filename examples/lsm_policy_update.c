@@ -11,14 +11,14 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-extern int bpf_policy_update_filter_flags(const char *namespace_id, u32 new_flags) __ksym;
-extern int bpf_policy_update_action_flags(const char *namespace_id, u32 new_flags) __ksym;
-extern int bpf_policy_update_min_file_size(const char *namespace_id, u32 new_size) __ksym;
-extern int bpf_policy_update_log_level(const char *namespace_id, u32 new_level) __ksym;
-extern int bpf_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size) __ksym;
+extern int bpfima_policy_update_filter_flags(const char *namespace_id, u32 new_flags) __ksym;
+extern int bpfima_policy_update_action_flags(const char *namespace_id, u32 new_flags) __ksym;
+extern int bpfima_policy_update_min_file_size(const char *namespace_id, u32 new_size) __ksym;
+extern int bpfima_policy_update_log_level(const char *namespace_id, u32 new_level) __ksym;
+extern int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size) __ksym;
 
-extern int bpf_container_create_or_get(const char *container_id) __ksym;
-extern int bpf_container_exists(const char *container_id) __ksym;
+extern int bpfima_container_get_or_create(const char *container_id) __ksym;
+extern int bpfima_container_exists(const char *container_id) __ksym;
 
 #define POLICY_FILTER_SYSTEM_CGROUPS (1 << 0)
 #define POLICY_FILTER_PROC_SYS (1 << 1)
@@ -58,7 +58,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
 
     __builtin_memcpy(container_id, "prod-container-123", 18);
 
-    result = bpf_container_create_or_get(container_id);
+    result = bpfima_container_get_or_create(container_id);
     if (result < 0)
     {
         bpf_printk("Failed to create/get container: %d\n", result);
@@ -69,7 +69,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
                        POLICY_FILTER_PROC_SYS |
                        POLICY_FILTER_DEV;
 
-    result = bpf_policy_update_filter_flags(container_id, new_filter_flags);
+    result = bpfima_policy_update_filter_flags(container_id, new_filter_flags);
     if (result < 0)
     {
         bpf_printk("Failed to update filter flags: %d\n", result);
@@ -82,7 +82,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
                        POLICY_ACTION_TRACK_CONTAINER |
                        POLICY_ACTION_BUILD_DEPS;
 
-    result = bpf_policy_update_action_flags(container_id, new_action_flags);
+    result = bpfima_policy_update_action_flags(container_id, new_action_flags);
     if (result < 0)
     {
         bpf_printk("Failed to update action flags: %d\n", result);
@@ -120,7 +120,7 @@ int BPF_PROG(policy_adjust_on_file_open, struct file *file, int ret)
     {                                  
         min_file_size = 5 * 1024 * 1024;
 
-        result = bpf_policy_update_min_file_size(namespace_id, min_file_size);
+        result = bpfima_policy_update_min_file_size(namespace_id, min_file_size);
         if (result < 0)
         {
             bpf_printk("Failed to update min_file_size: %d\n", result);
@@ -147,10 +147,10 @@ int BPF_PROG(policy_get_changes_hash, struct file *file, unsigned long reqprot,
 
     __builtin_memcpy(namespace_id, "monitoring-ns", 13);
 
-    if (bpf_container_exists(namespace_id) <= 0)
+    if (bpfima_container_exists(namespace_id) <= 0)
         return 0;
 
-    result = bpf_policy_get_changes_hash(namespace_id, policy_hash, MERKLE_HASH_SIZE);
+    result = bpfima_policy_get_changes_hash(namespace_id, policy_hash, MERKLE_HASH_SIZE);
     if (result < 0)
     {
         bpf_printk("Failed to get policy changes hash: %d\n", result);
@@ -178,13 +178,13 @@ int BPF_PROG(policy_adjust_log_level, struct socket *sock,
 
     __builtin_memcpy(namespace_id, "backend-service", 15);
 
-    result = bpf_container_create_or_get(namespace_id);
+    result = bpfima_container_get_or_create(namespace_id);
     if (result < 0)
         return 0;
 
     new_log_level = 3;
 
-    result = bpf_policy_update_log_level(namespace_id, new_log_level);
+    result = bpfima_policy_update_log_level(namespace_id, new_log_level);
     if (result < 0)
     {
         bpf_printk("Failed to update log level: %d\n", result);

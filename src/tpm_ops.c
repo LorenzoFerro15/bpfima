@@ -7,7 +7,7 @@ MODULE_PARM_DESC(tpm_pcr_index, "TPM PCR index to use for measurements (default:
 
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
 
-DEFINE_MUTEX(tpm_ops_mutex);
+DEFINE_MUTEX(bpfima_tpm_mutex);
 
 /**
  * extend_tpm_pcr - Extend TPM Platform Configuration Register with measurement
@@ -50,12 +50,12 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         return -EINVAL;
     }
 
-    mutex_lock(&tpm_ops_mutex);
+    mutex_lock(&bpfima_tpm_mutex);
 
     chip = tpm_default_chip();
     if (!chip)
     {
-        mutex_unlock(&tpm_ops_mutex);
+        mutex_unlock(&bpfima_tpm_mutex);
         printk(KERN_WARNING "bpfima: TPM not available, measurement added to list only\n");
         return -ENODEV;
     }
@@ -68,7 +68,7 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
 
     tpm_put_ops(chip);
 
-    mutex_unlock(&tpm_ops_mutex);
+    mutex_unlock(&bpfima_tpm_mutex);
 
     if (ret != 0)
     {

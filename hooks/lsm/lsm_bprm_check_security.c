@@ -13,7 +13,7 @@ char LICENSE[] SEC("license") = "GPL";
  * 3. Policy Filter: Check if cgroup/path should be ignored based on policy
  * 4. Hash Calculation: Compute file hash of the executable via kfunc
  * 5. Dependencies: Build dependency chain from parent processes (if enabled in policy)
- * 6. Measurement Extension: Call bpf_ima_extend_measurement which:
+ * 6. Measurement Extension: Call bpfima_measurement_extend which:
  *    - If namespace_id provided:
  *      7. Directly extends in the namespace/container measurement list
  *      8. Updates the leaf value (container-specific hash)
@@ -24,7 +24,7 @@ char LICENSE[] SEC("license") = "GPL";
  *      Uses legacy host-level measurement system
  * 
  * All Merkle tree operations and TPM extension are handled automatically
- * by the bpf_ima_extend_measurement kfunc, with behavior controlled by policy.
+ * by the bpfima_measurement_extend kfunc, with behavior controlled by policy.
  */
 SEC("lsm/bprm_check_security")
 int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)

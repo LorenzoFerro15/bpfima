@@ -37,7 +37,7 @@
 #define MERKLE_HASH_SIZE SHA256_DIGEST_SIZE
 
 /* TPM serialization mutex - defined in tpm_ops.c */
-extern struct mutex tpm_ops_mutex;
+extern struct mutex bpfima_tpm_mutex;
 
 /**
  * struct measurement_entry - Represents a single measurement/extension event

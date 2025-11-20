@@ -10,7 +10,7 @@
 #include "bpfima_kfuncs.h"
 
 /**
- * bpf_policy_update_filter_flags - Update filter flags for a namespace
+ * bpfima_policy_update_filter_flags - Update filter flags for a namespace
  * @namespace_id: Namespace/container identifier
  * @new_flags: New filter flags value
  *
@@ -19,7 +19,7 @@
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_policy_update_filter_flags(const char *namespace_id, u32 new_flags)
+__bpf_kfunc int bpfima_policy_update_filter_flags(const char *namespace_id, u32 new_flags)
 {
     if (!namespace_id)
         return -EINVAL;
@@ -28,7 +28,7 @@ __bpf_kfunc int bpf_policy_update_filter_flags(const char *namespace_id, u32 new
 }
 
 /**
- * bpf_policy_update_action_flags - Update action flags for a namespace
+ * bpfima_policy_update_action_flags - Update action flags for a namespace
  * @namespace_id: Namespace/container identifier
  * @new_flags: New action flags value
  *
@@ -37,7 +37,7 @@ __bpf_kfunc int bpf_policy_update_filter_flags(const char *namespace_id, u32 new
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_policy_update_action_flags(const char *namespace_id, u32 new_flags)
+__bpf_kfunc int bpfima_policy_update_action_flags(const char *namespace_id, u32 new_flags)
 {
     if (!namespace_id)
         return -EINVAL;
@@ -46,7 +46,7 @@ __bpf_kfunc int bpf_policy_update_action_flags(const char *namespace_id, u32 new
 }
 
 /**
- * bpf_policy_update_min_file_size - Update minimum file size for a namespace
+ * bpfima_policy_update_min_file_size - Update minimum file size for a namespace
  * @namespace_id: Namespace/container identifier
  * @new_size: New minimum file size value
  *
@@ -55,7 +55,7 @@ __bpf_kfunc int bpf_policy_update_action_flags(const char *namespace_id, u32 new
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_policy_update_min_file_size(const char *namespace_id, u32 new_size)
+__bpf_kfunc int bpfima_policy_update_min_file_size(const char *namespace_id, u32 new_size)
 {
     if (!namespace_id)
         return -EINVAL;
@@ -64,7 +64,7 @@ __bpf_kfunc int bpf_policy_update_min_file_size(const char *namespace_id, u32 ne
 }
 
 /**
- * bpf_policy_update_log_level - Update log level for a namespace
+ * bpfima_policy_update_log_level - Update log level for a namespace
  * @namespace_id: Namespace/container identifier
  * @new_level: New log level value
  *
@@ -73,7 +73,7 @@ __bpf_kfunc int bpf_policy_update_min_file_size(const char *namespace_id, u32 ne
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_policy_update_log_level(const char *namespace_id, u32 new_level)
+__bpf_kfunc int bpfima_policy_update_log_level(const char *namespace_id, u32 new_level)
 {
     if (!namespace_id)
         return -EINVAL;
@@ -82,7 +82,7 @@ __bpf_kfunc int bpf_policy_update_log_level(const char *namespace_id, u32 new_le
 }
 
 /**
- * bpf_policy_get_changes_hash - Get the hash of all policy changes for a namespace
+ * bpfima_policy_get_changes_hash - Get the hash of all policy changes for a namespace
  * @namespace_id: Namespace/container identifier
  * @hash_out: Buffer to store the hash output (must be at least MERKLE_HASH_SIZE bytes)
  * @hash_size: Size of the hash buffer
@@ -93,7 +93,7 @@ __bpf_kfunc int bpf_policy_update_log_level(const char *namespace_id, u32 new_le
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size)
+__bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size)
 {
     if (!namespace_id || !hash_out)
         return -EINVAL;
