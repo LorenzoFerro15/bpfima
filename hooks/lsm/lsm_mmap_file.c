@@ -57,7 +57,7 @@ int bpf_mmap_file(struct file *file)
 
         bpf_printk("File scalar: %llu\n", file_scalar);
 
-        int hash_ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
+        int hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
         if (hash_ret == 0)
         {
             bpf_printk("SUCCESS! Hash: %02x%02x%02x%02x%02x%02x%02x%02x\n",
@@ -102,7 +102,7 @@ int bpf_mmap_file(struct file *file)
 
     bpf_printk("File scalar: %llu\n", file_scalar);
 
-    int hash_ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
+    int hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
     if (hash_ret == 0)
     {
         bpf_printk("Hash: %02x%02x%02x%02x%02x%02x%02x%02x\n",
@@ -110,7 +110,7 @@ int bpf_mmap_file(struct file *file)
                    digest[4], digest[5], digest[6], digest[7]);
 
         char event_name[] = "mmap_file";
-        ret_extension = bpf_ima_extend_measurement(event_name, NULL, NULL,
+        ret_extension = bpfima_measurement_extend(event_name, NULL, NULL,
                                                    (const char *)digest, sizeof(digest));
         if (ret_extension >= 0)
         {

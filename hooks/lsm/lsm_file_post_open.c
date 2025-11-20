@@ -180,7 +180,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
     bpf_printk("File scalar value: %llu (0x%llx)\n", file_scalar, file_scalar);
 
     /* Attempt hash computation using custom file hash function */
-    hash_ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
+    hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
     //
     if (hash_ret == 0)
     {
@@ -193,7 +193,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
     }
 
-    int extend_ret = bpf_ima_extend_measurement(event_name, NULL, NULL, (const char *)digest, sizeof(digest));
+    int extend_ret = bpfima_measurement_extend(event_name, NULL, NULL, (const char *)digest, sizeof(digest));
 
     if (extend_ret >= 0)
     {

@@ -4,7 +4,7 @@
 #include "bpfima_merkle.h"
 
 /*
- * bpf_ima_extend_measurement - BPF kfunc to add measurement and extend TPM PCR
+ * bpfima_measurement_extend - BPF kfunc to add measurement and extend TPM PCR
  * @event_name: Name/identifier of the event being measured
  * @namespace_id: Container/namespace identifier (uses "default" if NULL or empty)
  * @dependencies: Dependency chain information (e.g., parent process names)
@@ -30,7 +30,7 @@
 
 __bpf_kfunc_start_defs();
 
-__bpf_kfunc int bpf_ima_extend_measurement(const char *event_name,
+__bpf_kfunc int bpfima_measurement_extend(const char *event_name,
                                            const char *namespace_id, const char *dependencies,
                                            const char *additional_data, u32 additional_data_len)
 {
@@ -162,7 +162,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name,
 }
 
 /*
- * bpf_ima_get_pcr_value - BPF kfunc to retrieve TPM PCR value or simulation
+ * bpfima_tpm_get_pcr_value - BPF kfunc to retrieve TPM PCR value or simulation
  * @pcr_buf: Output buffer to store PCR value string (minimum 80 bytes)
  * @buf_size: Size of output buffer in bytes
  * Output format:
@@ -172,7 +172,7 @@ __bpf_kfunc int bpf_ima_extend_measurement(const char *event_name,
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
+__bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
     struct tpm_chip *chip;
     struct tpm_digest digest[1];
@@ -200,12 +200,12 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
         return 0;
     }
 
-    mutex_lock(&tpm_ops_mutex);
+    mutex_lock(&bpfima_tpm_mutex);
 
     chip = tpm_default_chip();
     if (!chip)
     {
-        mutex_unlock(&tpm_ops_mutex);
+        mutex_unlock(&bpfima_tpm_mutex);
         snprintf(pcr_buf, buf_size, "PCR%d_HASH_SIMULATION",
                  TPM_PCR_INDEX);
         printk(KERN_INFO "TPM not available, using simulation\n");
@@ -218,7 +218,7 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
     ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
     tpm_put_ops(chip);
 
-    mutex_unlock(&tpm_ops_mutex);
+    mutex_unlock(&bpfima_tpm_mutex);
 
     if (ret < 0)
     {
@@ -239,7 +239,7 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
 }
 
 /*
- * bpf_tpm_is_available - BPF kfunc to check TPM hardware availability
+ * bpfima_tpm_is_available - BPF kfunc to check TPM hardware availability
  *
  * Attempts to acquire the default TPM chip to test if TPM hardware is available
  * and accessible. This is a lightweight check that doesn't perform any operations
@@ -249,7 +249,7 @@ __bpf_kfunc int bpf_ima_get_pcr_value(char *pcr_buf, u32 buf_size)
  *
  * Returns: 1 if TPM is available, 0 if not available
  */
-__bpf_kfunc int bpf_tpm_is_available(void)
+__bpf_kfunc int bpfima_tpm_is_available(void)
 {
     struct tpm_chip *chip;
 
@@ -272,7 +272,7 @@ __bpf_kfunc int bpf_tpm_is_available(void)
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_ima_file_hash_custom(u64 file_scalar, u8 *digest,
+__bpf_kfunc int bpfima_file_hash(u64 file_scalar, u8 *digest,
                                          u32 digest_size)
 {
     int ret;

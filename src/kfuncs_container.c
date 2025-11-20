@@ -6,7 +6,7 @@
 __bpf_kfunc_start_defs();
 
 /**
- * bpf_container_create_or_get - Create a new container or get existing one
+ * bpfima_container_get_or_create - Create a new container or get existing one
  * @container_id: Unique container identifier
  *
  * Creates a new container node if it doesn't exist, or returns success
@@ -14,7 +14,7 @@ __bpf_kfunc_start_defs();
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_container_create_or_get(const char *container_id)
+__bpf_kfunc int bpfima_container_get_or_create(const char *container_id)
 {
     struct container_node *container;
     unsigned long flags;
@@ -47,9 +47,9 @@ __bpf_kfunc int bpf_container_create_or_get(const char *container_id)
 }
 
 /**
- * bpf_get_merkle_root - Get the current Merkle root hash
+ * bpfima_merkle_get_root - Get the current Merkle root hash
  */
-__bpf_kfunc int bpf_get_merkle_root(u8 *root_hash, u32 hash_size)
+__bpf_kfunc int bpfima_merkle_get_root(u8 *root_hash, u32 hash_size)
 {
     unsigned long flags;
 
@@ -67,22 +67,22 @@ __bpf_kfunc int bpf_get_merkle_root(u8 *root_hash, u32 hash_size)
 }
 
 /**
- * bpf_container_get_count - Get the total number of tracked containers
+ * bpfima_container_get_count - Get the total number of tracked containers
  *
  * Returns: Number of containers currently being tracked
  */
-__bpf_kfunc int bpf_container_get_count(void)
+__bpf_kfunc int bpfima_container_get_count(void)
 {
     return atomic_read(&container_count);
 }
 
 /**
- * bpf_container_get_measurement_count - Get measurement count for a container
+ * bpfima_container_get_measurement_count - Get measurement count for a container
  * @container_id: Container identifier
  *
  * Returns: Number of measurements in the container, or negative error code
  */
-__bpf_kfunc int bpf_container_get_measurement_count(const char *container_id)
+__bpf_kfunc int bpfima_container_get_measurement_count(const char *container_id)
 {
     struct container_node *container;
     unsigned long flags;
@@ -105,12 +105,12 @@ __bpf_kfunc int bpf_container_get_measurement_count(const char *container_id)
 }
 
 /**
- * bpf_container_exists - Check if a container is being tracked
+ * bpfima_container_exists - Check if a container is being tracked
  * @container_id: Container identifier
  *
  * Returns: 1 if container exists, 0 if not, negative error code on failure
  */
-__bpf_kfunc int bpf_container_exists(const char *container_id)
+__bpf_kfunc int bpfima_container_exists(const char *container_id)
 {
     struct container_node *container;
     unsigned long flags;
@@ -126,7 +126,7 @@ __bpf_kfunc int bpf_container_exists(const char *container_id)
 }
 
 /**
- * bpf_get_container_leaf_hash - Get the Merkle leaf hash for a container
+ * bpfima_container_get_leaf_hash - Get the Merkle leaf hash for a container
  * @container_id: Container identifier
  * @leaf_hash: Buffer to store the leaf hash (must be MERKLE_HASH_SIZE bytes)
  * @hash_size: Size of the buffer (must be MERKLE_HASH_SIZE)
@@ -136,7 +136,7 @@ __bpf_kfunc int bpf_container_exists(const char *container_id)
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpf_get_container_leaf_hash(const char *container_id, u8 *leaf_hash, u32 hash_size)
+__bpf_kfunc int bpfima_container_get_leaf_hash(const char *container_id, u8 *leaf_hash, u32 hash_size)
 {
     struct container_node *container;
     unsigned long flags;

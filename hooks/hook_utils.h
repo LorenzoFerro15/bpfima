@@ -41,7 +41,7 @@ static __always_inline int measure_accessed_file(
         u64 file_scalar = 0;
 
         if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) == 0 && file_scalar != 0) {
-            ret = bpf_ima_file_hash_custom(file_scalar, digest, sizeof(digest));
+            ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
             if (ret == 0) {
                 print_hex_digest(digest, 32);
                 char digest_hex[65] = {0};
@@ -57,7 +57,7 @@ static __always_inline int measure_accessed_file(
                 deps[(deps_actual < deps_max ? deps_actual : deps_max - 1)] = '\0';
 
                 digest_hex[64] = '\0';
-                ret = bpf_ima_extend_measurement(event_name, 
+                ret = bpfima_measurement_extend(event_name, 
                                                 (const char *)(is_container_context ? cgroup_name : NULL), 
                                                 deps, 
                                                 digest_hex, 

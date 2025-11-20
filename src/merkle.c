@@ -26,7 +26,7 @@ struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
  * This prevents race conditions where the merkle root could be modified
  * between updating the hash and extending the TPM.
  */
-static DEFINE_MUTEX(merkle_root_extend_mutex);
+static DEFINE_MUTEX(bpfima_merkle_root_mutex);
 
 /**
  * try_extend_tpm_with_root - Attempt to extend TPM with merkle root
@@ -212,13 +212,13 @@ int extend_merkle_root(const u8 *container_leaf_hash)
         return -EINVAL;
 
     if (can_sleep) {
-        mutex_lock(&merkle_root_extend_mutex);
+        mutex_lock(&bpfima_merkle_root_mutex);
     }
 
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm)) {
         if (can_sleep)
-            mutex_unlock(&merkle_root_extend_mutex);
+            mutex_unlock(&bpfima_merkle_root_mutex);
         return PTR_ERR(tfm);
     }
 
@@ -228,7 +228,7 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     {
         crypto_free_shash(tfm);
         if (can_sleep)
-            mutex_unlock(&merkle_root_extend_mutex);
+            mutex_unlock(&bpfima_merkle_root_mutex);
         return -ENOMEM;
     }
 
@@ -268,7 +268,7 @@ cleanup:
     kfree(desc);
     crypto_free_shash(tfm);
     if (can_sleep)
-        mutex_unlock(&merkle_root_extend_mutex);
+        mutex_unlock(&bpfima_merkle_root_mutex);
     return ret;
 }
 
@@ -296,13 +296,13 @@ int recalculate_merkle_root(void)
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
     if (can_sleep) {
-        mutex_lock(&merkle_root_extend_mutex);
+        mutex_lock(&bpfima_merkle_root_mutex);
     }
 
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm)) {
         if (can_sleep)
-            mutex_unlock(&merkle_root_extend_mutex);
+            mutex_unlock(&bpfima_merkle_root_mutex);
         return PTR_ERR(tfm);
     }
 
@@ -312,7 +312,7 @@ int recalculate_merkle_root(void)
     {
         crypto_free_shash(tfm);
         if (can_sleep)
-            mutex_unlock(&merkle_root_extend_mutex);
+            mutex_unlock(&bpfima_merkle_root_mutex);
         return -ENOMEM;
     }
 
@@ -353,7 +353,7 @@ cleanup:
     kfree(desc);
     crypto_free_shash(tfm);
     if (can_sleep)
-        mutex_unlock(&merkle_root_extend_mutex);
+        mutex_unlock(&bpfima_merkle_root_mutex);
     return ret;
 }
 
