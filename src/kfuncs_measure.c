@@ -6,7 +6,7 @@
 /*
  * bpf_ima_extend_measurement - BPF kfunc to add measurement and extend TPM PCR
  * @event_name: Name/identifier of the event being measured
- * @namespace_id: Container/namespace identifier (NULL for host measurements)
+ * @namespace_id: Container/namespace identifier (uses "default" if NULL or empty)
  * @dependencies: Dependency chain information (e.g., parent process names)
  * @additional_data: Additional event data (hash, metadata, etc.)
  * @additional_data_len: Length of additional_data in bytes
@@ -14,16 +14,13 @@
  * This is the main entry point for BPF programs to record integrity measurements.
  *
  * Flow:
- * 1. Calculate hash from concatenated data
- *   (namespace_id | dependencies | additional_data)
- * 2. If namespace_id is provided:
- *    a. Find or create container node
- *    b. Add measurement to container's measurement list
- *    c. Recalculate container's leaf hash
- *    d. Add leaf hash to Merkle root history
- *    e. Recalculate global Merkle root
- *    f. Extend TPM PCR with new Merkle root
- * 3. If namespace_id is NULL, use legacy host measurement system
+ * 1. Calculate hash from concatenated data (dependencies | additional_data)
+ * 2. Find or create container node for the given namespace_id
+ * 3. Add measurement to container's measurement list
+ * 4. Extend container's leaf hash with the new measurement
+ * 5. Add leaf hash to Merkle root history
+ * 6. Extend global Merkle root with updated container leaf hash
+ * 7. Extend TPM PCR with new Merkle root (if not in atomic context)
  *
  * Can be called from both atomic and non-atomic contexts. TPM operations will be
  * deferred if called from atomic context to prevent scheduling while atomic bugs.
