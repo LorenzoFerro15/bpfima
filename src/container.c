@@ -1,6 +1,6 @@
 /*
  * Container Management for BPF-IMA
- * 
+ *
  * This file implements container node management including:
  * - Container creation and lookup
  * - Container measurement list management
@@ -31,12 +31,13 @@ atomic_t container_count = ATOMIC_INIT(0);
 struct container_node *find_container_by_id(const char *container_id)
 {
     struct container_node *container;
-    
-    list_for_each_entry(container, &container_list, list) {
+
+    list_for_each_entry(container, &container_list, list)
+    {
         if (strcmp(container->id, container_id) == 0)
             return container;
     }
-    
+
     return NULL;
 }
 
@@ -51,33 +52,31 @@ struct container_node *create_container_node(const char *container_id)
     struct container_node *container;
     unsigned long flags;
     int ret;
-    
+
     container = kzalloc(sizeof(*container), GFP_KERNEL);
     if (!container)
         return ERR_PTR(-ENOMEM);
-    
-    /* Initialize container structure */
+
     strscpy(container->id, container_id, CONTAINER_ID_MAX_LEN);
     INIT_LIST_HEAD(&container->measurement_list);
     spin_lock_init(&container->measurement_lock);
+    mutex_init(&container->measurement_mutex);
     memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
     atomic_set(&container->measurement_count, 0);
     container->securityfs_dir = NULL;
     container->securityfs_measurements_file = NULL;
-    
-    /* Add to global container list */
+
     spin_lock_irqsave(&container_list_lock, flags);
     list_add_tail(&container->list, &container_list);
     spin_unlock_irqrestore(&container_list_lock, flags);
-    
+
     atomic_inc(&container_count);
-    
-    /* Create securityfs directory for this container */
+
     ret = create_container_securityfs(container);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("bpfima: Failed to create securityfs for container %s: %d\n",
                container_id, ret);
-        /* Remove from list on failure */
         spin_lock_irqsave(&container_list_lock, flags);
         list_del(&container->list);
         spin_unlock_irqrestore(&container_list_lock, flags);
@@ -85,7 +84,7 @@ struct container_node *create_container_node(const char *container_id)
         kfree(container);
         return ERR_PTR(ret);
     }
-    
+
     pr_info("bpfima: Created container node for %s\n", container_id);
     return container;
 }
@@ -97,8 +96,9 @@ struct container_node *create_container_node(const char *container_id)
 void cleanup_container_measurements(struct container_node *container)
 {
     struct measurement_entry *entry, *tmp;
-    
-    list_for_each_entry_safe(entry, tmp, &container->measurement_list, list) {
+
+    list_for_each_entry_safe(entry, tmp, &container->measurement_list, list)
+    {
         list_del(&entry->list);
         kfree(entry);
     }
@@ -112,25 +112,23 @@ void cleanup_all_containers(void)
     struct container_node *container, *tmp;
     unsigned long flags;
     int count = 0;
-    
+
     spin_lock_irqsave(&container_list_lock, flags);
-    list_for_each_entry_safe(container, tmp, &container_list, list) {
+    list_for_each_entry_safe(container, tmp, &container_list, list)
+    {
         list_del(&container->list);
         spin_unlock_irqrestore(&container_list_lock, flags);
-        
-        /* Remove securityfs entries */
+
         remove_container_securityfs(container);
-        
-        /* Clean up measurements */
+
         cleanup_container_measurements(container);
-        
-        /* Free container */
+
         kfree(container);
         count++;
-        
+
         spin_lock_irqsave(&container_list_lock, flags);
     }
     spin_unlock_irqrestore(&container_list_lock, flags);
-    
+
     pr_info("bpfima: Cleaned up %d containers\n", count);
 }

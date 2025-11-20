@@ -30,12 +30,6 @@ extern int bpf_ima_extend_measurement(const char *event_name,
                                       u32 additional_data_len) __ksym;
 
 /**
- * bpf_ima_get_measurement_count - Get total number of measurements
- * Returns: Number of measurements, negative on error
- */
-extern int bpf_ima_get_measurement_count(void) __ksym;
-
-/**
  * bpf_tpm_is_available - Check if TPM is available
  * Returns: 1 if available, 0 if not, negative on error
  */

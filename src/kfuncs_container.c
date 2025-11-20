@@ -45,33 +45,6 @@ __bpf_kfunc int bpf_container_create_or_get(const char *container_id)
     pr_info("bpfima: Created new container: %s\n", container_id);
     return 0;
 }
-/**
- * bpf_host_add_measurement - Add a measurement to the host measurement list
- */
-__bpf_kfunc int bpf_host_add_measurement(const char *event_name,
-                                         const char *event_data,
-                                         const u8 *digest,
-                                         u32 digest_size)
-{
-    int ret;
-
-    if (!event_name || !digest)
-        return -EINVAL;
-
-    if (digest_size != MERKLE_HASH_SIZE)
-        return -EINVAL;
-
-    ret = add_host_measurement(event_name, event_data ? event_data : "", "", digest);
-    if (ret < 0)
-    {
-        pr_err("bpfima: Failed to add host measurement: %d\n", ret);
-        return ret;
-    }
-
-    pr_debug("bpfima: Added host measurement: %s\n", event_name);
-
-    return 0;
-}
 
 /**
  * bpf_get_merkle_root - Get the current Merkle root hash

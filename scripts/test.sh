@@ -245,7 +245,7 @@ if ! wait_for_bpf_maps bpfima_policy_map bpfima_hook_config_map bpfima_cgroup_pa
     log_err "bpfima-tool may have failed"
     exit 1
 fi
-log_verbose "✓ BPF maps available"
+log_verbose "  BPF maps available"
 
 # Initialize policy maps using bpfima-tool
 log_info "Initializing BPF policy maps (comprehensive policy - tracks everything)"
@@ -255,7 +255,7 @@ if [ "$VERBOSE" -eq 1 ]; then
         log_err "This may cause issues with event recording"
         log_warn "Continuing anyway..."
     else
-        log_info "✓ Policy maps initialized successfully"
+        log_info "  Policy maps initialized successfully"
         log_info "  - Filter flags: 0x0 (no filtering)"
         log_info "  - All user processes, containers, and system services will be tracked"
     fi
@@ -269,7 +269,7 @@ fi
 
 # Verify policy map is accessible
 if [ -e "/sys/fs/bpf/bpfima_policy_map" ]; then
-    log_verbose "✓ Policy map pinned and accessible"
+    log_verbose "  Policy map pinned and accessible"
 else
     log_warn "Policy map not found at /sys/fs/bpf/bpfima_policy_map"
 fi
@@ -284,13 +284,13 @@ if [ -f "config/policy.yaml" ]; then
     log_info "Testing policy update with config/policy.yaml"
     if [ "$VERBOSE" -eq 1 ]; then
         if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml; then
-            log_info "✓ Successfully loaded comprehensive policy from YAML"
+            log_info "  Successfully loaded comprehensive policy from YAML"
         else
             log_warn "Failed to load YAML policy (may not be fully implemented yet)"
         fi
     else
         if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml > /dev/null 2>&1; then
-            log_info "✓ YAML policy loaded successfully"
+            log_info "  YAML policy loaded successfully"
         else
             log_warn "YAML policy update failed (continuing with hardcoded defaults)"
         fi
@@ -312,7 +312,7 @@ if [ -f "config/policy-minimal.yaml" ] && [ "$VERBOSE" -eq 1 ]; then
     log_info ""
     log_info "Testing with minimal policy (config/policy-minimal.yaml)"
     if "$BUILD_DIR/bpfima-tool" policy-update config/policy-minimal.yaml; then
-        log_info "✓ Successfully loaded minimal policy from YAML"
+        log_info "  Successfully loaded minimal policy from YAML"
     else
         log_warn "Failed to load minimal YAML policy"
     fi
@@ -332,22 +332,22 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     # Change 1: Update filter_flags
     log_info "Test 1: Changing filter_flags to 0x7"
     echo "filter_flags=0x7" > /sys/kernel/security/bpfima/policy
-    log_info "✓ filter_flags updated"
+    log_info "  filter_flags updated"
     
     # Change 2: Update action_flags
     log_info "Test 2: Changing action_flags to 0x1F"
     echo "action_flags=0x1F" > /sys/kernel/security/bpfima/policy
-    log_info "✓ action_flags updated"
+    log_info "  action_flags updated"
     
     # Change 3: Update min_file_size
     log_info "Test 3: Changing min_file_size to 4096"
     echo "min_file_size=4096" > /sys/kernel/security/bpfima/policy
-    log_info "✓ min_file_size updated"
+    log_info "  min_file_size updated"
     
     # Change 4: Update log_level
     log_info "Test 4: Changing log_level to 3"
     echo "log_level=3" > /sys/kernel/security/bpfima/policy
-    log_info "✓ log_level updated"
+    log_info "  log_level updated"
     
     # Display policy changes
     if [ -f "/sys/kernel/security/bpfima/policy_changes" ]; then
@@ -456,7 +456,7 @@ for i in "${!IMAGES[@]}"; do
         log_err "Container $CONTAINER_NAME not ready in time"
         continue
     fi
-    log_verbose "✓ Container $CONTAINER_NAME is running"
+    log_verbose "  Container $CONTAINER_NAME is running"
     
     # Perform file operations in container
     log_info "Performing file operations in $CONTAINER_NAME"
@@ -527,17 +527,17 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             # Change 1: Update filter_flags
             log_info "Test 1: Changing namespace filter_flags to 0x3"
             echo "filter_flags=0x3" > "$POLICY_FILE"
-            log_info "✓ Namespace filter_flags updated"
+            log_info "  Namespace filter_flags updated"
             
             # Change 2: Update action_flags
             log_info "Test 2: Changing namespace action_flags to 0x3E"
             echo "action_flags=0x3E" > "$POLICY_FILE"
-            log_info "✓ Namespace action_flags updated"
+            log_info "  Namespace action_flags updated"
             
             # Change 3: Update min_file_size
             log_info "Test 3: Changing namespace min_file_size to 8192"
             echo "min_file_size=8192" > "$POLICY_FILE"
-            log_info "✓ Namespace min_file_size updated"
+            log_info "  Namespace min_file_size updated"
             
             # Display policy changes
             if [ -f "$CHANGES_FILE" ]; then
