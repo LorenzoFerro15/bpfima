@@ -205,7 +205,7 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     }
     policy_hash_hex[MERKLE_HASH_SIZE * 2] = '\0';
 
-    snprintf(measurement_data, sizeof(measurement_data), "policy_update %s", policy_hash_hex);
+    snprintf(measurement_data, sizeof(measurement_data), "global_policy_update %s", policy_hash_hex);
 
     ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
     if (ret < 0)
@@ -214,7 +214,20 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
         return ret;
     }
 
-    pr_info("bpfima: Global policy change recorded\n");
+    ret = add_merkle_root_history_entry(measurement_digest, "global_policy");
+    if (ret < 0)
+    {
+        pr_warn("bpfima: Failed to add merkle root history entry for global policy: %d\n", ret);
+    }
+
+    ret = extend_merkle_root(measurement_digest);
+    if (ret < 0)
+    {
+        pr_err("bpfima: Failed to extend Merkle root with global policy change: %d\n", ret);
+        return ret;
+    }
+
+    pr_info("bpfima: Global policy change recorded and Merkle root extended\n");
 
     return 0;
 }

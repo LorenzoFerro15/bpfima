@@ -25,6 +25,77 @@
 #include "bpfima_policy.h"
 #include "bpfima_securityfs.h"
 
+typedef int (*namespace_update_fn)(const char *namespace_id, u32 value);
+typedef void (*global_update_fn)(struct bpfima_policy_config *config, u32 value);
+
+struct policy_field {
+    const char *name;
+    namespace_update_fn ns_update;
+    global_update_fn global_update;
+    bool supports_namespace;
+};
+
+static void update_filter_flags(struct bpfima_policy_config *config, u32 value)
+{
+    config->filter_flags = value;
+}
+
+static void update_action_flags(struct bpfima_policy_config *config, u32 value)
+{
+    config->action_flags = value;
+}
+
+static void update_min_file_size(struct bpfima_policy_config *config, u32 value)
+{
+    config->min_file_size = value;
+}
+
+static void update_log_level(struct bpfima_policy_config *config, u32 value)
+{
+    config->log_level = value;
+}
+
+static void update_enabled(struct bpfima_policy_config *config, u32 value)
+{
+    config->enabled = (u8)value;
+}
+
+/* Table of policy fields and their update functions */
+static const struct policy_field policy_fields[] = {
+    {
+        .name = "filter_flags",
+        .ns_update = bpfima_policy_namespace_update_filter_flags,
+        .global_update = update_filter_flags,
+        .supports_namespace = true,
+    },
+    {
+        .name = "action_flags",
+        .ns_update = bpfima_policy_namespace_update_action_flags,
+        .global_update = update_action_flags,
+        .supports_namespace = true,
+    },
+    {
+        .name = "min_file_size",
+        .ns_update = bpfima_policy_namespace_update_min_file_size,
+        .global_update = update_min_file_size,
+        .supports_namespace = true,
+    },
+    {
+        .name = "log_level",
+        .ns_update = bpfima_policy_namespace_update_log_level,
+        .global_update = update_log_level,
+        .supports_namespace = true,
+    },
+    {
+        .name = "enabled",
+        .ns_update = NULL,
+        .global_update = update_enabled,
+        .supports_namespace = false,
+    },
+};
+
+#define NUM_POLICY_FIELDS (sizeof(policy_fields) / sizeof(policy_fields[0]))
+
 /* Global policy file dentry */
 static struct dentry *global_policy_file = NULL;
 
@@ -39,14 +110,13 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
 {
     char *field, *value_str, *buf_copy;
     unsigned long value;
-    int ret;
+    int ret = -EINVAL;
+    size_t i;
 
-    /* Create a working copy */
     buf_copy = kstrdup(buf, GFP_KERNEL);
     if (!buf_copy)
         return -ENOMEM;
 
-    /* Parse field=value */
     field = buf_copy;
     value_str = strchr(buf_copy, '=');
     if (!value_str) {
@@ -58,7 +128,6 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
     *value_str = '\0';
     value_str++;
 
-    /* Parse value (support hex with 0x prefix) */
     ret = kstrtoul(value_str, 0, &value);
     if (ret) {
         pr_err("bpfima: Invalid value: %s\n", value_str);
@@ -66,71 +135,40 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
         return ret;
     }
 
-    /* Update the appropriate field */
-    if (strcmp(field, "filter_flags") == 0) {
-        if (namespace_id) {
-            ret = bpfima_policy_namespace_update_filter_flags(namespace_id, (u32)value);
-        } else {
-            struct bpfima_policy_config new_config = *bpfima_policy_get();
-            new_config.filter_flags = (u32)value;
-            ret = bpfima_policy_update(&new_config);
-        }
-        if (ret == 0) {
-            pr_info("bpfima: Updated filter_flags=0x%x for %s\n", 
-                    (u32)value, namespace_id ? namespace_id : "global");
-        }
-    } else if (strcmp(field, "action_flags") == 0) {
-        if (namespace_id) {
-            ret = bpfima_policy_namespace_update_action_flags(namespace_id, (u32)value);
-        } else {
-            struct bpfima_policy_config new_config = *bpfima_policy_get();
-            new_config.action_flags = (u32)value;
-            ret = bpfima_policy_update(&new_config);
-        }
-        if (ret == 0) {
-            pr_info("bpfima: Updated action_flags=0x%x for %s\n",
-                    (u32)value, namespace_id ? namespace_id : "global");
-        }
-    } else if (strcmp(field, "min_file_size") == 0) {
-        if (namespace_id) {
-            ret = bpfima_policy_namespace_update_min_file_size(namespace_id, (u32)value);
-        } else {
-            struct bpfima_policy_config new_config = *bpfima_policy_get();
-            new_config.min_file_size = (u32)value;
-            ret = bpfima_policy_update(&new_config);
-        }
-        if (ret == 0) {
-            pr_info("bpfima: Updated min_file_size=%u for %s\n",
-                    (u32)value, namespace_id ? namespace_id : "global");
-        }
-    } else if (strcmp(field, "log_level") == 0) {
-        if (namespace_id) {
-            ret = bpfima_policy_namespace_update_log_level(namespace_id, (u32)value);
-        } else {
-            struct bpfima_policy_config new_config = *bpfima_policy_get();
-            new_config.log_level = (u32)value;
-            ret = bpfima_policy_update(&new_config);
-        }
-        if (ret == 0) {
-            pr_info("bpfima: Updated log_level=%u for %s\n",
-                    (u32)value, namespace_id ? namespace_id : "global");
-        }
-    } else if (strcmp(field, "enabled") == 0) {
-        if (namespace_id) {
+    for (i = 0; i < NUM_POLICY_FIELDS; i++) {
+        const struct policy_field *pf = &policy_fields[i];
+        
+        if (strcmp(field, pf->name) != 0)
+            continue;
+
+        if (namespace_id && !pf->supports_namespace) {
+            pr_err("bpfima: Field '%s' does not support namespace-specific updates\n", field);
             ret = -ENOTSUPP;
+            break;
+        }
+
+        if (namespace_id) {
+            ret = pf->ns_update(namespace_id, (u32)value);
         } else {
             struct bpfima_policy_config new_config = *bpfima_policy_get();
-            new_config.enabled = (u8)value;
+            pf->global_update(&new_config, (u32)value);
             ret = bpfima_policy_update(&new_config);
         }
+
         if (ret == 0) {
-            pr_info("bpfima: Updated enabled=%u for global\n", (u32)value);
+            pr_info("bpfima: Updated %s=%u (0x%x) for %s\n",
+                    pf->name, (u32)value, (u32)value,
+                    namespace_id ? namespace_id : "global");
         }
-    } else {
+        goto out;
+    }
+
+    if (i == NUM_POLICY_FIELDS) {
         pr_err("bpfima: Unknown field: %s\n", field);
         ret = -EINVAL;
     }
 
+out:
     kfree(buf_copy);
     return ret;
 }
@@ -166,11 +204,9 @@ static ssize_t policy_update_write(struct file *file, const char __user *user_bu
     }
     buf[count] = '\0';
 
-    /* Remove trailing newline if present */
     if (count > 0 && buf[count - 1] == '\n')
         buf[count - 1] = '\0';
 
-    /* Get namespace_id from file's inode private data */
     namespace_id = file->f_inode->i_private;
     if (!namespace_id) {
         pr_err("bpfima: No namespace_id in policy file\n");
@@ -214,11 +250,9 @@ static ssize_t global_policy_write(struct file *file, const char __user *user_bu
     }
     buf[count] = '\0';
 
-    /* Remove trailing newline if present */
     if (count > 0 && buf[count - 1] == '\n')
         buf[count - 1] = '\0';
 
-    /* Update global policy (namespace_id = NULL) */
     ret = parse_and_update_policy(buf, NULL);
     kfree(buf);
     
@@ -316,11 +350,9 @@ static int global_policy_changes_show(struct seq_file *s, void *v)
 
     spin_lock_irqsave(history_lock, flags);
     list_for_each_entry(change, history, list) {
-        /* Print hash */
         for (i = 0; i < MERKLE_HASH_SIZE; i++)
             seq_printf(s, "%02x", change->change_hash[i]);
         
-        /* Print space and policy string */
         seq_printf(s, " %s\n", change->policy_string);
     }
     spin_unlock_irqrestore(history_lock, flags);
@@ -379,11 +411,9 @@ static int policy_changes_show(struct seq_file *s, void *v)
 
     spin_lock_irqsave(&policy_ns->change_history_lock, flags);
     list_for_each_entry(change, &policy_ns->change_history, list) {
-        /* Print hash */
         for (i = 0; i < MERKLE_HASH_SIZE; i++)
             seq_printf(s, "%02x", change->change_hash[i]);
         
-        /* Print space and policy string */
         seq_printf(s, " %s\n", change->policy_string);
     }
     spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
@@ -423,12 +453,10 @@ struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
     if (!namespace_id || !parent_dir)
         return ERR_PTR(-EINVAL);
 
-    /* Allocate persistent copy of namespace_id for inode private data */
     ns_copy = kstrdup(namespace_id, GFP_KERNEL);
     if (!ns_copy)
         return ERR_PTR(-ENOMEM);
 
-    /* Create policy file (readable and writable) */
     policy_file = securityfs_create_file("policy", 0644, parent_dir,
                                         ns_copy, &policy_fops);
     if (IS_ERR(policy_file)) {
@@ -455,7 +483,6 @@ void remove_namespace_policy_securityfs(struct dentry *policy_file)
     if (!policy_file || IS_ERR(policy_file))
         return;
 
-    /* Get and free the namespace_id copy from inode private data */
     if (policy_file->d_inode) {
         ns_copy = policy_file->d_inode->i_private;
         kfree(ns_copy);
@@ -483,12 +510,10 @@ struct dentry *create_namespace_policy_changes_securityfs(const char *namespace_
     if (!namespace_id || !parent_dir)
         return ERR_PTR(-EINVAL);
 
-    /* Allocate persistent copy of namespace_id for inode private data */
     ns_copy = kstrdup(namespace_id, GFP_KERNEL);
     if (!ns_copy)
         return ERR_PTR(-ENOMEM);
 
-    /* Create policy_changes file (read-only) */
     policy_changes_file = securityfs_create_file("policy_changes", 0444, parent_dir,
                                                  ns_copy, &policy_changes_fops);
     if (IS_ERR(policy_changes_file)) {
@@ -515,7 +540,6 @@ void remove_namespace_policy_changes_securityfs(struct dentry *policy_changes_fi
     if (!policy_changes_file || IS_ERR(policy_changes_file))
         return;
 
-    /* Get and free the namespace_id copy from inode private data */
     if (policy_changes_file->d_inode) {
         ns_copy = policy_changes_file->d_inode->i_private;
         kfree(ns_copy);
@@ -560,7 +584,6 @@ void remove_global_policy_securityfs(void)
     }
 }
 
-/* Global policy changes file dentry */
 static struct dentry *global_policy_changes_file = NULL;
 
 /**

@@ -86,6 +86,77 @@ static bool is_process_running(int pid)
 }
 
 /**
+ * @brief Open all BPF policy maps
+ * @param policy_fd: Pointer to store policy map FD
+ * @param cgroup_fd: Pointer to store cgroup patterns map FD
+ * @param path_fd: Pointer to store path patterns map FD
+ * @param hook_fd: Pointer to store hook config map FD
+ * @return 0 on success, -1 on failure
+ *
+ * Opens all policy-related BPF maps and stores their file descriptors.
+ * On error, closes any successfully opened maps and returns -1.
+ */
+static int open_policy_maps(int *policy_fd, int *cgroup_fd, int *path_fd, int *hook_fd)
+{
+    *policy_fd = -1;
+    *cgroup_fd = -1;
+    *path_fd = -1;
+    *hook_fd = -1;
+
+    *policy_fd = bpf_obj_get(POLICY_MAP_PATH);
+    if (*policy_fd < 0)
+    {
+        fprintf(stderr, "Failed to open policy map: %s\n", strerror(errno));
+        fprintf(stderr, "Did you load the BPF program first?\n");
+        return -1;
+    }
+
+    *cgroup_fd = bpf_obj_get(CGROUP_PATTERNS_MAP_PATH);
+    if (*cgroup_fd < 0)
+    {
+        fprintf(stderr, "Failed to open cgroup patterns map: %s\n", strerror(errno));
+        close(*policy_fd);
+        return -1;
+    }
+
+    *path_fd = bpf_obj_get(PATH_PATTERNS_MAP_PATH);
+    if (*path_fd < 0)
+    {
+        fprintf(stderr, "Failed to open path patterns map: %s\n", strerror(errno));
+        close(*policy_fd);
+        close(*cgroup_fd);
+        return -1;
+    }
+
+    *hook_fd = bpf_obj_get(HOOK_CONFIG_MAP_PATH);
+    if (*hook_fd < 0)
+    {
+        fprintf(stderr, "Failed to open hook config map: %s\n", strerror(errno));
+        close(*policy_fd);
+        close(*cgroup_fd);
+        close(*path_fd);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Close all policy map file descriptors
+ */
+static void close_policy_maps(int policy_fd, int cgroup_fd, int path_fd, int hook_fd)
+{
+    if (policy_fd >= 0)
+        close(policy_fd);
+    if (cgroup_fd >= 0)
+        close(cgroup_fd);
+    if (path_fd >= 0)
+        close(path_fd);
+    if (hook_fd >= 0)
+        close(hook_fd);
+}
+
+/**
  * @brief Increase RLIMIT_MEMLOCK for BPF
  */
 static int set_rlimit(void)
@@ -316,40 +387,8 @@ static int cmd_policy_init(void)
 
     printf("Initializing policy maps with defaults...\n");
 
-    policy_fd = bpf_obj_get(POLICY_MAP_PATH);
-    if (policy_fd < 0)
-    {
-        fprintf(stderr, "Failed to open policy map: %s\n", strerror(errno));
-        fprintf(stderr, "Did you load the BPF program first?\n");
+    if (open_policy_maps(&policy_fd, &cgroup_fd, &path_fd, &hook_fd) < 0)
         return 1;
-    }
-
-    cgroup_fd = bpf_obj_get(CGROUP_PATTERNS_MAP_PATH);
-    if (cgroup_fd < 0)
-    {
-        fprintf(stderr, "Failed to open cgroup patterns map: %s\n", strerror(errno));
-        close(policy_fd);
-        return 1;
-    }
-
-    path_fd = bpf_obj_get(PATH_PATTERNS_MAP_PATH);
-    if (path_fd < 0)
-    {
-        fprintf(stderr, "Failed to open path patterns map: %s\n", strerror(errno));
-        close(policy_fd);
-        close(cgroup_fd);
-        return 1;
-    }
-
-    hook_fd = bpf_obj_get(HOOK_CONFIG_MAP_PATH);
-    if (hook_fd < 0)
-    {
-        fprintf(stderr, "Failed to open hook config map: %s\n", strerror(errno));
-        close(policy_fd);
-        close(cgroup_fd);
-        close(path_fd);
-        return 1;
-    }
 
     struct bpfima_policy_config policy = {
         .enabled = 1,
@@ -455,10 +494,7 @@ static int cmd_policy_init(void)
     printf("  sudo bpfima-tool policy-update config/policy.yaml\n");
 
 cleanup:
-    close(policy_fd);
-    close(cgroup_fd);
-    close(path_fd);
-    close(hook_fd);
+    close_policy_maps(policy_fd, cgroup_fd, path_fd, hook_fd);
     return ret;
 }
 
@@ -471,6 +507,7 @@ static int cmd_policy_update(const char *config_file)
     char cgroup_filters[MAX_CGROUP_PATTERNS][256];
     char path_filters[MAX_PATH_PATTERNS][256];
     struct yaml_hook_config hook_configs[MAX_HOOK_CONFIGS];
+    int policy_fd, cgroup_fd, path_fd, hook_fd;
     int ret = 1;
 
     printf("Loading policy from '%s'...\n", config_file);
@@ -484,39 +521,9 @@ static int cmd_policy_update(const char *config_file)
         return 1;
     }
 
-    int policy_fd = bpf_obj_get(POLICY_MAP_PATH);
-    if (policy_fd < 0)
+    if (open_policy_maps(&policy_fd, &cgroup_fd, &path_fd, &hook_fd) < 0)
     {
-        fprintf(stderr, "Error: Cannot open policy map at %s: %s\n",
-                POLICY_MAP_PATH, strerror(errno));
         fprintf(stderr, "Is the BPF IMA module loaded? Try 'bpfima-tool load' first\n");
-        return 1;
-    }
-
-    int cgroup_fd = bpf_obj_get(CGROUP_PATTERNS_MAP_PATH);
-    if (cgroup_fd < 0)
-    {
-        fprintf(stderr, "Error: Cannot open cgroup patterns map: %s\n", strerror(errno));
-        close(policy_fd);
-        return 1;
-    }
-
-    int path_fd = bpf_obj_get(PATH_PATTERNS_MAP_PATH);
-    if (path_fd < 0)
-    {
-        fprintf(stderr, "Error: Cannot open path patterns map: %s\n", strerror(errno));
-        close(policy_fd);
-        close(cgroup_fd);
-        return 1;
-    }
-
-    int hook_fd = bpf_obj_get(HOOK_CONFIG_MAP_PATH);
-    if (hook_fd < 0)
-    {
-        fprintf(stderr, "Error: Cannot open hook config map: %s\n", strerror(errno));
-        close(policy_fd);
-        close(cgroup_fd);
-        close(path_fd);
         return 1;
     }
 
@@ -535,10 +542,7 @@ static int cmd_policy_update(const char *config_file)
     ret = 0;
 
 cleanup:
-    close(policy_fd);
-    close(cgroup_fd);
-    close(path_fd);
-    close(hook_fd);
+    close_policy_maps(policy_fd, cgroup_fd, path_fd, hook_fd);
     return ret;
 }
 

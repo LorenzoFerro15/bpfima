@@ -21,7 +21,7 @@ DEFINE_SPINLOCK(merkle_root_history_lock);
 
 struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
 
-/* 
+/*
  * Mutex to serialize merkle root extensions including TPM operations.
  * This prevents race conditions where the merkle root could be modified
  * between updating the hash and extending the TPM.
@@ -211,12 +211,14 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     if (!container_leaf_hash)
         return -EINVAL;
 
-    if (can_sleep) {
+    if (can_sleep)
+    {
         mutex_lock(&bpfima_merkle_root_mutex);
     }
 
     tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
+    if (IS_ERR(tfm))
+    {
         if (can_sleep)
             mutex_unlock(&bpfima_merkle_root_mutex);
         return PTR_ERR(tfm);
@@ -295,12 +297,14 @@ int recalculate_merkle_root(void)
     u8 new_root[MERKLE_HASH_SIZE];
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
-    if (can_sleep) {
+    if (can_sleep)
+    {
         mutex_lock(&bpfima_merkle_root_mutex);
     }
 
     tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
+    if (IS_ERR(tfm))
+    {
         if (can_sleep)
             mutex_unlock(&bpfima_merkle_root_mutex);
         return PTR_ERR(tfm);
@@ -420,7 +424,7 @@ int add_container_measurement(struct container_node *container,
     {
         pr_info("bpfima: Duplicate file access for namespace %s, digest=%*ph (skipped)\n",
                 container->id, SHA256_DIGEST_SIZE, digest);
-        return 1; /* Indicate duplicate was skipped */
+        return 1;
     }
 
     ret = add_hash_to_table(digest, container->id, true);
@@ -435,26 +439,26 @@ int add_container_measurement(struct container_node *container,
     if (!entry)
         return -ENOMEM;
 
-    /*
-     * Use mutex to serialize the entire measurement addition including
-     * leaf hash extension and merkle root update. This prevents race
-     * conditions where another thread could interfere between these operations.
-     */
     mutex_lock(&container->measurement_mutex);
 
-    /* Add to container's measurement list */
     spin_lock_irqsave(&container->measurement_lock, flags);
     list_add_tail(&entry->list, &container->measurement_list);
     spin_unlock_irqrestore(&container->measurement_lock, flags);
 
     atomic_inc(&container->measurement_count);
 
-    /* Extend container's leaf hash with the new measurement */
     ret = extend_container_leaf_hash(container, digest);
     if (ret < 0)
     {
         pr_err("bpfima: Failed to extend leaf hash for container %s: %d\n",
                container->id, ret);
+
+        spin_lock_irqsave(&container->measurement_lock, flags);
+        list_del(&entry->list);
+        spin_unlock_irqrestore(&container->measurement_lock, flags);
+
+        atomic_dec(&container->measurement_count);
+        kfree(entry);
         mutex_unlock(&container->measurement_mutex);
         return ret;
     }
@@ -467,7 +471,7 @@ int add_container_measurement(struct container_node *container,
 
     ret = extend_merkle_root(container->leaf_hash);
     mutex_unlock(&container->measurement_mutex);
-    
+
     if (ret < 0)
     {
         pr_err("bpfima: Failed to extend merkle root: %d\n", ret);
