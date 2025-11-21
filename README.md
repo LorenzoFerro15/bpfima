@@ -58,7 +58,7 @@ Requirements:
 
 ```bash
 # Install dependencies (Fedora)
-sudo dnf install kernel-devel libbpf-devel elfutils-libelf-devel zlib-devel clang llvm
+sudo dnf install kernel-devel libbpf-devel elfutils-libelf-devel zlib-devel clang llvm libyaml-devel
 sudo dnf debuginfo-install kernel
 
 # Build
