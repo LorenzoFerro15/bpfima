@@ -470,13 +470,24 @@ int add_container_measurement(struct container_node *container,
     }
 
     ret = extend_merkle_root(container->leaf_hash);
-    mutex_unlock(&container->measurement_mutex);
-
     if (ret < 0)
     {
         pr_err("bpfima: Failed to extend merkle root: %d\n", ret);
+
+        spin_lock_irqsave(&container->measurement_lock, flags);
+        list_del(&entry->list);
+        spin_unlock_irqrestore(&container->measurement_lock, flags);
+
+        atomic_dec(&container->measurement_count);
+        kfree(entry);
+        pr_warn("bpfima: Merkle root extension failed. Container %s leaf hash is now inconsistent.\n",
+                container->id);
+
+        mutex_unlock(&container->measurement_mutex);
         return ret;
     }
+
+    mutex_unlock(&container->measurement_mutex);
 
     pr_debug("bpfima: Added measurement to container %s, leaf hash updated and root extended\n",
              container->id);
