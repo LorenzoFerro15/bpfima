@@ -211,6 +211,12 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to calculate measurement hash for global policy update: %d\n", ret);
+        
+        spin_lock_irqsave(&global_policy_history_lock, flags);
+        list_del(&change_entry->list);
+        spin_unlock_irqrestore(&global_policy_history_lock, flags);
+        
+        kfree(change_entry);
         return ret;
     }
 
@@ -224,6 +230,12 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to extend Merkle root with global policy change: %d\n", ret);
+        
+        spin_lock_irqsave(&global_policy_history_lock, flags);
+        list_del(&change_entry->list);
+        spin_unlock_irqrestore(&global_policy_history_lock, flags);
+        
+        kfree(change_entry);
         return ret;
     }
 

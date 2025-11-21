@@ -196,12 +196,24 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
         ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
         if (ret < 0) {
             pr_err("bpfima: Failed to calculate measurement hash for policy update: %d\n", ret);
+            
+            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+            list_del(&change_entry->list);
+            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+            
+            kfree(change_entry);
             return ret;
         }
         
         meas_entry = create_measurement_entry("policy_update", policy_hash_hex, "", measurement_digest, GFP_KERNEL);
         if (!meas_entry) {
             pr_err("bpfima: Failed to create measurement entry for policy update\n");
+            
+            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+            list_del(&change_entry->list);
+            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+            
+            kfree(change_entry);
             return -ENOMEM;
         }
         
@@ -214,6 +226,19 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
         ret = extend_container_leaf_hash(container, measurement_digest);
         if (ret < 0) {
             pr_err("bpfima: Failed to extend container leaf hash: %d\n", ret);
+            
+            spin_lock_irqsave(&container->measurement_lock, flags);
+            list_del(&meas_entry->list);
+            spin_unlock_irqrestore(&container->measurement_lock, flags);
+            
+            atomic_dec(&container->measurement_count);
+            kfree(meas_entry);
+            
+            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+            list_del(&change_entry->list);
+            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+            
+            kfree(change_entry);
             return ret;
         }
 
@@ -227,6 +252,22 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
         ret = extend_merkle_root(container->leaf_hash);
         if (ret < 0) {
             pr_err("bpfima: Failed to extend Merkle root: %d\n", ret);
+            
+            spin_lock_irqsave(&container->measurement_lock, flags);
+            list_del(&meas_entry->list);
+            spin_unlock_irqrestore(&container->measurement_lock, flags);
+            
+            atomic_dec(&container->measurement_count);
+            kfree(meas_entry);
+            
+            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+            list_del(&change_entry->list);
+            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+            
+            kfree(change_entry);
+            
+            pr_warn("bpfima: Merkle root extension failed. Container %s leaf hash is now inconsistent.\n",
+                    container->id);
             return ret;
         }
 
