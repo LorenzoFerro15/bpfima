@@ -1,3 +1,6 @@
+#ifndef HEADERS_BPF_H
+#define HEADERS_BPF_H
+
 /* Headers for BPF hooks */
 #include "../vmlinux.h"
 #include <bpf/bpf_tracing.h>
@@ -243,3 +246,5 @@ static __always_inline bool bpfima_should_process(enum bpfima_hook_id hook_id)
     
     return true;
 }
+
+#endif /* HEADERS_BPF_H */

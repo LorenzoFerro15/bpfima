@@ -16,11 +16,11 @@ export PAHOLE_FLAGS=--btf_gen_floats
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 BPF_TARGET := bpf
-
+KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
 BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
 
-CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
+CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_x86 $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
