@@ -82,3 +82,38 @@ static __always_inline int measure_accessed_file(
     }
     return 0;
 }
+
+static __always_inline int measure_socket_data(const char *event_name,
+                                               const char *cgroup_name,
+                                               bool is_container_context,
+                                               char *deps,
+                                               int deps_actual,
+                                               int deps_max,
+                                               const char *additional_data,
+                                               int additional_data_len)
+{
+    if (additional_data_len < 0 || additional_data_len >= 512) {
+        bpf_printk("Invalid additional data length: %d\n", additional_data_len);
+        return -1;
+    }
+
+    if (deps_actual < 0) {
+        bpf_printk("Invalid dependencies length: %d\n", deps_actual);
+        return -1;
+    }
+
+    int ret = bpfima_measurement_extend(event_name, 
+                                        (const char *)(is_container_context ? cgroup_name : NULL), 
+                                        deps, 
+                                        additional_data, 
+                                        additional_data_len);
+    if (ret == 0) {
+        bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
+                event_name, is_container_context ? cgroup_name : "host");
+    } else {
+        bpf_printk(" Failed to process measurement: %d\n", ret);
+        return -1;
+    }
+
+    return 0;
+}

@@ -74,8 +74,6 @@ int bpfima_policy_init(void)
         hook_configs[i].action_override = 0;
     }
 
-    hook_configs[HOOK_LSM_SOCKET_CONNECT].flags = 0;
-
     spin_unlock_irqrestore(&policy_lock, flags);
 
     pr_info("bpfima: Policy subsystem initialized with default configuration\n");
