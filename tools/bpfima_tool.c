@@ -12,6 +12,7 @@
 #include <yaml.h>
 
 #include "include/bpfima_policy_user.h"
+#include "include/bpfima_event.h"
 #include "yaml_parser.h"
 
 /* Global state */
@@ -24,6 +25,7 @@ static struct bpf_link *g_link = NULL;
 #define CGROUP_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_cgroup_patterns_map"
 #define PATH_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_path_patterns_map"
 #define HOOK_CONFIG_MAP_PATH "/sys/fs/bpf/bpfima_hook_config_map"
+#define EVENTS_RINGBUF_MAP_PATH "/sys/fs/bpf/events_ringbuf"
 
 /* PID file for daemon tracking */
 #define PID_FILE "/var/run/bpfima.pid"
@@ -75,6 +77,66 @@ static int read_pid_file(void)
 
     fclose(fp);
     return pid;
+}
+
+/**
+ * @brief Handle event from ring buffer
+ */
+/**
+ * @brief Handle event from ring buffer
+ */
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+    const struct bpfima_event *e = data;
+    char dir_path[256];
+    char filepath[512];
+    FILE *fp;
+    char hash_str[65];
+
+    if (data_sz < sizeof(*e)) {
+        fprintf(stderr, "Invalid event size: %zu\n", data_sz);
+        return 0;
+    }
+
+    // Sanitize container_id
+    const char *container_id = (strlen(e->container_id) > 0) ? e->container_id : "default";
+
+    // Create directory structure: build/namespaces/<container_id>
+    snprintf(dir_path, sizeof(dir_path), "build/namespaces/%s", container_id);
+    
+    struct stat st = {0};
+    if (stat("build/namespaces", &st) == -1) {
+        mkdir("build/namespaces", 0755);
+    }
+    if (stat(dir_path, &st) == -1) {
+        mkdir(dir_path, 0755);
+    }
+
+    // Handle measurement event
+    snprintf(filepath, sizeof(filepath), "%s/measurements", dir_path);
+
+    fp = fopen(filepath, "a");
+    if (!fp) {
+        fprintf(stderr, "Failed to open log file %s: %s\n", filepath, strerror(errno));
+        return 0;
+    }
+
+    // Convert hash to hex string
+    for(int i = 0; i < 32; i++) {
+        sprintf(&hash_str[i*2], "%02x", e->hash[i]);
+    }
+    hash_str[64] = '\0';
+
+    // Format: <hash> <event_name> <event_data> <dependencies>
+    // Using file_path as event_data
+    fprintf(fp, "%s %s %s %s\n",
+            hash_str,
+            e->event_name,
+            e->file_path,
+            e->dependencies);
+
+    fclose(fp);
+    return 0;
 }
 
 /**
@@ -172,6 +234,32 @@ static int set_rlimit(void)
         return -1;
     }
     return 0;
+}
+
+/*
+ * Mirror policy files from securityfs to build/namespaces
+ */
+static void mirror_policy_files(void) {
+    char cmd[512];
+    
+    // Mirror global policy to build/namespaces/root/policy
+    snprintf(cmd, sizeof(cmd), 
+             "mkdir -p build/namespaces/root && "
+             "cat /sys/kernel/security/bpfima/policy > build/namespaces/root/policy 2>/dev/null && "
+             "cat /sys/kernel/security/bpfima/policy_changes > build/namespaces/root/policy_changes 2>/dev/null");
+    system(cmd);
+    
+    // Mirror namespace policies
+    snprintf(cmd, sizeof(cmd),
+             "for ns in /sys/kernel/security/bpfima/namespaces/*/; do "
+             "  if [ -d \"$ns\" ]; then "
+             "    nsid=$(basename \"$ns\"); "
+             "    mkdir -p \"build/namespaces/$nsid\"; "
+             "    cat \"$ns/policy\" > \"build/namespaces/$nsid/policy\" 2>/dev/null; "
+             "    cat \"$ns/policy_changes\" > \"build/namespaces/$nsid/policy_changes\" 2>/dev/null; "
+             "  fi; "
+             "done");
+    system(cmd);
 }
 
 /**
@@ -289,9 +377,42 @@ static int cmd_load(const char *filename, bool daemon_mode)
         signal(SIGINT, sig_handler);
         signal(SIGTERM, sig_handler);
 
+        int rb_fd = bpf_obj_get(EVENTS_RINGBUF_MAP_PATH);
+        struct ring_buffer *rb = NULL;
+
+        if (rb_fd >= 0) {
+            rb = ring_buffer__new(rb_fd, handle_event, NULL, NULL);
+            if (!rb) {
+                fprintf(stderr, "Failed to create ring buffer\n");
+                // Continue without ring buffer or exit? Let's warn and continue basic sleep
+            } else {
+                printf("Event monitoring started...\n");
+            }
+        } else {
+        fprintf(stderr, "Warning: Could not open events ring buffer: %s\n", strerror(errno));
+        }
+
         while (!g_exiting)
         {
-            sleep(1);
+            if (rb) {
+                int err = ring_buffer__poll(rb, 100 /* timeout ms */);
+                // Mirror policy files every poll cycle
+                mirror_policy_files();
+
+                if (err < 0 && err != -EINTR) {
+                    fprintf(stderr, "Error polling ring buffer: %d\n", err);
+                    break;
+                }
+            } else {
+                sleep(1);
+            }
+        }
+        
+        if (rb) {
+            ring_buffer__free(rb);
+        }
+        if (rb_fd >= 0) {
+            close(rb_fd);
         }
 
         printf("\nShutting down...\n");
@@ -371,6 +492,7 @@ static int cmd_unload(void)
     unlink(CGROUP_PATTERNS_MAP_PATH);
     unlink(PATH_PATTERNS_MAP_PATH);
     unlink(HOOK_CONFIG_MAP_PATH);
+    unlink(EVENTS_RINGBUF_MAP_PATH);
 
     printf("  BPF IMA unloaded successfully\n");
     return 0;

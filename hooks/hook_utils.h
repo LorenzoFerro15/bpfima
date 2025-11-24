@@ -23,7 +23,8 @@ static __always_inline int measure_accessed_file(
                                                 bool is_container_context,
                                                 char *deps,
                                                 int deps_actual,
-                                                int deps_max)
+                                                int deps_max,
+                                                u8 *out_hash)
 {
     if (!file) {
         bpf_printk("No file provided for hashing.\n");
@@ -43,6 +44,9 @@ static __always_inline int measure_accessed_file(
         if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) == 0 && file_scalar != 0) {
             ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
             if (ret == 0) {
+                if (out_hash) {
+                    __builtin_memcpy(out_hash, digest, 32);
+                }
                 print_hex_digest(digest, 32);
                 char digest_hex[65] = {0};
                 

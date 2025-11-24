@@ -42,6 +42,12 @@ struct policy_field {
     bool supports_namespace;
 };
 
+ssize_t global_policy_write(struct file *file, const char __user *user_buf,
+                                    size_t count, loff_t *ppos);
+
+ssize_t policy_update_write(struct file *file, const char __user *user_buf,
+                                   size_t count, loff_t *ppos);
+
 static void update_filter_flags(struct bpfima_policy_config *config, u32 value)
 {
     config->filter_flags = value;
@@ -191,7 +197,8 @@ out:
  *
  * Returns: Number of bytes written on success, negative error code on failure
  */
-static ssize_t policy_update_write(struct file *file, const char __user *user_buf,
+
+ssize_t policy_update_write(struct file *file, const char __user *user_buf,
                                    size_t count, loff_t *ppos)
 {
     char *buf;
@@ -238,7 +245,7 @@ static ssize_t policy_update_write(struct file *file, const char __user *user_bu
  *
  * Returns: Number of bytes written on success, negative error code on failure
  */
-static ssize_t global_policy_write(struct file *file, const char __user *user_buf,
+ssize_t global_policy_write(struct file *file, const char __user *user_buf,
                                     size_t count, loff_t *ppos)
 {
     char *buf;
