@@ -87,7 +87,7 @@ hooks:
     action_override: 0
 
   lsm_socket_connect:
-    enabled: false
+    enabled: true
     track_containers: false
     measure_hash: false
     filter_override: 0
