@@ -25,6 +25,13 @@
 #include "bpfima_policy.h"
 #include "bpfima_securityfs.h"
 
+/* Module parameter to control policy write access */
+static int securityfs_policy_writable = 1;
+module_param(securityfs_policy_writable, int, 0444);
+MODULE_PARM_DESC(securityfs_policy_writable,
+                 "Allow runtime policy modifications via securityfs (0=read-only, 1=writable). "
+                 "SECURITY: Set to 0 in production to prevent policy tampering.");
+
 typedef int (*namespace_update_fn)(const char *namespace_id, u32 value);
 typedef void (*global_update_fn)(struct bpfima_policy_config *config, u32 value);
 
@@ -449,6 +456,7 @@ struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
 {
     struct dentry *policy_file;
     char *ns_copy;
+    umode_t mode;
 
     if (!namespace_id || !parent_dir)
         return ERR_PTR(-EINVAL);
@@ -457,7 +465,10 @@ struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
     if (!ns_copy)
         return ERR_PTR(-ENOMEM);
 
-    policy_file = securityfs_create_file("policy", 0644, parent_dir,
+    /* Set permissions based on module parameter */
+    mode = securityfs_policy_writable ? 0600 : 0400;
+
+    policy_file = securityfs_create_file("policy", mode, parent_dir,
                                         ns_copy, &policy_fops);
     if (IS_ERR(policy_file)) {
         pr_err("bpfima: Failed to create policy file for %s: %ld\n",
@@ -466,7 +477,8 @@ struct dentry *create_namespace_policy_securityfs(const char *namespace_id,
         return policy_file;
     }
 
-    pr_info("bpfima: Created policy interface for namespace %s\n", namespace_id);
+    pr_info("bpfima: Created policy interface for namespace %s (mode: %o)\n",
+            namespace_id, mode);
     return policy_file;
 }
 
@@ -558,10 +570,15 @@ void remove_namespace_policy_changes_securityfs(struct dentry *policy_changes_fi
  */
 int create_global_policy_securityfs(struct dentry *parent_dir)
 {
+    umode_t mode;
+
     if (!parent_dir)
         return -EINVAL;
 
-    global_policy_file = securityfs_create_file("policy", 0644, parent_dir,
+    /* Set permissions based on module parameter */
+    mode = securityfs_policy_writable ? 0600 : 0400;
+
+    global_policy_file = securityfs_create_file("policy", mode, parent_dir,
                                                 NULL, &global_policy_fops);
     if (IS_ERR(global_policy_file)) {
         pr_err("bpfima: Failed to create global policy file: %ld\n",
@@ -569,7 +586,18 @@ int create_global_policy_securityfs(struct dentry *parent_dir)
         return PTR_ERR(global_policy_file);
     }
 
-    pr_info("bpfima: Created global policy interface at /sys/kernel/security/bpfima/policy\n");
+    if (!securityfs_policy_writable) {
+        pr_warn("bpfima: Policy files are READ-ONLY (securityfs_policy_writable=0)\n");
+        pr_warn("bpfima: Use YAML configuration for policy updates\n");
+    } else {
+        pr_warn("bpfima: ===== SECURITY WARNING =====");
+        pr_warn("bpfima: Policy files are WRITABLE at runtime");
+        pr_warn("bpfima: Compromised processes with root access can tamper with policies");
+        pr_warn("bpfima: Recommended: Set securityfs_policy_writable=0 in production");
+        pr_warn("bpfima: ============================");
+    }
+
+    pr_info("bpfima: Created global policy interface at /sys/kernel/security/bpfima/policy (mode: %o)\n", mode);
     return 0;
 }
 

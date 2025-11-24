@@ -84,12 +84,21 @@ static int update_changes_string(struct bpfima_policy_namespace *policy_ns,
     char temp[64];
     int ret;
 
-    if (!policy_ns || !field_name)
+    if (!policy_ns) {
+        pr_err("bpfima: update_changes_string: NULL policy_ns\n");
         return -EINVAL;
+    }
+
+    if (!field_name) {
+        pr_err("bpfima: update_changes_string: NULL field_name\n");
+        return -EINVAL;
+    }
 
     ret = snprintf(temp, sizeof(temp), "%s=0x%x,", field_name, new_value);
-    if (ret < 0 || ret >= sizeof(temp))
+    if (ret < 0 || ret >= sizeof(temp)) {
+        pr_err("bpfima: Failed to format policy change string\n");
         return -EINVAL;
+    }
 
     len = strlen(policy_ns->changes_str);
     remaining = MAX_POLICY_CHANGES_STR - len - 1;
@@ -136,8 +145,15 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
     int ret;
     char policy_string[MAX_POLICY_STRING_SIZE];
 
-    if (!policy_ns || !namespace_id)
+    if (!policy_ns) {
+        pr_err("bpfima: record_policy_change_and_extend: NULL policy_ns\n");
         return -EINVAL;
+    }
+
+    if (!namespace_id) {
+        pr_err("bpfima: record_policy_change_and_extend: NULL namespace_id\n");
+        return -EINVAL;
+    }
 
     ret = snprintf(policy_string, sizeof(policy_string),
                    "enabled=%u,filter_flags=0x%x,action_flags=0x%x,min_file_size=%u,max_path_depth=%u,log_level=%u",
