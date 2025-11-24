@@ -90,12 +90,16 @@ struct container_node
  * @list: Linked list node
  * @value: Hash value that was added to the Merkle root calculation
  * @source_container_id: ID of the container that triggered this extension
+ * @is_aggregate: True if this entry represents an aggregate of multiple deleted entries
+ * @aggregated_count: Number of entries aggregated (0 if not an aggregate)
  */
 struct merkle_root_entry
 {
     struct list_head list;
     u8 value[MERKLE_HASH_SIZE];
     char source_container_id[CONTAINER_ID_MAX_LEN];
+    bool is_aggregate;
+    u32 aggregated_count;
 };
 
 /**

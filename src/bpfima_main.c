@@ -125,7 +125,7 @@ BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
 BTF_ID_FLAGS(func, bpfima_measurement_extend)
 BTF_ID_FLAGS(func, bpfima_tpm_get_pcr_value)
 BTF_ID_FLAGS(func, bpfima_tpm_is_available)
-BTF_ID_FLAGS(func, bpfima_file_hash)
+BTF_ID_FLAGS(func, bpfima_file_hash, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_container_get_or_create)
 BTF_ID_FLAGS(func, bpfima_merkle_get_root)
 
@@ -201,6 +201,19 @@ static int __init bpfima_init(void)
         bpfima_policy_namespace_cleanup();
         bpfima_policy_cleanup();
         return ret;
+    }
+
+    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_LSM, &bpf_kfunc_example_set);
+    if (ret)
+    {
+        pr_warn("bpfima: Failed to register BTF kfunc ID set for LSM: %d\n", ret);
+        pr_warn("bpfima: LSM hooks may not have access to all kfuncs\n");
+    }
+
+    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_kfunc_example_set);
+    if (ret)
+    {
+        pr_warn("bpfima: Failed to register BTF kfunc ID set for TRACING: %d\n", ret);
     }
 
     ret = bpfima_securityfs_init();

@@ -112,6 +112,10 @@ int merkle_root_history_seq_show(struct seq_file *s, void *v)
     for (i = 0; i < MERKLE_HASH_SIZE; i++)
         seq_printf(s, "%02x", entry->value[i]);
 
+    if (entry->is_aggregate) {
+        seq_printf(s, " [AGGREGATE:%u entries]", entry->aggregated_count);
+    }
+
     seq_printf(s, "\n");
     return 0;
 }

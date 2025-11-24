@@ -1,10 +1,7 @@
 #include "../hook_utils.h"
 #include "../../include/bpfima_event.h"
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024); /* 256 KB */
-} events_ringbuf SEC(".maps");
+
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -151,35 +148,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         return ret;
     }
     
-    struct bpfima_event *event;
-    
-    event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(*event), 0);
-    if (event) {
-        
-        __builtin_memcpy(event->event_name, event_name, sizeof(event->event_name));
-        
-        if (fname) {
-             bpf_probe_read_kernel_str(event->file_path, sizeof(event->file_path), fname);
-        } else {
-             event->file_path[0] = '\0';
-        }
-        
-        if (cgroup_name[0] != '\0') {
-             __builtin_memcpy(event->container_id, cgroup_name, sizeof(event->container_id));
-        } else {
-             __builtin_memcpy(event->container_id, "default", 8);
-        }
-        
-        if (deps) {
-             bpf_probe_read_kernel_str(event->dependencies, sizeof(event->dependencies), deps);
-        } else {
-             event->dependencies[0] = '\0';
-        }
 
-        __builtin_memcpy(event->hash, hash, EVENT_HASH_SIZE);
-
-        bpf_ringbuf_submit(event, 0);
-    }
 
     return 0;
 }

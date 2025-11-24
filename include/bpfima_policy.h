@@ -42,6 +42,8 @@
  * @min_file_size: Minimum file size to measure (bytes)
  * @max_path_depth: Maximum path depth to track
  * @log_level: Logging verbosity (0=none, 1=errors, 2=info, 3=debug)
+ * @merkle_history_max_size: Maximum entries in merkle_root_history before trimming
+ * @merkle_history_scope: Scope of circular buffer (0=global, 1=root-only)
  * @reserved: Reserved for future use
  */
 struct bpfima_policy_config {
@@ -51,7 +53,9 @@ struct bpfima_policy_config {
     u32 min_file_size;
     u32 max_path_depth;
     u32 log_level;
-    u32 reserved[2];
+    u32 merkle_history_max_size;
+    u8 merkle_history_scope;
+    u32 reserved[1];
 };
 
 /**
@@ -105,6 +109,12 @@ enum bpfima_hook_id {
 #define DEFAULT_MIN_FILE_SIZE 0
 #define DEFAULT_MAX_PATH_DEPTH 32
 #define DEFAULT_LOG_LEVEL 2  /* Info level */
+
+/* Circular buffer defaults */
+#define DEFAULT_MERKLE_HISTORY_MAX_SIZE 1000
+#define MERKLE_HISTORY_SCOPE_GLOBAL 0
+#define MERKLE_HISTORY_SCOPE_ROOT_ONLY 1
+#define DEFAULT_MERKLE_HISTORY_SCOPE MERKLE_HISTORY_SCOPE_GLOBAL
 
 /* Policy change tracking */
 #define MAX_POLICY_CHANGES_STR 1024

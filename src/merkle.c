@@ -6,20 +6,24 @@
  * system state (virtual PCR value).
  */
 
-// #include <linux/preempt.h>
-// #include <linux/irqflags.h>
-
 #include "bpfima_common.h"
 #include "bpfima_merkle.h"
 #include "bpfima_container.h"
 #include "bpfima_measurements.h"
 #include "bpfima_securityfs.h"
+#include "bpfima_policy.h"
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+#include <linux/namei.h>
 
 /* Global state */
 LIST_HEAD(merkle_root_history);
 DEFINE_SPINLOCK(merkle_root_history_lock);
 
 struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
+
+/* Counter for merkle_root_history entries (for circular buffer management) */
+static atomic_t merkle_root_history_count = ATOMIC_INIT(0);
 
 /*
  * Mutex to serialize merkle root extensions including TPM operations.
@@ -426,6 +430,16 @@ cleanup:
 }
 
 /**
+ * get_merkle_root_history_count - Get current count of merkle root history entries
+ *
+ * Returns: Current number of entries in merkle_root_history
+ */
+u32 get_merkle_root_history_count(void)
+{
+    return atomic_read(&merkle_root_history_count);
+}
+
+/**
  * add_merkle_root_history_entry - Record a value being added to Merkle root
  * @value: Hash value being incorporated into the root
  * @container_id: ID of source container (NULL or empty for host events)
@@ -435,7 +449,10 @@ cleanup:
 int add_merkle_root_history_entry(const u8 *value, const char *container_id)
 {
     struct merkle_root_entry *entry;
+    struct bpfima_policy_config *policy;
     unsigned long flags;
+    u32 current_count;
+    bool should_check_limit = true;
 
     entry = kzalloc(sizeof(*entry), GFP_KERNEL);
     if (!entry)
@@ -448,9 +465,35 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
     else
         entry->source_container_id[0] = '\0';
 
+    /* Initialize aggregate fields */
+    entry->is_aggregate = false;
+    entry->aggregated_count = 0;
+
+    /* Check policy scope */
+    policy = bpfima_policy_get();
+    if (policy && policy->merkle_history_scope == MERKLE_HISTORY_SCOPE_ROOT_ONLY) {
+        /* Only apply circular buffer to root/global entries (empty container_id) */
+        if (container_id && container_id[0] != '\0') {
+            should_check_limit = false;
+        }
+    }
+
     spin_lock_irqsave(&merkle_root_history_lock, flags);
     list_add_tail(&entry->list, &merkle_root_history);
     spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+
+    /* File writing removed - userspace now dumps securityfs periodically */
+
+    /* Increment counter and check if we need to trim */
+    current_count = atomic_inc_return(&merkle_root_history_count);
+
+    if (should_check_limit && policy && policy->merkle_history_max_size > 0) {
+        if (current_count > policy->merkle_history_max_size) {
+            pr_info("bpfima: Merkle history reached max size (%u), trimming...\n",
+                    policy->merkle_history_max_size);
+            trim_merkle_root_history(policy->merkle_history_max_size);
+        }
+    }
 
     return 0;
 }
@@ -560,6 +603,220 @@ int add_container_measurement(struct container_node *container,
 }
 
 /**
+ * aggregate_merkle_entries - Compute TPM-style aggregate hash from list of entries
+ * @entries_to_aggregate: List of merkle_root_entry to aggregate
+ * @aggregate_hash: Output buffer for the aggregate hash (must be MERKLE_HASH_SIZE bytes)
+ * @count_out: Output parameter for number of entries aggregated
+ *
+ * Computes an aggregate hash using TPM PCR-style extension:
+ *   val = SHA256(0x00...00 || hash1)
+ *   val = SHA256(val || hash2)
+ *   ...
+ *   aggregate = SHA256(val || hashN)
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int aggregate_merkle_entries(struct list_head *entries_to_aggregate, u8 *aggregate_hash, u32 *count_out)
+{
+    struct merkle_root_entry *entry;
+    struct crypto_shash *tfm;
+    struct shash_desc *desc;
+    u8 current_val[MERKLE_HASH_SIZE];
+    u8 zero_init[MERKLE_HASH_SIZE];
+    int ret = 0;
+    u32 count = 0;
+    bool first = true;
+
+    if (!entries_to_aggregate || !aggregate_hash || !count_out) {
+        pr_err("bpfima: aggregate_merkle_entries: NULL parameter\n");
+        return -EINVAL;
+    }
+
+    /* Initialize with zeros for first extension */
+    memset(zero_init, 0, MERKLE_HASH_SIZE);
+    memset(current_val, 0, MERKLE_HASH_SIZE);
+
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm)) {
+        ret = PTR_ERR(tfm);
+        pr_err("bpfima: Failed to allocate sha256 for aggregation: %d\n", ret);
+        return ret;
+    }
+
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    if (!desc) {
+        pr_err("bpfima: Failed to allocate shash descriptor for aggregation\n");
+        crypto_free_shash(tfm);
+        return -ENOMEM;
+    }
+
+    desc->tfm = tfm;
+
+    /* Iterate through entries and perform TPM-style extension */
+    list_for_each_entry(entry, entries_to_aggregate, list) {
+        ret = crypto_shash_init(desc);
+        if (ret < 0) {
+            pr_err("bpfima: crypto_shash_init failed in aggregation: %d\n", ret);
+            goto cleanup;
+        }
+
+        if (first) {
+            /* First extension: hash(0x00...00 || hash1) */
+            ret = crypto_shash_update(desc, zero_init, MERKLE_HASH_SIZE);
+            first = false;
+        } else {
+            /* Subsequent extensions: hash(current_val || hash_i) */
+            ret = crypto_shash_update(desc, current_val, MERKLE_HASH_SIZE);
+        }
+
+        if (ret < 0) {
+            pr_err("bpfima: crypto_shash_update (current_val) failed in aggregation: %d\n", ret);
+            goto cleanup;
+        }
+
+        ret = crypto_shash_update(desc, entry->value, MERKLE_HASH_SIZE);
+        if (ret < 0) {
+            pr_err("bpfima: crypto_shash_update (entry value) failed in aggregation: %d\n", ret);
+            goto cleanup;
+        }
+
+        ret = crypto_shash_final(desc, current_val);
+        if (ret < 0) {
+            pr_err("bpfima: crypto_shash_final failed in aggregation: %d\n", ret);
+            goto cleanup;
+        }
+
+        count++;
+    }
+
+    if (count == 0) {
+        pr_warn("bpfima: No entries to aggregate\n");
+        ret = -EINVAL;
+        goto cleanup;
+    }
+
+    /* Copy final aggregate to output */
+    memcpy(aggregate_hash, current_val, MERKLE_HASH_SIZE);
+    *count_out = count;
+
+    pr_info("bpfima: Aggregated %u entries using TPM-style extension\n", count);
+    ret = 0;
+
+cleanup:
+    memzero_explicit(current_val, sizeof(current_val));
+    memzero_explicit(zero_init, sizeof(zero_init));
+    if (desc) {
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        kfree(desc);
+    }
+    crypto_free_shash(tfm);
+    return ret;
+}
+
+/**
+ * trim_merkle_root_history - Trim history list when it exceeds max size
+ * @max_size: Maximum allowed size
+ *
+ * When the list exceeds max_size, this function:
+ * 1. Deletes the oldest half of entries
+ * 2. Computes an aggregate hash of deleted entries (TPM-style)
+ * 3. Inserts the aggregate as the first entry in the remaining list
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int trim_merkle_root_history(u32 max_size)
+{
+    struct merkle_root_entry *entry, *tmp, *aggregate_entry;
+    LIST_HEAD(entries_to_delete);
+    unsigned long flags;
+    u32 current_count, to_delete, deleted_count = 0;
+    u8 aggregate_hash[MERKLE_HASH_SIZE];
+    u32 aggregated_count = 0;
+    int ret;
+
+    current_count = atomic_read(&merkle_root_history_count);
+    
+    if (current_count <= max_size) {
+        /* Nothing to trim */
+        return 0;
+    }
+
+    /* Calculate how many to delete (oldest half) */
+    to_delete = current_count / 2;
+    if (to_delete == 0) {
+        to_delete = 1; /* Delete at least one */
+    }
+
+    pr_info("bpfima: Trimming merkle history: current=%u, max=%u, deleting=%u\n",
+            current_count, max_size, to_delete);
+
+    spin_lock_irqsave(&merkle_root_history_lock, flags);
+
+    /* Move oldest entries to temporary list */
+    list_for_each_entry_safe(entry, tmp, &merkle_root_history, list) {
+        if (deleted_count >= to_delete) {
+            break;
+        }
+        list_del(&entry->list);
+        list_add_tail(&entry->list, &entries_to_delete);
+        deleted_count++;
+    }
+
+    spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+
+    /* Compute aggregate of deleted entries */
+    ret = aggregate_merkle_entries(&entries_to_delete, aggregate_hash, &aggregated_count);
+    if (ret < 0) {
+        pr_err("bpfima: Failed to aggregate deleted entries: %d\n", ret);
+        /* Free the deleted entries anyway */
+        list_for_each_entry_safe(entry, tmp, &entries_to_delete, list) {
+            list_del(&entry->list);
+            kfree(entry);
+        }
+        atomic_sub(deleted_count, &merkle_root_history_count);
+        return ret;
+    }
+
+    /* Create aggregate entry */
+    aggregate_entry = kzalloc(sizeof(*aggregate_entry), GFP_KERNEL);
+    if (!aggregate_entry) {
+        pr_err("bpfima: Failed to allocate aggregate entry\n");
+        /* Free the deleted entries */
+        list_for_each_entry_safe(entry, tmp, &entries_to_delete, list) {
+            list_del(&entry->list);
+            kfree(entry);
+        }
+        atomic_sub(deleted_count, &merkle_root_history_count);
+        return -ENOMEM;
+    }
+
+    memcpy(aggregate_entry->value, aggregate_hash, MERKLE_HASH_SIZE);
+    strscpy(aggregate_entry->source_container_id, "[AGGREGATE]", CONTAINER_ID_MAX_LEN);
+    aggregate_entry->is_aggregate = true;
+    aggregate_entry->aggregated_count = aggregated_count;
+
+    /* Insert aggregate at the head of the remaining list */
+    spin_lock_irqsave(&merkle_root_history_lock, flags);
+    list_add(&aggregate_entry->list, &merkle_root_history);
+    spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+
+    /* Free the deleted entries */
+    list_for_each_entry_safe(entry, tmp, &entries_to_delete, list) {
+        list_del(&entry->list);
+        kfree(entry);
+    }
+
+    /* Update counter: subtract deleted, add 1 for aggregate */
+    atomic_sub(deleted_count, &merkle_root_history_count);
+    atomic_inc(&merkle_root_history_count);
+
+    pr_info("bpfima: Trimmed %u entries, created aggregate of %u entries\n",
+            deleted_count, aggregated_count);
+
+    return 0;
+}
+
+/**
  * cleanup_merkle_root_history - Free all Merkle root history entries
  */
 void cleanup_merkle_root_history(void)
@@ -567,6 +824,8 @@ void cleanup_merkle_root_history(void)
     struct merkle_root_entry *entry, *tmp;
     unsigned long flags;
     int count = 0;
+
+    /* File writing removed - userspace should dump before unload */
 
     spin_lock_irqsave(&merkle_root_history_lock, flags);
     list_for_each_entry_safe(entry, tmp, &merkle_root_history, list)
@@ -576,6 +835,9 @@ void cleanup_merkle_root_history(void)
         count++;
     }
     spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+
+    /* Reset counter */
+    atomic_set(&merkle_root_history_count, 0);
 
     pr_info("bpfima: Cleaned up %d merkle root history entries\n", count);
 }

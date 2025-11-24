@@ -14,6 +14,11 @@ int extend_merkle_root(const u8 *container_leaf_hash);
 int recalculate_merkle_root(void);
 int add_merkle_root_history_entry(const u8 *value, const char *container_id);
 
+/* Circular buffer management */
+int trim_merkle_root_history(u32 max_size);
+int aggregate_merkle_entries(struct list_head *entries_to_aggregate, u8 *aggregate_hash, u32 *count_out);
+u32 get_merkle_root_history_count(void);
+
 int add_container_measurement(struct container_node *container,
                               const char *event_name,
                               const char *event_data,
