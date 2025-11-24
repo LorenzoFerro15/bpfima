@@ -47,6 +47,8 @@ int bpfima_policy_init(void)
     global_policy.min_file_size = DEFAULT_MIN_FILE_SIZE;
     global_policy.max_path_depth = DEFAULT_MAX_PATH_DEPTH;
     global_policy.log_level = DEFAULT_LOG_LEVEL;
+    global_policy.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+    global_policy.merkle_history_scope = DEFAULT_MERKLE_HISTORY_SCOPE;
 
     memset(cgroup_patterns, 0, sizeof(cgroup_patterns));
     for (i = 0; i < 2 && i < MAX_IGNORE_PATTERNS; i++)
@@ -261,6 +263,8 @@ int bpfima_policy_set_default(void)
     global_policy.min_file_size = DEFAULT_MIN_FILE_SIZE;
     global_policy.max_path_depth = DEFAULT_MAX_PATH_DEPTH;
     global_policy.log_level = DEFAULT_LOG_LEVEL;
+    global_policy.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+    global_policy.merkle_history_scope = DEFAULT_MERKLE_HISTORY_SCOPE;
 
     spin_unlock_irqrestore(&policy_lock, flags);
 
