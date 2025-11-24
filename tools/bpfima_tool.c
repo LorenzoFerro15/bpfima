@@ -591,7 +591,7 @@ static int cmd_policy_init(void)
             .action_override = 0,
         };
 
-        if (i == HOOK_LSM_SOCKET_CONNECT || i == HOOK_KPROBE_FILE_OPEN)
+        if (i == HOOK_KPROBE_FILE_OPEN) // (i == HOOK_LSM_SOCKET_CONNECT)
         {
             hook_cfg.flags = 0;
         }
