@@ -29,6 +29,90 @@ struct {
     __type(value, struct scratch_t);
 } scratch_buf_map SEC(".maps");
 
+
+/* Helper function to convert u32 to string and append to buffer */
+static __always_inline int append_u32_to_buffer(char *buf, int *len, int max_len, u32 value)
+{
+    char temp[16];
+    int temp_len = 0;
+    
+    /* Handle zero case */
+    if (value == 0) {
+        if (*len >= max_len - 1) return -1;
+        buf[(*len)++] = '0';
+        return 0;
+    }
+    
+    /* Convert to string (digits in reverse order) */
+    u32 temp_val = value;
+    while (temp_val > 0 && temp_len < 15) {
+        temp[temp_len++] = '0' + (temp_val % 10);
+        temp_val /= 10;
+    }
+    
+    /* Check if we have space */
+    if (*len + temp_len >= max_len) return -1;
+    
+    /* Reverse and copy to buffer */
+    for (int i = temp_len - 1; i >= 0; i--) {
+        buf[(*len)++] = temp[i];
+    }
+    
+    return 0;
+}
+
+
+/* Helper function to append string to buffer */
+static __always_inline int append_string_to_buffer(char *buf, int *len, int max_len, const char *str, int str_max_len)
+{
+    for (int i = 0; i < str_max_len && str[i] != 0; i++) {
+        if (*len >= max_len - 1) return -1;
+        buf[(*len)++] = str[i];
+    }
+    return 0;
+}
+
+
+/* Helper function to append separator to buffer */
+static __always_inline int append_separator(char *buf, int *len, int max_len)
+{
+    if (*len >= max_len - 1) return -1;
+    buf[(*len)++] = '_';
+    return 0;
+}
+
+/* Build measurement data string: "comm_pid_uid" */
+static __always_inline int build_measurement_data(char *measurement_data, int max_len, 
+                                                  const char *comm, pid_t pid, u32 uid)
+{
+    int len = 0;
+    
+    /* Add process name */
+    if (append_string_to_buffer(measurement_data, &len, max_len, comm, 16) < 0)
+        return -1;
+    
+    /* Add separator and PID */
+    if (append_separator(measurement_data, &len, max_len) < 0)
+        return -1;
+    if (append_u32_to_buffer(measurement_data, &len, max_len, pid) < 0)
+        return -1;
+    
+    /* Add separator and UID */
+    if (append_separator(measurement_data, &len, max_len) < 0)
+        return -1;
+    if (append_u32_to_buffer(measurement_data, &len, max_len, uid) < 0)
+        return -1;
+    
+    /* Null terminate */
+    if (len < max_len) {
+        measurement_data[len] = '\0';
+    } else {
+        return -1;
+    }
+    
+    return len;
+}
+
 /*
  * Build a dependency chain by walking up to 10 ancestor processes.
  * 
@@ -106,7 +190,42 @@ static __always_inline int build_dependencies(char *deps, int deps_max,
     return deps_actual;
 }
 
-#endif /* UTILS_H */
+
+/*
+ * Build socket connection additional data string" 
+ * Format: "192.168.1.1:8080-10.0.0.1:80"
+ *         "<saddr>:<sport>-<daddr>:<dport>"
+ * 
+ * @param additional_data: Output buffer for the additional data string
+ * @param buf_size: Size of the additional_data buffer
+ * @param saddr: Source IPv4 address
+ * @param sport: Source port
+ * @param daddr: Destination IPv4 address
+ * @param dport: Destination port
+ * 
+ * @returns The number of written characters.
+ */
+static __always_inline long build_socket_additional_data(char *additional_data, int buf_size,
+                                                  u32 saddr, u16 sport,
+                                                  u32 daddr, u16 dport)
+{
+    u64 params[10] = {
+        (u64)(saddr & 0xFF),
+        (u64)((saddr >> 8) & 0xFF), 
+        (u64)((saddr >> 16) & 0xFF),
+        (u64)((saddr >> 24) & 0xFF), 
+        (u64)sport,
+        (u64)(daddr & 0xFF),
+        (u64)((daddr >> 8) & 0xFF), 
+        (u64)((daddr >> 16) & 0xFF),
+        (u64)((daddr >> 24) & 0xFF), 
+        (u64)dport
+    };
+
+    return bpf_snprintf(additional_data, buf_size,
+                        "%u.%u.%u.%u:%u-%u.%u.%u.%u:%u",
+                        params, sizeof(params));
+}
 
 /*
  * Convert a byte vector to a hex string (lowercase), up to 32 bytes.
@@ -151,3 +270,5 @@ static __always_inline void print_hex_digest(const u8 *bytes, int len)
         bpf_printk("%s\n", buf);
     }
 }
+
+#endif /* UTILS_H */
