@@ -74,29 +74,45 @@ int compute_container_leaf_hash(struct container_node *container)
     unsigned long flags;
     int ret = 0;
 
+    if (!container) {
+        pr_err("bpfima: compute_container_leaf_hash: NULL container\n");
+        return -EINVAL;
+    }
+
     tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-        return PTR_ERR(tfm);
+    if (IS_ERR(tfm)) {
+        ret = PTR_ERR(tfm);
+        pr_err("bpfima: Failed to allocate sha256 hash: %d\n", ret);
+        return ret;
+    }
 
     desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
     if (!desc)
     {
+        pr_err("bpfima: Failed to allocate shash descriptor\n");
         crypto_free_shash(tfm);
         return -ENOMEM;
     }
 
     desc->tfm = tfm;
     ret = crypto_shash_init(desc);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_init failed: %d\n", ret);
         goto cleanup;
+    }
 
     /* Hash all measurement digests in order */
     spin_lock_irqsave(&container->measurement_lock, flags);
     list_for_each_entry(entry, &container->measurement_list, list)
     {
+        if (!entry) {
+            pr_warn("bpfima: NULL entry in measurement list\n");
+            continue;
+        }
         ret = crypto_shash_update(desc, entry->digest, MERKLE_HASH_SIZE);
         if (ret < 0)
         {
+            pr_err("bpfima: crypto_shash_update failed: %d\n", ret);
             spin_unlock_irqrestore(&container->measurement_lock, flags);
             goto cleanup;
         }
@@ -105,9 +121,15 @@ int compute_container_leaf_hash(struct container_node *container)
 
     /* Finalize the hash */
     ret = crypto_shash_final(desc, container->leaf_hash);
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_final failed: %d\n", ret);
+    }
 
 cleanup:
-    kfree(desc);
+    if (desc) {
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        kfree(desc);
+    }
     crypto_free_shash(tfm);
     return ret;
 }
@@ -133,40 +155,59 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
     u8 old_leaf[MERKLE_HASH_SIZE];
     u8 new_leaf[MERKLE_HASH_SIZE];
 
-    if (!new_digest)
+    if (!container) {
+        pr_err("bpfima: extend_container_leaf_hash: NULL container\n");
         return -EINVAL;
+    }
+
+    if (!new_digest) {
+        pr_err("bpfima: extend_container_leaf_hash: NULL digest\n");
+        return -EINVAL;
+    }
 
     tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-        return PTR_ERR(tfm);
+    if (IS_ERR(tfm)) {
+        ret = PTR_ERR(tfm);
+        pr_err("bpfima: Failed to allocate sha256 hash: %d\n", ret);
+        return ret;
+    }
 
     desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
     if (!desc)
     {
+        pr_err("bpfima: Failed to allocate shash descriptor\n");
         crypto_free_shash(tfm);
         return -ENOMEM;
     }
 
     desc->tfm = tfm;
     ret = crypto_shash_init(desc);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_init failed: %d\n", ret);
         goto cleanup;
+    }
 
     spin_lock_irqsave(&container->measurement_lock, flags);
     memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
     spin_unlock_irqrestore(&container->measurement_lock, flags);
 
     ret = crypto_shash_update(desc, old_leaf, MERKLE_HASH_SIZE);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_update (old_leaf) failed: %d\n", ret);
         goto cleanup;
+    }
 
     ret = crypto_shash_update(desc, new_digest, MERKLE_HASH_SIZE);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_update (new_digest) failed: %d\n", ret);
         goto cleanup;
+    }
 
     ret = crypto_shash_final(desc, new_leaf);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_final failed: %d\n", ret);
         goto cleanup;
+    }
 
     spin_lock_irqsave(&container->measurement_lock, flags);
     memcpy(container->leaf_hash, new_leaf, MERKLE_HASH_SIZE);
@@ -175,7 +216,12 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
     pr_debug("bpfima: Container %s leaf hash extended\n", container->id);
 
 cleanup:
-    kfree(desc);
+    memzero_explicit(old_leaf, sizeof(old_leaf));
+    memzero_explicit(new_leaf, sizeof(new_leaf));
+    if (desc) {
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        kfree(desc);
+    }
     crypto_free_shash(tfm);
     return ret;
 }
@@ -208,8 +254,10 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     u8 new_root[MERKLE_HASH_SIZE];
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
-    if (!container_leaf_hash)
+    if (!container_leaf_hash) {
+        pr_err("bpfima: extend_merkle_root: NULL container_leaf_hash\n");
         return -EINVAL;
+    }
 
     if (can_sleep)
     {
@@ -219,15 +267,18 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm))
     {
+        ret = PTR_ERR(tfm);
+        pr_err("bpfima: Failed to allocate sha256 hash for merkle root: %d\n", ret);
         if (can_sleep)
             mutex_unlock(&bpfima_merkle_root_mutex);
-        return PTR_ERR(tfm);
+        return ret;
     }
 
     desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm),
                    can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!desc)
     {
+        pr_err("bpfima: Failed to allocate shash descriptor for merkle root\n");
         crypto_free_shash(tfm);
         if (can_sleep)
             mutex_unlock(&bpfima_merkle_root_mutex);
@@ -236,8 +287,10 @@ int extend_merkle_root(const u8 *container_leaf_hash)
 
     desc->tfm = tfm;
     ret = crypto_shash_init(desc);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_init failed for merkle root: %d\n", ret);
         goto cleanup;
+    }
 
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
@@ -245,16 +298,22 @@ int extend_merkle_root(const u8 *container_leaf_hash)
 
     /* Extend: new_root = hash(old_root || container_leaf_hash) */
     ret = crypto_shash_update(desc, old_root, MERKLE_HASH_SIZE);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_update (old_root) failed: %d\n", ret);
         goto cleanup;
+    }
 
     ret = crypto_shash_update(desc, container_leaf_hash, MERKLE_HASH_SIZE);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_update (leaf_hash) failed: %d\n", ret);
         goto cleanup;
+    }
 
     ret = crypto_shash_final(desc, new_root);
-    if (ret < 0)
+    if (ret < 0) {
+        pr_err("bpfima: crypto_shash_final failed for merkle root: %d\n", ret);
         goto cleanup;
+    }
 
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
@@ -267,7 +326,12 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     ret = 0;
 
 cleanup:
-    kfree(desc);
+    memzero_explicit(old_root, sizeof(old_root));
+    memzero_explicit(new_root, sizeof(new_root));
+    if (desc) {
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        kfree(desc);
+    }
     crypto_free_shash(tfm);
     if (can_sleep)
         mutex_unlock(&bpfima_merkle_root_mutex);

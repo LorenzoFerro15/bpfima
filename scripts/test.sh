@@ -346,9 +346,9 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     
     # Verify the change was applied
     if grep -q "filter_flags: 0x00000007" /sys/kernel/security/bpfima/policy; then
-        log_info "  ✓ Verified: filter_flags is now 0x7"
+        log_info "     Verified: filter_flags is now 0x7"
     else
-        log_warn "  ✗ Failed to verify filter_flags update"
+        log_warn "     Failed to verify filter_flags update"
     fi
     
     # Change 2: Update action_flags
@@ -358,9 +358,9 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     
     # Verify the change was applied
     if grep -q "action_flags: 0x0000001f" /sys/kernel/security/bpfima/policy; then
-        log_info "  ✓ Verified: action_flags is now 0x1F"
+        log_info "     Verified: action_flags is now 0x1F"
     else
-        log_warn "  ✗ Failed to verify action_flags update"
+        log_warn "     Failed to verify action_flags update"
     fi
     
     # Change 3: Update min_file_size
@@ -370,9 +370,9 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     
     # Verify the change was applied
     if grep -q "min_file_size: 4096" /sys/kernel/security/bpfima/policy; then
-        log_info "  ✓ Verified: min_file_size is now 4096"
+        log_info "     Verified: min_file_size is now 4096"
     else
-        log_warn "  ✗ Failed to verify min_file_size update"
+        log_warn "     Failed to verify min_file_size update"
     fi
     
     # Change 4: Update log_level
@@ -382,9 +382,9 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     
     # Verify the change was applied
     if grep -q "log_level: 3" /sys/kernel/security/bpfima/policy; then
-        log_info "  ✓ Verified: log_level is now 3"
+        log_info "     Verified: log_level is now 3"
     else
-        log_warn "  ✗ Failed to verify log_level update"
+        log_warn "     Failed to verify log_level update"
     fi
     
     # Display policy changes
@@ -536,9 +536,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
     
     # Validate we tracked the expected number of containers
     if [ "$CONTAINER_COUNT" -ge 3 ]; then
-        log_info "  ✓ Expected number of containers tracked (3 or more)"
+        log_info "     Expected number of containers tracked (3 or more)"
     else
-        log_warn "  ✗ Expected at least 3 containers, found $CONTAINER_COUNT"
+        log_warn "     Expected at least 3 containers, found $CONTAINER_COUNT"
     fi
     
     if [ "$VERBOSE" -eq 1 ]; then
@@ -589,9 +589,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             
             # Verify the change
             if grep -q "filter_flags: 0x00000003" "$POLICY_FILE"; then
-                log_info "  ✓ Verified: namespace filter_flags is now 0x3"
+                log_info "     Verified: namespace filter_flags is now 0x3"
             else
-                log_warn "  ✗ Failed to verify namespace filter_flags update"
+                log_warn "     Failed to verify namespace filter_flags update"
             fi
             
             # Change 2: Update action_flags
@@ -601,9 +601,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             
             # Verify the change
             if grep -q "action_flags: 0x0000003e" "$POLICY_FILE"; then
-                log_info "  ✓ Verified: namespace action_flags is now 0x3E"
+                log_info "     Verified: namespace action_flags is now 0x3E"
             else
-                log_warn "  ✗ Failed to verify namespace action_flags update"
+                log_warn "     Failed to verify namespace action_flags update"
             fi
             
             # Change 3: Update min_file_size
@@ -613,9 +613,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             
             # Verify the change
             if grep -q "min_file_size: 8192" "$POLICY_FILE"; then
-                log_info "  ✓ Verified: namespace min_file_size is now 8192"
+                log_info "     Verified: namespace min_file_size is now 8192"
             else
-                log_warn "  ✗ Failed to verify namespace min_file_size update"
+                log_warn "     Failed to verify namespace min_file_size update"
             fi
             
             # Display policy changes
@@ -630,9 +630,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
                     
                     # Verify changes were recorded
                     if [ "$CHANGE_COUNT" -ge 3 ]; then
-                        log_info "  ✓ Expected number of policy changes tracked"
+                        log_info "     Expected number of policy changes tracked"
                     else
-                        log_warn "  ✗ Expected at least 3 policy changes, found $CHANGE_COUNT"
+                        log_warn "     Expected at least 3 policy changes, found $CHANGE_COUNT"
                     fi
                     log_info "  (use -v to see full details)"
                 fi
@@ -722,15 +722,15 @@ if [ -f "/sys/kernel/security/bpfima/policy_changes" ]; then
     
     # Validate we have recorded policy changes
     if [ "$GLOBAL_CHANGES" -ge 4 ]; then
-        log_info "  ✓ Expected number of global policy changes recorded"
+        log_info "     Expected number of global policy changes recorded"
     else
-        log_warn "  ✗ Expected at least 4 global policy changes, found $GLOBAL_CHANGES"
+        log_warn "     Expected at least 4 global policy changes, found $GLOBAL_CHANGES"
     fi
     
     # Verify policy change file contains expected fields
     if grep -q "filter_flags" /sys/kernel/security/bpfima/policy_changes && \
        grep -q "action_flags" /sys/kernel/security/bpfima/policy_changes; then
-        log_info "  ✓ Policy changes contain expected field names"
+        log_info "     Policy changes contain expected field names"
     fi
 else
     log_info "  Global policy changes: N/A"
@@ -748,9 +748,9 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
     
     # Validate we have namespace policy changes
     if [ "$TOTAL_NS_CHANGES" -ge 3 ]; then
-        log_info "  ✓ Expected namespace policy changes recorded"
+        log_info "     Expected namespace policy changes recorded"
     elif [ "$TOTAL_NS_CHANGES" -gt 0 ]; then
-        log_warn "  ✗ Expected at least 3 namespace policy changes, found $TOTAL_NS_CHANGES"
+        log_warn "     Expected at least 3 namespace policy changes, found $TOTAL_NS_CHANGES"
     fi
 else
     log_info "  Namespace policy changes: N/A"
@@ -765,22 +765,22 @@ if [ -f "/sys/kernel/security/bpfima/merkle_root_history" ]; then
     
     # Validate we have Merkle root extensions
     if [ "$MERKLE_ENTRIES" -gt 0 ]; then
-        log_info "  ✓ Merkle root history contains entries"
+        log_info "     Merkle root history contains entries"
         
         # Verify entries contain hash values (should be hex strings)
         if grep -qE '[0-9a-f]{64}' /sys/kernel/security/bpfima/merkle_root_history; then
-            log_info "  ✓ Merkle root entries contain valid hash values"
+            log_info "     Merkle root entries contain valid hash values"
         else
-            log_warn "  ✗ Merkle root entries don't contain expected hash format"
+            log_warn "     Merkle root entries don't contain expected hash format"
         fi
         
         # Verify entries contain container/namespace information
         if grep -q "container:" /sys/kernel/security/bpfima/merkle_root_history || \
            grep -q "namespace:" /sys/kernel/security/bpfima/merkle_root_history; then
-            log_info "  ✓ Merkle root entries contain container tracking info"
+            log_info "     Merkle root entries contain container tracking info"
         fi
     else
-        log_warn "  ✗ No Merkle root extensions recorded"
+        log_warn "     No Merkle root extensions recorded"
     fi
     
     if [ "$VERBOSE" -eq 1 ]; then
