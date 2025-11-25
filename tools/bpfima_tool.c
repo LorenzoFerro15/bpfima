@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <yaml.h>
@@ -179,32 +180,76 @@ static int set_rlimit(void)
 }
 
 /*
+ * Helper to copy file content
+ */
+static int copy_file(const char *src_path, const char *dst_path) {
+    FILE *src = fopen(src_path, "r");
+    if (!src) return -1;
+    
+    FILE *dst = fopen(dst_path, "a"); 
+    if (!dst) {
+        fclose(src);
+        return -1;
+    }
+    
+    char buffer[4096];
+    size_t bytes;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+        fwrite(buffer, 1, bytes, dst);
+    }
+    
+    fclose(src);
+    fclose(dst);
+    return 0;
+}
+
+/*
  * Dump all securityfs data to persistent files
  * This reads from kernel securityfs and appends new data to build/namespaces files
  */
 static void dump_securityfs_to_files(void) {
-    char cmd[1024];
+    struct stat st = {0};
     
-    // Dump global data to build/namespaces/root/
-    snprintf(cmd, sizeof(cmd), 
-             "mkdir -p build/namespaces/root && "
-             "cat /sys/kernel/security/bpfima/policy > build/namespaces/root/policy 2>/dev/null; "
-             "cat /sys/kernel/security/bpfima/policy_changes > build/namespaces/root/policy_changes 2>/dev/null; "
-             "cat /sys/kernel/security/bpfima/merkle_root_history >> build/namespaces/root/merkle_root_history 2>/dev/null");
-    system(cmd);
+    // Create root directory
+    if (stat("build/namespaces/root", &st) == -1) {
+        mkdir("build/namespaces/root", 0755);
+    }
+    
+    // Dump global data
+    copy_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
+    copy_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
+    copy_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
     
     // Dump namespace-specific data
-    snprintf(cmd, sizeof(cmd),
-             "for ns in /sys/kernel/security/bpfima/namespaces/*/; do "
-             "  if [ -d \"$ns\" ]; then "
-             "    nsid=$(basename \"$ns\"); "
-             "    mkdir -p \"build/namespaces/$nsid\"; "
-             "    cat \"$ns/measurements\" > \"build/namespaces/$nsid/measurements\" 2>/dev/null; "
-             "    cat \"$ns/policy\" > \"build/namespaces/$nsid/policy\" 2>/dev/null; "
-             "    cat \"$ns/policy_changes\" > \"build/namespaces/$nsid/policy_changes\" 2>/dev/null; "
-             "  fi; "
-             "done");
-    system(cmd);
+    DIR *dir = opendir("/sys/kernel/security/bpfima/namespaces");
+    if (dir) {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                char src_path[4096];
+                char dst_dir[1024];
+                char dst_path[4096];
+                
+                snprintf(dst_dir, sizeof(dst_dir), "build/namespaces/%s", entry->d_name);
+                if (stat(dst_dir, &st) == -1) {
+                    mkdir(dst_dir, 0755);
+                }
+                
+                snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/measurements", entry->d_name);
+                snprintf(dst_path, sizeof(dst_path), "%s/measurements", dst_dir);
+                copy_file(src_path, dst_path);
+                
+                snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy", entry->d_name);
+                snprintf(dst_path, sizeof(dst_path), "%s/policy", dst_dir);
+                copy_file(src_path, dst_path);
+                
+                snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy_changes", entry->d_name);
+                snprintf(dst_path, sizeof(dst_path), "%s/policy_changes", dst_dir);
+                copy_file(src_path, dst_path);
+            }
+        }
+        closedir(dir);
+    }
 }
 
 /**

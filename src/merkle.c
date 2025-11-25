@@ -695,7 +695,6 @@ int aggregate_merkle_entries(struct list_head *entries_to_aggregate, u8 *aggrega
         goto cleanup;
     }
 
-    /* Copy final aggregate to output */
     memcpy(aggregate_hash, current_val, MERKLE_HASH_SIZE);
     *count_out = count;
 
@@ -737,14 +736,18 @@ int trim_merkle_root_history(u32 max_size)
     current_count = atomic_read(&merkle_root_history_count);
     
     if (current_count <= max_size) {
-        /* Nothing to trim */
         return 0;
     }
 
-    /* Calculate how many to delete (oldest half) */
     to_delete = current_count / 2;
     if (to_delete == 0) {
-        to_delete = 1; /* Delete at least one */
+        to_delete = 1; 
+    }
+
+    aggregate_entry = kzalloc(sizeof(*aggregate_entry), GFP_KERNEL);
+    if (!aggregate_entry) {
+        pr_err("bpfima: Failed to allocate aggregate entry, aborting trim\n");
+        return -ENOMEM;
     }
 
     pr_info("bpfima: Trimming merkle history: current=%u, max=%u, deleting=%u\n",
@@ -768,26 +771,13 @@ int trim_merkle_root_history(u32 max_size)
     ret = aggregate_merkle_entries(&entries_to_delete, aggregate_hash, &aggregated_count);
     if (ret < 0) {
         pr_err("bpfima: Failed to aggregate deleted entries: %d\n", ret);
-        /* Free the deleted entries anyway */
-        list_for_each_entry_safe(entry, tmp, &entries_to_delete, list) {
-            list_del(&entry->list);
-            kfree(entry);
-        }
-        atomic_sub(deleted_count, &merkle_root_history_count);
+        
+        spin_lock_irqsave(&merkle_root_history_lock, flags);
+        list_splice(&entries_to_delete, &merkle_root_history);
+        spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+        
+        kfree(aggregate_entry);
         return ret;
-    }
-
-    /* Create aggregate entry */
-    aggregate_entry = kzalloc(sizeof(*aggregate_entry), GFP_KERNEL);
-    if (!aggregate_entry) {
-        pr_err("bpfima: Failed to allocate aggregate entry\n");
-        /* Free the deleted entries */
-        list_for_each_entry_safe(entry, tmp, &entries_to_delete, list) {
-            list_del(&entry->list);
-            kfree(entry);
-        }
-        atomic_sub(deleted_count, &merkle_root_history_count);
-        return -ENOMEM;
     }
 
     memcpy(aggregate_entry->value, aggregate_hash, MERKLE_HASH_SIZE);
@@ -795,7 +785,6 @@ int trim_merkle_root_history(u32 max_size)
     aggregate_entry->is_aggregate = true;
     aggregate_entry->aggregated_count = aggregated_count;
 
-    /* Insert aggregate at the head of the remaining list */
     spin_lock_irqsave(&merkle_root_history_lock, flags);
     list_add(&aggregate_entry->list, &merkle_root_history);
     spin_unlock_irqrestore(&merkle_root_history_lock, flags);
@@ -824,8 +813,6 @@ void cleanup_merkle_root_history(void)
     struct merkle_root_entry *entry, *tmp;
     unsigned long flags;
     int count = 0;
-
-    /* File writing removed - userspace should dump before unload */
 
     spin_lock_irqsave(&merkle_root_history_lock, flags);
     list_for_each_entry_safe(entry, tmp, &merkle_root_history, list)
