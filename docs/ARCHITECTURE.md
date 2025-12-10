@@ -314,11 +314,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int ret)
      - `policy-update <yaml>`: Update policy from config (TODO: YAML parsing)
      - `status`: Show system status
 
-**2. Legacy Tools** (still available)
-   - `loader.c`: Simple eBPF program loader
-   - `tools/policy_init.c`: Policy initialization
-
-**3. Test Infrastructure**
+**2. Test Infrastructure**
    - `scripts/test.sh`: Comprehensive integration tests
    - `scripts/test_utils.sh`: Polling and synchronization utilities
 
