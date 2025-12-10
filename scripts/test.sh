@@ -112,15 +112,13 @@ cleanup() {
         fi
     fi
     
-    # Also kill any remaining bpfima-tool or old loader processes
+    # Also kill any remaining bpfima-tool processes
     if pkill -TERM -f "$BUILD_DIR/bpfima-tool" 2>/dev/null; then
         log_info "Stopping additional bpfima-tool processes"
         sleep 0.5
         pkill -9 -f "$BUILD_DIR/bpfima-tool" 2>/dev/null || true
     fi
-    # Clean up old loader processes if any
-    pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null || true
-    
+     
     if [ -n "$CONTAINER_CLI" ]; then
         log_info "Removing test containers"
         for container in nginx redis postgres; do
@@ -185,7 +183,6 @@ log_info "Loading kernel module..."
 if lsmod | grep -q "^bpfima "; then
     log_info "Module already loaded, removing..."
     pkill -9 -f "$BUILD_DIR/bpfima-tool" 2>/dev/null || true
-    pkill -9 -f "$BUILD_DIR/loader" 2>/dev/null || true  # Clean up old loader too
     
     if ! wait_for_module_unload bpfima 2; then
         if ! rmmod -f bpfima 2>/dev/null; then
@@ -229,11 +226,25 @@ fi
 log_info "Starting eBPF program: $(basename $BPF_OBJECT)"
 
 # Use bpfima-tool instead of old loader
-"$BUILD_DIR/bpfima-tool" load "$BPF_OBJECT" -d &
-LOADER_PID=$!
+"$BUILD_DIR/bpfima-tool" load "$BPF_OBJECT" -d
 
-if ! wait_for_process $LOADER_PID 5; then
-    log_err "bpfima-tool process failed to start"
+# Wait for PID file
+PID_FILE="/var/run/bpfima.pid"
+for i in {1..50}; do
+    if [ -f "$PID_FILE" ]; then
+        break
+    fi
+    sleep 0.1
+done
+
+if [ ! -f "$PID_FILE" ]; then
+    log_err "PID file not created in time"
+    exit 1
+fi
+
+LOADER_PID=$(cat "$PID_FILE")
+if ! kill -0 "$LOADER_PID" 2>/dev/null; then
+    log_err "bpfima-tool process failed to start (PID: $LOADER_PID is dead)"
     exit 1
 fi
 log_info "eBPF program loaded (PID: $LOADER_PID)"
@@ -818,9 +829,6 @@ log_info "Test finished - press Ctrl+C to cleanup and exit"
 log_info "Monitoring mode active... (loader PID: $LOADER_PID)"
 
 # Wait indefinitely until interrupted
-if [ -n "$LOADER_PID" ] && kill -0 "$LOADER_PID" 2>/dev/null; then
-    wait "$LOADER_PID" 2>/dev/null || true
-else
-    log_warn "Loader process not running"
-    sleep infinity
-fi
+while true; do
+    sleep 1
+done

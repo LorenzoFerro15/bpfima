@@ -11,8 +11,10 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <yaml.h>
+#include <fcntl.h>
 
 #include "include/bpfima_policy_user.h"
+#include "include/bpfima_policy_defaults.h"
 #include "include/bpfima_event.h"
 #include "yaml_parser.h"
 
@@ -40,6 +42,67 @@ static void sig_handler(int signo)
 }
 
 /**
+ * @brief Daemonize the process
+ */
+static int daemonize(void)
+{
+    pid_t pid;
+
+    /* Fork off the parent process */
+    pid = fork();
+
+    /* An error occurred */
+    if (pid < 0)
+        return -1;
+
+    /* Success: Let the parent terminate */
+    if (pid > 0)
+        exit(EXIT_SUCCESS);
+
+    /* On success: The child process becomes session leader */
+    if (setsid() < 0)
+        return -1;
+
+    /* Catch, ignore and handle signals */
+    signal(SIGCHLD, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+
+    /* Fork off for the second time */
+    pid = fork();
+
+    /* An error occurred */
+    if (pid < 0)
+        return -1;
+
+    /* Success: Let the parent terminate */
+    if (pid > 0)
+        exit(EXIT_SUCCESS);
+
+    /* Set new file permissions */
+    umask(0);
+
+    /* Change the working directory to the root directory */
+    /* or another appropriated directory */
+    if (chdir("/") < 0) {
+        // Log failure but continue if possible
+    }
+
+    /* Close all open file descriptors */
+    int x;
+    for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
+    {
+        close(x);
+    }
+    
+    // Redirect stdin/stdout/stderr to /dev/null
+    open("/dev/null", O_RDWR);
+    dup(0);
+    dup(0);
+
+    return 0;
+}
+
+/**
  * @brief Write PID to file for tracking
  */
 static int write_pid_file(void)
@@ -47,7 +110,8 @@ static int write_pid_file(void)
     FILE *fp = fopen(PID_FILE, "w");
     if (!fp)
     {
-        fprintf(stderr, "Warning: Could not create PID file: %s\n", strerror(errno));
+        // Since we closed stderr/stdout in daemonize, we can't print there easily
+        // But for now let's hope it works or log to a file if we had logging
         return -1;
     }
     fprintf(fp, "%d\n", getpid());
@@ -182,30 +246,68 @@ static int set_rlimit(void)
 /*
  * Helper to copy file content
  */
-static int copy_file(const char *src_path, const char *dst_path) {
-    FILE *src = fopen(src_path, "r");
-    if (!src) return -1;
+/*
+ * Structure to track open file definitions for monitoring
+ */
+struct monitored_file {
+    char src_path[512];
+    char dst_path[512];
+    int fd;
+    struct monitored_file *next;
+};
+
+static struct monitored_file *g_monitored_files = NULL;
+
+/*
+ * Helper to get or create a monitored file entry
+ */
+static struct monitored_file *get_monitored_file(const char *src_path, const char *dst_path) {
+    struct monitored_file *mf = g_monitored_files;
+    while (mf) {
+        if (strcmp(mf->src_path, src_path) == 0) {
+            return mf;
+        }
+        mf = mf->next;
+    }
     
-    FILE *dst = fopen(dst_path, "a"); 
-    if (!dst) {
-        fclose(src);
-        return -1;
+    // Create new entry
+    mf = malloc(sizeof(struct monitored_file));
+    if (!mf) return NULL;
+    
+    snprintf(mf->src_path, sizeof(mf->src_path), "%s", src_path);
+    snprintf(mf->dst_path, sizeof(mf->dst_path), "%s", dst_path);
+    mf->fd = -1;
+    mf->next = g_monitored_files;
+    g_monitored_files = mf;
+    
+    return mf;
+}
+
+/*
+ * Helper to append new content from source FD to destination file
+ */
+static void append_new_content(struct monitored_file *mf) {
+    if (mf->fd < 0) {
+        mf->fd = open(mf->src_path, O_RDONLY);
+        if (mf->fd < 0) return; // File might not exist yet
     }
     
     char buffer[4096];
-    size_t bytes;
-    while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
-        fwrite(buffer, 1, bytes, dst);
-    }
+    ssize_t bytes;
     
-    fclose(src);
-    fclose(dst);
-    return 0;
+    // Read from current position
+    while ((bytes = read(mf->fd, buffer, sizeof(buffer))) > 0) {
+        FILE *dst = fopen(mf->dst_path, "a");
+        if (dst) {
+            fwrite(buffer, 1, bytes, dst);
+            fclose(dst);
+        }
+    }
 }
 
 /*
  * Dump all securityfs data to persistent files
- * This reads from kernel securityfs and appends new data to build/namespaces files
+ * This maintains persistent FDs to read only new data
  */
 static void dump_securityfs_to_files(void) {
     struct stat st = {0};
@@ -215,10 +317,17 @@ static void dump_securityfs_to_files(void) {
         mkdir("build/namespaces/root", 0755);
     }
     
-    // Dump global data
-    copy_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
-    copy_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
-    copy_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
+    // Monitor global files
+    struct monitored_file *mf;
+    
+    mf = get_monitored_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
+    if (mf) append_new_content(mf);
+    
+    mf = get_monitored_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
+    if (mf) append_new_content(mf);
+    
+    mf = get_monitored_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
+    if (mf) append_new_content(mf);
     
     // Dump namespace-specific data
     DIR *dir = opendir("/sys/kernel/security/bpfima/namespaces");
@@ -226,9 +335,9 @@ static void dump_securityfs_to_files(void) {
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
             if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-                char src_path[4096];
-                char dst_dir[1024];
-                char dst_path[4096];
+                char src_path[1024];
+                char dst_dir[512];
+                char dst_path[1024];
                 
                 snprintf(dst_dir, sizeof(dst_dir), "build/namespaces/%s", entry->d_name);
                 if (stat(dst_dir, &st) == -1) {
@@ -237,15 +346,18 @@ static void dump_securityfs_to_files(void) {
                 
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/measurements", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/measurements", dst_dir);
-                copy_file(src_path, dst_path);
+                mf = get_monitored_file(src_path, dst_path);
+                if (mf) append_new_content(mf);
                 
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy", dst_dir);
-                copy_file(src_path, dst_path);
+                mf = get_monitored_file(src_path, dst_path);
+                if (mf) append_new_content(mf);
                 
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy_changes", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy_changes", dst_dir);
-                copy_file(src_path, dst_path);
+                mf = get_monitored_file(src_path, dst_path);
+                if (mf) append_new_content(mf);
             }
         }
         closedir(dir);
@@ -360,10 +472,15 @@ static int cmd_load(const char *filename, bool daemon_mode)
 
     if (daemon_mode)
     {
-        write_pid_file();
-        printf("\nRunning in background (PID: %d)\n", getpid());
-        printf("To stop: sudo bpfima-tool unload\n");
+        printf("\nStarting daemon...\n");
+        if (daemonize() < 0) {
+            fprintf(stderr, "Error: Failed to daemonize\n");
+            goto cleanup;
+        }
 
+        // We are now in the child process
+        write_pid_file();
+        
         signal(SIGINT, sig_handler);
         signal(SIGTERM, sig_handler);
 
@@ -378,7 +495,6 @@ static int cmd_load(const char *filename, bool daemon_mode)
         printf("\nShutting down...\n");
         
         // Final dump before exit
-        printf("Performing final securityfs dump...\n");
         dump_securityfs_to_files();
     }
 
@@ -480,18 +596,8 @@ static int cmd_policy_init(void)
     if (open_policy_maps(&policy_fd, &cgroup_fd, &path_fd, &hook_fd) < 0)
         return 1;
 
-    struct bpfima_policy_config policy = {
-        .enabled = 1,
-        .filter_flags = 0,
-        .action_flags = POLICY_ACTION_EXTEND_TPM |
-                        POLICY_ACTION_LOG_SECURITYFS |
-                        POLICY_ACTION_LOG_KERNEL |
-                        POLICY_ACTION_TRACK_CONTAINER |
-                        POLICY_ACTION_BUILD_DEPS,
-        .min_file_size = 0,
-        .max_path_depth = 32,
-        .log_level = 2,
-    };
+    struct bpfima_policy_config policy = {0};
+    bpfima_init_default_config(&policy);
 
     key = 0;
     ret = bpf_map_update_elem(policy_fd, &key, &policy, BPF_ANY);
@@ -502,54 +608,37 @@ static int cmd_policy_init(void)
     }
     printf("  Main policy configuration\n");
 
-    const char *cgroup_patterns[] = {"/", "init.scope"};
-    for (int i = 0; i < 2; i++)
-    {
-        struct bpfima_pattern_entry pattern = {0};
-        strncpy(pattern.pattern, cgroup_patterns[i], MAX_PATTERN_LEN - 1);
-        pattern.enabled = 1;
-        pattern.match_type = 0;
+    struct bpfima_pattern_entry cgroup_patterns[MAX_IGNORE_PATTERNS] = {0};
+    bpfima_init_default_cgroup_patterns(cgroup_patterns, MAX_IGNORE_PATTERNS);
 
+    for (int i = 0; i < MAX_IGNORE_PATTERNS; i++)
+    {
         key = i;
-        ret = bpf_map_update_elem(cgroup_fd, &key, &pattern, BPF_ANY);
-        if (ret < 0)
+        if (bpf_map_update_elem(cgroup_fd, &key, &cgroup_patterns[i], BPF_ANY) < 0)
         {
-            fprintf(stderr, "Failed to update cgroup pattern: %s\n", strerror(errno));
-            goto cleanup;
+             if (cgroup_patterns[i].enabled) {
+                 fprintf(stderr, "Failed to update cgroup pattern %d: %s\n", i, strerror(errno));
+                 goto cleanup;
+             }
         }
     }
+    printf("  Cgroup patterns (defaults set)\n");
 
-    struct bpfima_pattern_entry empty = {0};
-    for (int i = 2; i < MAX_IGNORE_PATTERNS; i++)
+    struct bpfima_pattern_entry path_patterns[MAX_PATH_FILTERS] = {0};
+    bpfima_init_default_path_patterns(path_patterns, MAX_PATH_FILTERS);
+
+    for (int i = 0; i < MAX_PATH_FILTERS; i++)
     {
-        key = i;
-        bpf_map_update_elem(cgroup_fd, &key, &empty, BPF_ANY);
+         key = i;
+         if (bpf_map_update_elem(path_fd, &key, &path_patterns[i], BPF_ANY) < 0)
+         {
+              if (path_patterns[i].enabled) {
+                  fprintf(stderr, "Failed to update path pattern %d: %s\n", i, strerror(errno));
+                  goto cleanup;
+              }
+         }
     }
-    printf("  Cgroup patterns (2 patterns)\n");
-
-    const char *path_patterns[] = {"/proc/", "/sys/"};
-    for (int i = 0; i < 2; i++)
-    {
-        struct bpfima_pattern_entry pattern = {0};
-        strncpy(pattern.pattern, path_patterns[i], MAX_PATTERN_LEN - 1);
-        pattern.enabled = 1;
-        pattern.match_type = 1;
-
-        key = i;
-        ret = bpf_map_update_elem(path_fd, &key, &pattern, BPF_ANY);
-        if (ret < 0)
-        {
-            fprintf(stderr, "Failed to update path pattern: %s\n", strerror(errno));
-            goto cleanup;
-        }
-    }
-
-    for (int i = 2; i < MAX_PATH_FILTERS; i++)
-    {
-        key = i;
-        bpf_map_update_elem(path_fd, &key, &empty, BPF_ANY);
-    }
-    printf("  Path patterns (2 patterns)\n");
+    printf("  Path patterns (defaults set)\n");
 
     for (int i = 0; i < HOOK_MAX; i++)
     {

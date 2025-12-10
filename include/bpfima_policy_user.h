@@ -111,4 +111,10 @@ enum bpfima_hook_id
 #define DEFAULT_MAX_PATH_DEPTH 32
 #define DEFAULT_LOG_LEVEL 2 
 
+/* Default Patterns - must match bpfima_policy.h */
+#define DEFAULT_CGROUP_PATTERN_1 "/"
+#define DEFAULT_CGROUP_PATTERN_2 "init.scope"
+#define DEFAULT_PATH_PATTERN_1 "/proc/"
+#define DEFAULT_PATH_PATTERN_2 "/sys/" 
+
 #endif /* BPFIMA_POLICY_USER_H */

@@ -3,16 +3,7 @@
 #include "bpfima_merkle.h"
 #include "bpfima_container.h"
 #include "bpfima_measurements.h"
-
-static const char *default_cgroup_patterns[] = {
-    "/",
-    "init.scope",
-};
-
-static const char *default_path_patterns[] = {
-    "/proc/",
-    "/sys/",
-};
+#include "bpfima_policy_defaults.h"
 
 static struct bpfima_policy_config global_policy;
 static struct bpfima_pattern_entry cgroup_patterns[MAX_IGNORE_PATTERNS];
@@ -41,30 +32,15 @@ int bpfima_policy_init(void)
     spin_lock_irqsave(&policy_lock, flags);
 
     memset(&global_policy, 0, sizeof(global_policy));
-    global_policy.enabled = 1;
-    global_policy.filter_flags = DEFAULT_FILTER_FLAGS;
-    global_policy.action_flags = DEFAULT_ACTION_FLAGS;
-    global_policy.min_file_size = DEFAULT_MIN_FILE_SIZE;
-    global_policy.max_path_depth = DEFAULT_MAX_PATH_DEPTH;
-    global_policy.log_level = DEFAULT_LOG_LEVEL;
+    bpfima_init_default_config(&global_policy);
     global_policy.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
     global_policy.merkle_history_scope = DEFAULT_MERKLE_HISTORY_SCOPE;
 
     memset(cgroup_patterns, 0, sizeof(cgroup_patterns));
-    for (i = 0; i < 2 && i < MAX_IGNORE_PATTERNS; i++)
-    {
-        strncpy(cgroup_patterns[i].pattern, default_cgroup_patterns[i], MAX_PATTERN_LEN - 1);
-        cgroup_patterns[i].enabled = 1;
-        cgroup_patterns[i].match_type = 0;
-    }
+    bpfima_init_default_cgroup_patterns(cgroup_patterns, MAX_IGNORE_PATTERNS);
 
     memset(path_patterns, 0, sizeof(path_patterns));
-    for (i = 0; i < 2 && i < MAX_PATH_FILTERS; i++)
-    {
-        strncpy(path_patterns[i].pattern, default_path_patterns[i], MAX_PATTERN_LEN - 1);
-        path_patterns[i].enabled = 1;
-        path_patterns[i].match_type = 1;
-    }
+    bpfima_init_default_path_patterns(path_patterns, MAX_PATH_FILTERS);
 
     memset(hook_configs, 0, sizeof(hook_configs));
     for (i = 0; i < HOOK_MAX; i++)
@@ -184,8 +160,7 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to calculate global policy change hash: %d\n", ret);
-        kfree(change_entry);
-        return ret;
+        goto cleanup_free;
     }
 
     spin_lock_irqsave(&global_policy_history_lock, flags);
@@ -211,13 +186,7 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to calculate measurement hash for global policy update: %d\n", ret);
-        
-        spin_lock_irqsave(&global_policy_history_lock, flags);
-        list_del(&change_entry->list);
-        spin_unlock_irqrestore(&global_policy_history_lock, flags);
-        
-        kfree(change_entry);
-        return ret;
+        goto cleanup_list;
     }
 
     ret = add_merkle_root_history_entry(measurement_digest, "global_policy");
@@ -230,18 +199,21 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to extend Merkle root with global policy change: %d\n", ret);
-        
-        spin_lock_irqsave(&global_policy_history_lock, flags);
-        list_del(&change_entry->list);
-        spin_unlock_irqrestore(&global_policy_history_lock, flags);
-        
-        kfree(change_entry);
-        return ret;
+        goto cleanup_list;
     }
 
     pr_info("bpfima: Global policy change recorded and Merkle root extended\n");
 
     return 0;
+
+cleanup_list:
+    spin_lock_irqsave(&global_policy_history_lock, flags);
+    list_del(&change_entry->list);
+    spin_unlock_irqrestore(&global_policy_history_lock, flags);
+
+cleanup_free:
+    kfree(change_entry);
+    return ret;
 }
 
 /**
@@ -346,7 +318,7 @@ int bpfima_policy_add_cgroup_pattern(const char *pattern)
         return -ENOMEM;
     }
 
-    strncpy(cgroup_patterns[empty_slot].pattern, pattern, MAX_PATTERN_LEN - 1);
+    strscpy(cgroup_patterns[empty_slot].pattern, pattern, MAX_PATTERN_LEN);
     cgroup_patterns[empty_slot].enabled = 1;
     cgroup_patterns[empty_slot].match_type = 0;
 
@@ -393,7 +365,7 @@ int bpfima_policy_add_path_pattern(const char *pattern)
         return -ENOMEM;
     }
 
-    strncpy(path_patterns[empty_slot].pattern, pattern, MAX_PATTERN_LEN - 1);
+    strscpy(path_patterns[empty_slot].pattern, pattern, MAX_PATTERN_LEN);
     path_patterns[empty_slot].enabled = 1;
     path_patterns[empty_slot].match_type = 1;
 

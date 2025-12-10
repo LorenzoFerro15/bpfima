@@ -110,6 +110,12 @@ enum bpfima_hook_id {
 #define DEFAULT_MAX_PATH_DEPTH 32
 #define DEFAULT_LOG_LEVEL 2  /* Info level */
 
+/* Default Patterns */
+#define DEFAULT_CGROUP_PATTERN_1 "/"
+#define DEFAULT_CGROUP_PATTERN_2 "init.scope"
+#define DEFAULT_PATH_PATTERN_1 "/proc/"
+#define DEFAULT_PATH_PATTERN_2 "/sys/"
+
 /* Circular buffer defaults */
 #define DEFAULT_MERKLE_HISTORY_MAX_SIZE 1000
 #define MERKLE_HISTORY_SCOPE_GLOBAL 0

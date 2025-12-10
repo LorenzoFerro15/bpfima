@@ -113,8 +113,7 @@ int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_s
         return -ENOMEM;
     
     memcpy(new_entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
-    strncpy(new_entry->namespace_id, ns_to_store, CONTAINER_ID_MAX_LEN - 1);
-    new_entry->namespace_id[CONTAINER_ID_MAX_LEN - 1] = '\0';
+    strscpy(new_entry->namespace_id, ns_to_store, CONTAINER_ID_MAX_LEN);
     
     /* Use first 4 bytes of SHA256 as hash key */
     hash_key = *(u32*)hash_value;
