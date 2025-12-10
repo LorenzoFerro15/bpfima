@@ -11,6 +11,25 @@ typedef unsigned long long u64;
 typedef int pid_t;
 typedef unsigned char u8;
 
+#define ATTR_MODE (1 << 0)
+#define ATTR_UID (1 << 1)
+#define ATTR_GID (1 << 2)
+#define ATTR_SIZE (1 << 3)
+#define ATTR_ATIME (1 << 4)
+#define ATTR_MTIME (1 << 5)
+#define ATTR_CTIME (1 << 6)
+#define ATTR_ATIME_SET (1 << 7)
+#define ATTR_MTIME_SET (1 << 8)
+#define ATTR_FORCE (1 << 9) /* Not a change, but a change it */
+#define ATTR_KILL_SUID (1 << 11)
+#define ATTR_KILL_SGID (1 << 12)
+#define ATTR_FILE (1 << 13)
+#define ATTR_KILL_PRIV (1 << 14)
+#define ATTR_OPEN (1 << 15) /* Truncating from open(O_TRUNC) */
+#define ATTR_TIMES_SET (1 << 16)
+#define ATTR_TOUCH (1 << 17)
+#define ATTR_DELEG (1 << 18)
+
 /* Per-CPU scratch buffer to avoid large stack allocations and heavy inlining
  * which can blow up the verifier. Value contains a small buffer and a length.
  */
@@ -269,6 +288,70 @@ static __always_inline void print_hex_digest(const u8 *bytes, int len)
     if (r > 0) {
         bpf_printk("%s\n", buf);
     }
+}
+
+
+static __always_inline void append_attr(char *buf, int buf_max,
+                                        int *off, const char *fmt, __u64 val)
+{
+    if (!buf || !off || *off >= buf_max)
+        return;
+
+    __u64 args[1];
+    args[0] = val;   // wrap the scalar in an array
+
+    int n = bpf_snprintf(buf + *off,
+                         buf_max - *off,
+                         fmt,
+                         args,   // pointer to array of __u64
+                         1);     // number of arguments
+
+    if (n > 0)
+        *off += n;
+}
+
+
+static __always_inline int build_attributes(char *attrs, int attrs_max, struct iattr *attr)
+{
+    int off = 0;
+
+    if (!attr || !attrs || attrs_max <= 0)
+        return 0;
+
+    if (attr->ia_valid & ATTR_MODE)
+        append_attr(attrs, 64, &off, "mode=%llu,", (__u64)attr->ia_mode);
+
+    if (attr->ia_valid & ATTR_UID)
+        append_attr(attrs, 64, &off, "uid=%llu,", (__u64)attr->ia_uid.val);
+
+    if (attr->ia_valid & ATTR_GID)
+        append_attr(attrs, 64, &off, "gid=%llu,", (__u64)attr->ia_gid.val);
+
+    if (attr->ia_valid & ATTR_SIZE)
+        append_attr(attrs, 64, &off, "size=%llu,", (__u64)attr->ia_size);
+
+    if (attr->ia_valid & ATTR_OPEN)
+        append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
+
+    /* KILL_PRIV */
+    if (attr->ia_valid & ATTR_KILL_PRIV)
+        append_attr(attrs, attrs_max, &off, "kill_priv=1,", 0);
+
+    /* KILL_SUID */
+    if (attr->ia_valid & ATTR_KILL_SUID)
+        append_attr(attrs, attrs_max, &off, "kill_suid=1,", 0);
+
+    /* KILL_SGID */
+    if (attr->ia_valid & ATTR_KILL_SGID)
+        append_attr(attrs, attrs_max, &off, "kill_sgid=1,", 0);
+
+    /* Trim trailing comma */
+    if (off > 0 && attrs[off - 1] == ',')
+        attrs[off - 1] = '\0';
+    else if (off < attrs_max)
+        attrs[off] = '\0';
+
+    return off;
 }
 
 #endif /* UTILS_H */
