@@ -3,30 +3,17 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-#define AF_INET 2
-#define MAX_DATA_BUF_SIZE 64
-
 /* Helper for byte order conversion */
 #define bpf_ntohs(x) __builtin_bswap16(x)
 
 /*
  * LSM hook: socket_connect
  * 
- * Socket Connection Monitoring with IMA Measurement Flow:
- * This hook tracks socket connection attempts with the following flow:
+ * Socket Connection Monitoring with IMA Measurement Flow
  * 
- * 1. Policy Check: Verify if hook is enabled and should process
- * 2. Detection: Extract socket and address information
- * 3. Container Context: Identify container context from cgroup
- * 4. Policy Filter: Check if cgroup should be ignored based on policy
- * 5. Dependencies: Build dependency chain from parent processes (if enabled in policy)
- * 6. Hash Calculation: Compute hash of connection data (source/dest addresses)
- * 7. Measurement Extension: Call bpfima_measurement_extend with connection info
- * 
- * Params:
- * - sock: Pointer to the socket structure
- * - address: Pointer to the sockaddr structure containing remote address
- * - addrlen: Length of the address structure
+ * @param sock: Pointer to the socket structure
+ * @param address: Pointer to the sockaddr structure containing remote address
+ * @param addrlen: Length of the address structure
  */
 SEC("lsm/socket_connect")
 int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
@@ -39,18 +26,17 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     }
 
-    /* Use first half of scratch buffer for additional data, second half for deps */
     char *deps = scratch->buf;
-    int deps_max = 0, deps_actual = 0;
     char cgroup_name[64] = {0};
+    int deps_max = sizeof(scratch->buf), deps_actual = 0;
 
     if (!address) {
         bpf_printk("bpf_socket_connect: No address provided.\n");
         return 0;
     }
 
-    if (address->sa_family != AF_INET) {
-        return 0; /* Not AF_INET (for now, then add IPv6)*/
+    if (address->sa_family != AF_INET && address->sa_family != AF_UNIX) {
+        return 0;
     }
 
     if (!bpfima_should_process(HOOK_LSM_SOCKET_CONNECT)) {
@@ -85,11 +71,9 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     }
 
-
     // Get source info
-    struct sock_common sk_common = BPF_CORE_READ(sk, __sk_common);
-    u32 saddr = sk_common.skc_rcv_saddr;
-    u16 sport = sk_common.skc_num;
+    u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 
     // Get destination info
     struct sockaddr_in *address_in = (struct sockaddr_in *)address;
@@ -122,6 +106,48 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         bpf_printk("  Additional data (%ld chars): %s\n", buffer_len, additional_data);
     }
 
+    /* --------- Getting dependencies info --------- */
+    char socket_path[MAX_PATH_LEN] = {0};    // For UNIX socket path the max is 108 chars
+
+    if (address->sa_family == AF_INET) {
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+        if (!task) {
+            bpf_printk("bpf_socket_connect: Failed to get current task.\n");
+            return 0;
+        }
+
+        // 
+        struct file *exe_file = bpf_get_task_exe_file(task);
+        if (!exe_file) return 0;
+
+        len = bpf_d_path(&exe_file->f_path, socket_path, sizeof(socket_path));
+        if (!policy || policy->log_level >= 2) {
+            bpf_printk("INET Connect Target: %s\n", socket_path);
+        }
+
+        bpf_put_file(exe_file);
+    } else if (address->sa_family == AF_UNIX) { // AF_UNIX
+        struct sockaddr_un *un_addr = (struct sockaddr_un *)address;
+
+        /* Read the path from the address structure */
+        /* Note:
+         *    - first 2 bytes are the address family ID (sun_family field, type: unsigned short)
+         *    - 0x7F mask to get an upper bound on path length, so the verifier does not complain
+         */
+        int path_len = (addrlen - sizeof(unsigned short)) & PATH_LEN_MASK;
+        if (path_len > 0 && path_len < sizeof(socket_path)) {
+            bpf_probe_read_kernel(socket_path, path_len, un_addr->sun_path);
+            socket_path[path_len] = '\0';
+            
+            if (!policy || policy->log_level >= 2) {
+                bpf_printk("UNIX Connect Target: %s\n", socket_path);
+            }
+        }
+    } else {
+        bpf_printk("bpf_socket_connect: Unsupported address family: %d\n", address->sa_family);
+        return 0;
+    }
+
     /* Get container context */
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
     struct css_set *cgroups = BPF_CORE_READ(cur, cgroups);
@@ -135,6 +161,10 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
                     bpf_printk(" cgroup_name: %s\n", cgroup_name);
                 }
             }
+        }
+    } else {
+        if (!policy || policy->log_level >= 2) {
+            bpf_printk(" No cgroups found for current task.\n");
         }
     }
 
@@ -165,10 +195,10 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     /* Build dependencies if enabled in policy */
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
-        deps_actual = build_dependencies(deps, deps_max, comm, cur);
+        deps_actual = build_dependencies(deps, deps_max, socket_path, cur);
         
         if (!policy || policy->log_level >= 2) {
-            bpf_printk(" dependencies: %s\n", deps);
+            bpf_printk(" dependencies -> %s\n", deps);
         }
     }
 
