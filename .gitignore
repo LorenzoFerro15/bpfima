@@ -1,29 +1,12 @@
-# Compiled kernel modules
-*.ko
-*.mod
-*.mod.c
-*.mod.o
+# Build directory - contains all compiled objects and executables
+build/
 
-
-vmlinux.h
-
-# Object files
-*.o
-
-# Kernel build system files
+# Kernel build system files (in case they end up in root)
 *.cmd
 .tmp_versions/
-modules.order
-Module.symvers
 
-# Compiled executables
-loader
-loader_simple
-loader_tmp
-
-# Build directories
-build/
-.tmp_versions/
+vmlinux.h
+log.txt
 
 # Editor temporary files
 *~
@@ -31,6 +14,7 @@ build/
 *.swo
 .*.swp
 .*.swo
+*.patch
 
 # IDE files
 .vscode/
