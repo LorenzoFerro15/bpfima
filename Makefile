@@ -1,4 +1,9 @@
+# Main module (now using shared components)
 obj-m += bpfima.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/policy_manager.o src/policy_namespace.o src/kfuncs_policy.o src/policy_securityfs.o
+
+# Add include directory for modular headers
+ccflags-y += -I$(src)/include
 
 KBUILD_CFLAGS += -g -O2
 # Use BTF from sysfs if available
@@ -11,36 +16,53 @@ export PAHOLE_FLAGS=--btf_gen_floats
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 BPF_TARGET := bpf
-
+KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
 BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
 
-CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror $(BPF_HEADERS)
+CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_x86 $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
-LIBS := -lbpf -lelf -lz
+LIBS := -lbpf -lelf -lz -lyaml
 
-# Our extra eBPF object (placed in current directory)
-LSM_OBJ := lsm_mmap_file.o
+# Build directory for all output files
+BUILD_DIR := build
 
-all: modules kfunc_tpm.o loader_tpm $(LSM_OBJ)
+# eBPF source files (auto-discover from hooks/lsm/)
+BPF_SRCS := $(wildcard hooks/lsm/*.c)
+BPF_OBJS := $(patsubst hooks/lsm/%.c,$(BUILD_DIR)/%.o,$(BPF_SRCS))
+
+# Userspace tools
+BPFIMA_TOOL := $(BUILD_DIR)/bpfima-tool
+
+all: $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	@mkdir -p $(BUILD_DIR)
+	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f .*.cmd .*.o $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f src/.*.cmd $(BUILD_DIR)/ 2>/dev/null || true
+	@rm -rf .tmp_versions 2>/dev/null || true
 
-kfunc_tpm.o: kfunc_tpm.c
+# Unified management tool (replaces old loader + policy_init)
+$(BPFIMA_TOOL): tools/bpfima_tool.c tools/yaml_parser.c | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -I. -o $@ tools/bpfima_tool.c tools/yaml_parser.c $(LIBS)
+
+# Generic rule for compiling eBPF programs from hooks/lsm/
+$(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
-
-loader_tpm: loader_tpm.c
-	$(CC) $(USER_CFLAGS) -o $@ $< $(LIBS)
-
-# Compile hooks/lsm/lsm_mmap_file.c but output to current dir
-$(LSM_OBJ): hooks/lsm/lsm_mmap_file.c
-	$(CLANG) $(CFLAGS) -c $< -o $(LSM_OBJ)
+	@echo "Built eBPF object: $@"
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm -f kfunc_tpm.o loader_tpm $(LSM_OBJ)
+	rm -rf $(BUILD_DIR)
+	rm -f .*.cmd .*.o 2>/dev/null || true
+	rm -rf .tmp_versions 2>/dev/null || true
 
 .PHONY: all modules clean
