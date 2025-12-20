@@ -331,7 +331,7 @@ static __always_inline int build_attributes(char *attrs, int attrs_max, struct i
         append_attr(attrs, 64, &off, "size=%llu,", (__u64)attr->ia_size);
 
     if (attr->ia_valid & ATTR_OPEN)
-        append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
+//        append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
 
     /* KILL_PRIV */
     if (attr->ia_valid & ATTR_KILL_PRIV)

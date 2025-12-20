@@ -47,15 +47,60 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     int deps_max = sizeof(stack_dependencies_buf);
     char cgroup_name[64] = {0};
     
+    struct css_set *cgroups;
+    struct cgroup *dfl;
+    struct kernfs_node *kn;
+
     if (!bprm) {
         return 0;
     }
+
+    struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
+    
+
+    /* Initialize scratch buffers early for debug */
+    bpf_get_current_comm(comm, sizeof(comm));
+    u32 pid_val = bpf_get_current_pid_tgid() >> 32;
+    char filename_debug[64] = {0};
+    bpf_probe_read_kernel_str(filename_debug, sizeof(filename_debug), bprm->filename);
+    
+    /* UNCONDITIONAL DEBUG */
+    bpf_printk("Check: PID=%u comm=%s file=%s\n", pid_val, comm, filename_debug);
 
     if (!bpfima_should_process(HOOK_LSM_BPRM_CHECK_SECURITY)) {
         return 0; 
     }
 
-    struct bpfima_policy_config *policy = bpfima_get_policy();
+
+    
+    /* Get cgroup name first to determine policy context */
+    cgroups = BPF_CORE_READ(cur, cgroups);
+    if (cgroups) {
+        dfl = BPF_CORE_READ(cgroups, dfl_cgrp);
+        if (dfl) {
+            kn = BPF_CORE_READ(dfl, kn);
+            if (kn) {
+                bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
+            }
+        }
+    }
+
+    struct bpfima_policy_config *policy = NULL;
+    struct bpfima_policy_config ns_policy = {0}; /* Stack allocation for namespace policy */
+    
+    /* Try to get namespace-specific policy first */
+    if (cgroup_name[0] != '\0') {
+        if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
+            policy = &ns_policy;
+            /* Debug print if needed implies policy was found */
+        }
+    }
+
+    /* Fallback to global policy if no namespace policy found */
+    if (!policy) {
+        policy = bpfima_get_policy();
+    }
+
     struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_BPRM_CHECK_SECURITY);
     
     if (!policy || !hook_cfg) {
@@ -75,21 +120,8 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     
     if (!policy || policy->log_level >= 2) {
         bpf_printk("LSM bprm_check_security: %s PID=%u  cgroup_id=%d\n", comm, pid, cgroup_id);
-    }
-
-    struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
-
-    struct css_set *cgroups = BPF_CORE_READ(cur, cgroups);
-    if (cgroups) {
-        struct cgroup *dfl = BPF_CORE_READ(cgroups, dfl_cgrp);
-        if (dfl) {
-            struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
-            if (kn) {
-                bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
-                if (!policy || policy->log_level >= 2) {
-                    bpf_printk(" cgroup_name: %s\n", cgroup_name);
-                }
-            }
+        if (cgroup_name[0] != '\0') {
+            bpf_printk(" cgroup_name: %s\n", cgroup_name);
         }
     }
     
