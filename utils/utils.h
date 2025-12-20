@@ -55,6 +55,25 @@ struct {
     __type(value, struct scratch_t);
 } scratch_buf_map SEC(".maps");
 
+struct hook_timing {
+    u64 total_time;
+    u64 deps_time;
+    u64 measure_time;
+    u64 hash_time;
+    u64 extend_time;
+    u64 count;
+};
+
+#define TIMING_BPRM 0
+#define TIMING_SOCKET 1
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 2);
+    __type(key, u32);
+    __type(value, struct hook_timing);
+} bpf_timing_stats SEC(".maps");
+
 
 /* Helper function to convert u32 to string and append to buffer */
 static __always_inline int append_u32_to_buffer(char *buf, int *len, int max_len, u32 value)

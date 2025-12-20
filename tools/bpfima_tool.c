@@ -88,11 +88,10 @@ static int daemonize(void)
     }
 
     /* Close all open file descriptors */
-    int x;
-    for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
-    {
-        close(x);
-    }
+    /* Close standard file descriptors */
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
     
     // Redirect stdin/stdout/stderr to /dev/null
     open("/dev/null", O_RDWR);
