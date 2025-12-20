@@ -139,6 +139,7 @@ BTF_ID_FLAGS(func, bpfima_policy_update_action_flags)
 BTF_ID_FLAGS(func, bpfima_policy_update_min_file_size)
 BTF_ID_FLAGS(func, bpfima_policy_update_log_level)
 BTF_ID_FLAGS(func, bpfima_policy_get_changes_hash)
+BTF_ID_FLAGS(func, bpfima_policy_namespace_get_config, KF_SLEEPABLE)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
