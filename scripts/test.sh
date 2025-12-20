@@ -692,7 +692,7 @@ log_info ""
 log_info "Testing socket creation"
 
 # Test TCP connection between two valid IPs (localhost)
-log_info "Testing TCP connection between two valid IPs (127.0.0.1)"
+log_info "TEST 1: TCP connection between two valid IPs (127.0.0.1) - Standard IPv4 connection"
 python3 -c "
 import socket, threading, time
 def server():
@@ -709,9 +709,33 @@ c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 c.connect(('127.0.0.1', 23456))
 data = c.recv(16)
 c.close()
-print('TCP connection test: received', data)
 "
 log_info "TCP connection test completed"
+
+log_info "TEST 2: Creation of an Unix domain socket"
+python3 -c "
+import socket, os, threading, time
+sock_path = '/tmp/test_socket.sock'
+if os.path.exists(sock_path):
+    os.remove(sock_path)
+def server():
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(sock_path)
+    s.listen(1)
+    conn, addr = s.accept()
+    conn.send(b'hello')
+    conn.close()
+    s.close()
+    os.remove(sock_path)
+
+threading.Thread(target=server, daemon=True).start()
+time.sleep(0.5)
+c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+c.connect(sock_path)
+data = c.recv(16)
+c.close()
+"
+log_info "Unix domain socket test completed"
 
 log_info "Socket creation tests completed"
 # To see the socket hook output, use the following command:

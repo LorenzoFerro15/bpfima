@@ -2,18 +2,22 @@
 #include "../utils/utils.h"
 #include "../utils/bpf_kfunc_defs.h"
 
+#define TEMP_BUFFER_LEN 32
+
+/* --------------------------------------------------------- */
+
 /* Measure file access and extend IMA measurement
     * 
-    * Parameters:
-    * - file: pointer to struct file representing the accessed file
-    * - event_name: name of the event for measurement
-    * - cgroup_name: name of the cgroup (namespace) if in container context
-    * - is_container_context: boolean indicating if in container context
-    * - deps: dependency chain string
-    * - deps_actual: actual length of dependencies string
-    * - deps_max: maximum length of dependencies string buffer
+    * @param file: pointer to struct file representing the accessed file
+    * @param event_name: name of the event for measurement
+    * @param cgroup_name: name of the cgroup (namespace) if in container context
+    * @param is_container_context: boolean indicating if in container context
+    * @param deps: dependency chain string
+    * @param deps_actual: actual length of dependencies string
+    * @param deps_max: maximum length of dependencies string buffer
+    * @param out_hash: output buffer to store the computed file hash
     * 
-    * Returns:
+    * @returns
     * - 0 on success, -1 on failure
 */
 static __always_inline int measure_accessed_file(
@@ -83,6 +87,20 @@ static __always_inline int measure_accessed_file(
     return 0;
 }
 
+/* Measure socket connection and extend IMA measurement
+    * 
+    * @param event_name: name of the event for measurement
+    * @param cgroup_name: name of the cgroup (namespace) if in container context
+    * @param is_container_context: boolean indicating if in container context
+    * @param deps: dependency chain string
+    * @param deps_actual: actual length of dependencies string
+    * @param deps_max: maximum length of dependencies string buffer
+    * @param additional_data: additional data string for measurement
+    * @param additional_data_len: length of additional data string
+    * 
+    * @returns
+    * - 0 on success, -1 on failure
+*/  
 static __always_inline int measure_socket_data(const char *event_name,
                                                const char *cgroup_name,
                                                bool is_container_context,
