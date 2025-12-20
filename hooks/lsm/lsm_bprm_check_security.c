@@ -41,6 +41,14 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     char event_name[64] = {0}; 
     struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
 
+    u64 start_time_total = 0, end_time_total = 0;
+    u64 start_time_deps = 0, end_time_deps = 0;
+
+    u64 start_time_measure = 0, end_time_measure = 0;
+    u64 hash_time = 0, extend_time = 0;
+
+    start_time_total = bpf_ktime_get_ns();
+
     char stack_dependencies_buf[16] = {0};
     char *deps = stack_dependencies_buf;
     int deps_actual =  0;
@@ -153,7 +161,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     const char *fname = BPF_CORE_READ(bprm, filename);
     
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
+        start_time_deps = bpf_ktime_get_ns();
         deps_actual = build_dependencies(deps, deps_max, fname, cur);
+        end_time_deps = bpf_ktime_get_ns();
         
         if (!policy || policy->log_level >= 2) {
             bpf_printk(" dependencies: %s\n", deps);
@@ -165,6 +175,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     struct file *file = BPF_CORE_READ(bprm, file);
     u8 hash[32] = {0};
     
+    start_time_measure = bpf_ktime_get_ns();
     ret = measure_accessed_file(file, 
                                   event_name, 
                                   cgroup_name, 
@@ -172,7 +183,10 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
                                   deps,
                                   deps_actual,
                                   deps_max,
-                                  hash);
+                                  hash,
+                                  &hash_time,
+                                  &extend_time);
+    end_time_measure = bpf_ktime_get_ns();
     if (ret < 0) {
         if (!policy || policy->log_level >= 1) {
             bpf_printk("The file measurement failed: %d\n", ret);
@@ -181,6 +195,27 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     }
     
 
+
+    end_time_total = bpf_ktime_get_ns();
+
+    u32 stats_key = TIMING_BPRM;
+    struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats, &stats_key);
+    if (timing) {
+        __sync_fetch_and_add(&timing->count, 1);
+        __sync_fetch_and_add(&timing->total_time, end_time_total - start_time_total);
+        if (end_time_deps > start_time_deps)
+            __sync_fetch_and_add(&timing->deps_time, end_time_deps - start_time_deps);
+        if (end_time_measure > start_time_measure)
+            __sync_fetch_and_add(&timing->measure_time, end_time_measure - start_time_measure);
+        __sync_fetch_and_add(&timing->hash_time, hash_time);
+        __sync_fetch_and_add(&timing->extend_time, extend_time);
+    }
+
+    bpf_printk("BPRM: total=%llu deps=%llu measure=%llu hash=%llu extend=%llu\n", 
+               end_time_total - start_time_total,
+               (end_time_deps > start_time_deps) ? (end_time_deps - start_time_deps) : 0,
+               (end_time_measure > start_time_measure) ? (end_time_measure - start_time_measure) : 0,
+               hash_time, extend_time);
 
     return 0;
 }
