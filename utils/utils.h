@@ -30,6 +30,13 @@ typedef unsigned char u8;
 #define ATTR_TOUCH (1 << 17)
 #define ATTR_DELEG (1 << 18)
 
+#define AF_UNIX 1
+#define AF_INET 2
+#define MAX_DATA_BUF_SIZE 64
+#define MAX_PATH_DEPTH 16
+#define MAX_PATH_LEN 108
+#define PATH_LEN_MASK 0x7F
+
 /* Per-CPU scratch buffer to avoid large stack allocations and heavy inlining
  * which can blow up the verifier. Value contains a small buffer and a length.
  */
@@ -140,32 +147,40 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
  * @param initial_name: Initial name to prepend (e.g., filename), can be NULL
  * @param current_task: The current task_struct pointer
  * 
- * Returns the actual length of the dependency string (excluding null terminator).
+ * @returns the actual length of the dependency string (excluding null terminator).
  * 
  * The resulting string format is: "initial_name:parent1:parent2:...:parent10"
  * If initial_name is NULL, starts with "unknown:"
  */
-static __always_inline int build_dependencies(char *deps, int deps_max, 
+static __always_inline int build_dependencies(char *deps, int deps_max,
                                               const char *initial_name,
                                               struct task_struct *current_task)
 {
+    bool read_from_kernel = false;
     int deps_actual = 0;
     int ret;
 
     /* Add initial filename */
     if (initial_name) {
         ret = bpf_probe_read_kernel_str(deps, deps_max, initial_name);
-        if (ret > 0) {
+        if (ret > 1) {  // Successfully read from kernel memory (ret includes '\0' in the length)
             deps_actual = ret - 1; // exclude null terminator
             if (deps_actual < deps_max) {
                 deps[deps_actual] = ':';
                 deps_actual++;
             }
+            read_from_kernel = true;
         }
     }
 
-    if (deps_actual == 0) {
-        __builtin_memcpy(deps, "unknown:", 9);
+    if (!read_from_kernel) {
+        // Failed to read initial name or it was empty
+        bpf_printk("Using default 'unknown:' prefix\n");
+        const char unknown[] = "unknown:";
+        #pragma unroll
+        for (int i = 0; i < 8; i++) {
+            deps[i] = unknown[i];
+        }
         deps_actual = 8;
     }
     
@@ -330,8 +345,8 @@ static __always_inline int build_attributes(char *attrs, int attrs_max, struct i
     if (attr->ia_valid & ATTR_SIZE)
         append_attr(attrs, 64, &off, "size=%llu,", (__u64)attr->ia_size);
 
-    if (attr->ia_valid & ATTR_OPEN)
-//        append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
+    // if (attr->ia_valid & ATTR_OPEN)
+    //     append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
 
     /* KILL_PRIV */
     if (attr->ia_valid & ATTR_KILL_PRIV)
