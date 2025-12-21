@@ -60,6 +60,7 @@ cleanup_bpf() {
     sudo rm -f /sys/fs/bpf/bpfima_path_patterns_map 2>/dev/null || true
     sudo rm -f /sys/fs/bpf/bpfima_hook_config_map 2>/dev/null || true
     sudo rm -f /sys/fs/bpf/scratch_buf_map 2>/dev/null || true
+    sudo rm -f /sys/fs/bpf/bpf_timing_stats 2>/dev/null || true
 }
 
 load_bpf_hook() {
@@ -111,82 +112,12 @@ collect_bpf_stats() {
     # We need to map struct fields to offsets or use JSON if available.
     # Let's try JSON with a python one-liner, assuming python3 is available since we have a python script.
     
-    sudo bpftool map dump name bpf_timing_stat -j > /tmp/map_dump.json 2>&1
-    cat /tmp/map_dump.json | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    # Find the element with key == map_id
-    target = None
-    if isinstance(data, list):
-        for elem in data:
-            key = elem.get('key')
-            if 'formatted' in elem and 'key' in elem['formatted']:
-                key = elem['formatted']['key']
-            
-            if key == $map_id:
-                # Check for formatted BTF output first
-                vals_list = None
-                if 'formatted' in elem and 'values' in elem['formatted']:
-                     vals_list = elem['formatted']['values']
-                elif 'values' in elem:
-                     vals_list = elem['values']
-
-                if vals_list:
-                    # PERCPU map: aggregate across all CPUs
-                    agg = {'count': 0, 'total_time': 0, 'deps_time': 0, 'measure_time': 0, 'hash_time': 0, 'extend_time': 0}
-                    for cpu_entry in vals_list:
-                        # cpu_entry is { "cpu": X, "value": { ... } } or { "cpu": X, "value": [...] }
-                        val = cpu_entry.get('value')
-                        if isinstance(val, dict):
-                            agg['count'] += int(val.get('count', 0))
-                            agg['total_time'] += int(val.get('total_time', 0))
-                            agg['deps_time'] += int(val.get('deps_time', 0))
-                            agg['measure_time'] += int(val.get('measure_time', 0))
-                            agg['hash_time'] += int(val.get('hash_time', 0))
-                            agg['extend_time'] += int(val.get('extend_time', 0))
-                    target = agg
-                else:
-                    if 'formatted' in elem:
-                        target = elem['formatted'].get('value')
-                    else:
-                        target = elem.get('value')
-                break
-    elif isinstance(data, dict):
-         # Similar logic for dict if needed, but percpu usually list
-         pass
-
-    if target:
-        # Check if fields are present (bpf_timing_stats might be formatted with raw hex if no BTF, 
-        # but we enabled BTF in Makefile so fields should be named if map dump supports it. 
-        # If not, it will be a flat list of hex bytes. 
-        # Given 'bpftool map dump name' often uses BTF if available.)
-        
-        # If BTF is working, target is a dict: {'total_time': 123, ...}
-        # If no BTF, value is [hex, hex, ...] array.
-        
-        # Taking a safer bet: The system seems to have BTF enabled (see Makefile).
-        
-        count = int(target.get('count', 0))
-        if count > 0:
-            total = int(target.get('total_time', 0)) // count
-            deps = int(target.get('deps_time', 0)) // count
-            measure = int(target.get('measure_time', 0)) // count
-            hash_t = int(target.get('hash_time', 0)) // count
-            extend = int(target.get('extend_time', 0)) // count
-            
-            print(f'Type: $type | Phase: $phase | Metric: Total | Time: {total} ns')
-            print(f'Type: $type | Phase: $phase | Metric: Deps | Time: {deps} ns')
-            print(f'Type: $type | Phase: $phase | Metric: Measure | Time: {measure} ns')
-            print(f'Type: $type | Phase: $phase | Metric: Hash | Time: {hash_t} ns')
-            print(f'Type: $type | Phase: $phase | Metric: Extend | Time: {extend} ns')
-        else:
-            print('# No BPF executions recorded for index $map_id')
-    else:
-        print('# Key $map_id not found in map')
-except Exception as e:
-    print(f'# Error parsing map dump: {e}')
-"
+    sudo bpftool map dump pinned /sys/fs/bpf/bpf_timing_stats -j > /tmp/map_dump.json 2>&1
+    if [ -s /tmp/map_dump.json ]; then
+        cat /tmp/map_dump.json | python3 scripts/parse_map.py "$type" "$phase" "$map_id"
+    else
+        echo "# Failed to dump map or map empty"
+    fi
 }
 
 # --- PROCESS EXECUTION TEST ---
