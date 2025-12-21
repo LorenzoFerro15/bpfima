@@ -575,6 +575,7 @@ static int cmd_unload(void)
     unlink(CGROUP_PATTERNS_MAP_PATH);
     unlink(PATH_PATTERNS_MAP_PATH);
     unlink(HOOK_CONFIG_MAP_PATH);
+    unlink("/sys/fs/bpf/bpf_timing_stats");
 
 
     printf("  BPF IMA unloaded successfully\n");

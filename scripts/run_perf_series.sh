@@ -26,4 +26,8 @@ for ((i=1; i<=RUNS; i++)); do
     sleep 2
 done
 
-echo "Completed $RUNS runs. Results saved to $OUTPUT."
+
+echo "Generating graphs from $OUTPUT..."
+python3 scripts/plot_averages.py "$OUTPUT"
+
+echo "Completed $RUNS runs. Results saved to $OUTPUT and graphs generated."
