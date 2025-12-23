@@ -68,7 +68,7 @@ def parse_and_plot(filename):
         phase_labels = ["Baseline", "BPF First\n(Cold)", "BPF Second\n(Warm)"]
         values = [averages[test_type].get(p, 0) for p in phases]
         
-        bars = ax.bar(phase_labels, values, color=['gray', 'orange', 'green'])
+        bars = ax.bar(phase_labels, values, color=['slategrey', 'darkorange', 'forestgreen'])
         
         ax.set_title(f'{test_type} Performance (End-to-End)')
         ax.set_ylabel('Average Time (ns)')
@@ -107,7 +107,7 @@ def parse_and_plot(filename):
         
         # Metrics to display
         metrics = ["Deps", "Hash", "Extend"]
-        colors = ['#ff9999', '#66b3ff', '#99ff99']
+        colors = ['lightcoral', 'cornflowerblue', 'peru']
         
         # Prepare stacked data
         bottom = np.zeros(len(bpf_phases))
