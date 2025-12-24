@@ -24,7 +24,7 @@ def parse_and_plot(filename):
                 phase_part = parts[1].split(':')[1].strip()
                 metric_part = parts[2].split(':')[1].strip()
                 time_str = parts[3].split(':')[1].strip().split()[0]
-                time_val = int(time_str)
+                time_val = int(time_str) / 1_000_000.0
                 
                 bpf_data[type_part][phase_part][metric_part] = time_val
                 
@@ -35,7 +35,7 @@ def parse_and_plot(filename):
                 type_part = parts[0].split(':')[1].strip()
                 phase_part = parts[1].split(':')[1].strip()
                 time_str = parts[2].split(':')[1].strip().split()[0]
-                time_val = int(time_str)
+                time_val = int(time_str) / 1_000_000.0
                 
                 data[type_part][phase_part].append(time_val)
                 
@@ -71,12 +71,12 @@ def parse_and_plot(filename):
         bars = ax.bar(phase_labels, values, color=['slategrey', 'darkorange', 'forestgreen'])
         
         ax.set_title(f'{test_type} Performance (End-to-End)')
-        ax.set_ylabel('Average Time (ns)')
+        ax.set_ylabel('Average Time (ms)')
         
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.0f}',
+                    f'{height:.2f}',
                     ha='center', va='bottom')
             
         baseline = averages[test_type].get("Baseline", 0)
@@ -145,7 +145,7 @@ def parse_and_plot(filename):
                  vals_other.append(total_reported - sum_comp)
              else:
                  vals_other.append(0)
-                 
+                  
         ax.bar(x_pos, vals_other, width, bottom=bottom, label="Other/Overhead", color='lightgray')
         
         # Final Total Labels
@@ -155,7 +155,7 @@ def parse_and_plot(filename):
         ax.set_xticks(x_pos)
         ax.set_xticklabels(["BPF First (Cold)", "BPF Second (Warm)"])
         ax.set_title(f'{test_type} Internal BPF Timing Breakdown')
-        ax.set_ylabel('Time (ns)')
+        ax.set_ylabel('Time (ms)')
         ax.legend()
         
         plt.tight_layout()
