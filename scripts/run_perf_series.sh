@@ -48,3 +48,28 @@ echo "Generating Heatmap..."
 python3 scripts/plot_heatmap.py "$HEATMAP_LOG"
 
 echo "Completed $RUNS runs. Results saved to $OUTPUT and graphs generated."
+
+# --- Throughput Test Series ---
+THROUGHPUT_LOG="test_throughput.log"
+: > "$THROUGHPUT_LOG"
+
+echo "Starting Throughput Series (Exec & Socket)..."
+
+# Define load levels (calls per binary/unit)
+# For exec: 10 * LOAD
+# For socket: LOAD (or 10*LOAD depending on implementation, script handles scaling)
+LOADS=(10 50 100 200)
+
+for load in "${LOADS[@]}"; do
+    echo "Running Throughput Test: Exec @ $load..."
+    sudo ./scripts/throughput_test.sh exec "$load" >> "$THROUGHPUT_LOG"
+    
+    echo "Running Throughput Test: Socket @ $load..."
+    sudo ./scripts/throughput_test.sh socket "$load" >> "$THROUGHPUT_LOG"
+done
+
+echo "Generating Throughput Graph..."
+python3 scripts/plot_throughput.py "$THROUGHPUT_LOG"
+
+echo "Throughput tests completed. Log: $THROUGHPUT_LOG"
+
