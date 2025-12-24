@@ -8,34 +8,25 @@ fi
 RUNS=$1
 OUTPUT=$2
 
-# Ensure we have sudo permissions upfront
 sudo -v
-
-# Clear output file
 : > "$OUTPUT"
 
 echo "Starting $RUNS runs, outputting to $OUTPUT..."
 
 for ((i=1; i<=RUNS; i++)); do
     echo "Run $i/$RUNS..."
-    
-    sudo timeout -s SIGINT 5s ./scripts/perf_test.sh >> "$OUTPUT" 
-    
+    sudo timeout -s SIGINT 5s ./scripts/perf_test.sh >> "$OUTPUT"
     echo "" >> "$OUTPUT"
-    
     sleep 2
 done
 
-
-echo "Generating graphs from $OUTPUT..."
 echo "Generating graphs from $OUTPUT..."
 python3 scripts/plot_averages.py "$OUTPUT"
 
 HEATMAP_LOG="size_exec_latency.log"
 rm -f "$HEATMAP_LOG"
 
-echo "Running Heatmap Warmup (Cold Run) to discard initial optimizations..."
-sudo ./scripts/heatmap_test.sh > /dev/null 2>&1
+echo "Running Heatmap Warmup..."
 sudo ./scripts/heatmap_test.sh > /dev/null 2>&1
 
 echo "Starting Heatmap Series..."
@@ -47,29 +38,21 @@ done
 echo "Generating Heatmap..."
 python3 scripts/plot_heatmap.py "$HEATMAP_LOG"
 
-echo "Completed $RUNS runs. Results saved to $OUTPUT and graphs generated."
+echo "Completed $RUNS runs."
 
-# --- Throughput Test Series ---
 THROUGHPUT_LOG="test_throughput.log"
 : > "$THROUGHPUT_LOG"
 
-echo "Starting Throughput Series (Exec & Socket)..."
-
-# Define load levels (calls per binary/unit)
-# For exec: 10 * LOAD
-# For socket: LOAD (or 10*LOAD depending on implementation, script handles scaling)
+echo "Starting Throughput Series..."
 LOADS=(10 50 100 200)
 
 for load in "${LOADS[@]}"; do
     echo "Running Throughput Test: Exec @ $load..."
     sudo ./scripts/throughput_test.sh exec "$load" >> "$THROUGHPUT_LOG"
-    
     echo "Running Throughput Test: Socket @ $load..."
     sudo ./scripts/throughput_test.sh socket "$load" >> "$THROUGHPUT_LOG"
 done
 
 echo "Generating Throughput Graph..."
 python3 scripts/plot_throughput.py "$THROUGHPUT_LOG"
-
-echo "Throughput tests completed. Log: $THROUGHPUT_LOG"
-
+echo "Throughput tests completed."
