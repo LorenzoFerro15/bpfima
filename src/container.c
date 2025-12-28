@@ -176,5 +176,6 @@ void cleanup_all_containers(void)
         count++;
     }
 
+    atomic_set(&container_count, 0);
     pr_info("bpfima: Cleaned up %d containers\n", count);
 }

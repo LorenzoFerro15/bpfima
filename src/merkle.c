@@ -53,8 +53,6 @@ static inline void try_extend_tpm_with_root(const u8 *new_root, bool can_sleep)
     }
 }
 
-/* compute_container_leaf_hash removed (dead code) */
-
 /**
  * extend_container_leaf_hash - Extend container leaf hash with new measurement
  * @container: Container node to extend
@@ -69,7 +67,6 @@ static inline void try_extend_tpm_with_root(const u8 *new_root, bool can_sleep)
  */
 int extend_container_leaf_hash(struct container_node *container, const u8 *new_digest)
 {
-    struct shash_desc *desc;
     int ret = 0;
     u8 old_leaf[MERKLE_HASH_SIZE];
     u8 new_leaf[MERKLE_HASH_SIZE];
@@ -84,15 +81,13 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
         return -EINVAL;
     }
 
-    /* Always use GFP_ATOMIC because we might be holding a spinlock (caller check) */
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(container->tfm), GFP_ATOMIC);
-    if (!desc)
-    {
-        pr_err("bpfima: Failed to allocate shash descriptor\n");
-        return -ENOMEM;
+    if (!new_digest) {
+        pr_err("bpfima: extend_container_leaf_hash: NULL digest\n");
+        return -EINVAL;
     }
 
-    desc->tfm = container->tfm;
+    /* desc allocation removed - bpfima_extend_hash handles it */
+
     ret = bpfima_extend_hash(container->tfm, old_leaf, new_digest, new_leaf);
     if (ret < 0) {
         pr_err("bpfima: bpfima_extend_hash failed: %d\n", ret);
@@ -121,7 +116,6 @@ cleanup:
  */
 int extend_merkle_root(const u8 *container_leaf_hash)
 {
-    struct shash_desc *desc;
     unsigned long flags;
     int ret = 0;
     u8 old_root[MERKLE_HASH_SIZE];
@@ -138,15 +132,13 @@ int extend_merkle_root(const u8 *container_leaf_hash)
         return -EINVAL;
     }
 
-    /* Allocate descriptor atomically */
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm), GFP_ATOMIC);
-    if (!desc)
-    {
-        pr_err("bpfima: Failed to allocate shash descriptor for merkle root\n");
-        return -ENOMEM;
+    if (!system_merkle_root.tfm) {
+        pr_err("bpfima: extend_merkle_root: System tfm not allocated\n");
+        return -EINVAL;
     }
 
-    desc->tfm = system_merkle_root.tfm;
+    /* desc allocation removed - bpfima_extend_hash handles it */
+
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
     

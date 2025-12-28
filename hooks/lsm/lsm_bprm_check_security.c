@@ -37,9 +37,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     u32 pid;
     int ret;
     int cgroup_id;
-    u32 scratch_key = 0;
-    char event_name[64] = {0}; 
-    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
+    // u32 scratch_key = 0;
+    char event_name[32] = {0}; 
+    /* removed scratch_buf_map lookup to avoid race conditions */
 
     u64 start_time_total = 0, end_time_total = 0;
     u64 start_time_deps = 0, end_time_deps = 0;
@@ -49,11 +49,11 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     start_time_total = bpf_ktime_get_ns();
 
-    char stack_dependencies_buf[16] = {0};
+    char stack_dependencies_buf[128] = {0};
     char *deps = stack_dependencies_buf;
     int deps_actual =  0;
     int deps_max = sizeof(stack_dependencies_buf);
-    char cgroup_name[64] = {0};
+    char cgroup_name[48] = {0};
     
     struct css_set *cgroups;
     struct cgroup *dfl;
@@ -69,7 +69,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     /* Initialize scratch buffers early for debug */
     bpf_get_current_comm(comm, sizeof(comm));
     u32 pid_val = bpf_get_current_pid_tgid() >> 32;
-    char filename_debug[64] = {0};
+    char filename_debug[48] = {0};
     bpf_probe_read_kernel_str(filename_debug, sizeof(filename_debug), bprm->filename);
     
     /* UNCONDITIONAL DEBUG */
@@ -115,10 +115,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         bpf_printk("Policy not loaded, using default behavior\n");
     }
 
-    if (scratch) {
-        deps = scratch->buf;
-        deps_max = sizeof(scratch->buf);
-    }
+    /* removed scratch logic */
 
     bpf_get_current_comm(comm, sizeof(comm));
     pid_tgid = bpf_get_current_pid_tgid();
