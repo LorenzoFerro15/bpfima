@@ -152,3 +152,48 @@ void cleanup_hash_table(void)
     
     pr_info("bpfima: Hash table cleaned up. Freed %d hash entries\n", count);
 }
+
+/**
+ * bpfima_extend_hash - Extend a hash value with new data using SHA256
+ * @tfm: Crypto transform to use
+ * @old_hash: Current hash value
+ * @new_data: Data to extend with
+ * @out_hash: Buffer to store the result
+ *
+ * Computes: out_hash = SHA256(old_hash || new_data)
+ */
+int bpfima_extend_hash(struct crypto_shash *tfm, const u8 *old_hash, const u8 *new_data, u8 *out_hash)
+{
+    struct shash_desc *desc;
+    int ret;
+    
+    if (!tfm || !old_hash || !new_data || !out_hash)
+        return -EINVAL;
+
+    /* Always use GFP_ATOMIC to be safe in spinlock contexts (common for extend ops) */
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
+    if (!desc)
+        return -ENOMEM;
+
+    desc->tfm = tfm;
+    ret = crypto_shash_init(desc);
+    if (ret < 0)
+        goto out;
+
+    ret = crypto_shash_update(desc, old_hash, SHA256_DIGEST_SIZE);
+    if (ret < 0)
+        goto out;
+
+    ret = crypto_shash_update(desc, new_data, SHA256_DIGEST_SIZE);
+    if (ret < 0)
+        goto out;
+
+    ret = crypto_shash_final(desc, out_hash);
+
+out:
+    if (desc) {
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        kfree(desc);
+    }
+    return ret;
+}
