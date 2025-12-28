@@ -93,31 +93,9 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
     }
 
     desc->tfm = container->tfm;
-    ret = crypto_shash_init(desc);
+    ret = bpfima_extend_hash(container->tfm, old_leaf, new_digest, new_leaf);
     if (ret < 0) {
-        pr_err("bpfima: crypto_shash_init failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    /* We are likely called with container->measurement_lock held, so we don't lock here again */
-    /* Accessing leaf_hash directly as we assume caller protection or exclusive access */
-    memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
-
-    ret = crypto_shash_update(desc, old_leaf, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (old_leaf) failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    ret = crypto_shash_update(desc, new_digest, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (new_digest) failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    ret = crypto_shash_final(desc, new_leaf);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_final failed: %d\n", ret);
+        pr_err("bpfima: bpfima_extend_hash failed: %d\n", ret);
         goto cleanup;
     }
 
@@ -128,10 +106,7 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
 cleanup:
     memzero_explicit(old_leaf, sizeof(old_leaf));
     memzero_explicit(new_leaf, sizeof(new_leaf));
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(container->tfm));
-        kfree(desc);
-    }
+    /* No manual desc cleanup needed with helper */
     return ret;
 }
 
@@ -172,22 +147,12 @@ int extend_merkle_root(const u8 *container_leaf_hash)
     }
 
     desc->tfm = system_merkle_root.tfm;
-    ret = crypto_shash_init(desc);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_init failed for merkle root: %d\n", ret);
-        goto cleanup;
-    }
-
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
     
     /* Extend: new_root = hash(old_root || container_leaf_hash) */
     /* Note: Calling these inside spinlock is why we need simple crypto ops */
-    ret = crypto_shash_update(desc, old_root, MERKLE_HASH_SIZE);
-    if (!ret)
-        ret = crypto_shash_update(desc, container_leaf_hash, MERKLE_HASH_SIZE);
-    if (!ret)
-        ret = crypto_shash_final(desc, new_root);
+    ret = bpfima_extend_hash(system_merkle_root.tfm, old_root, container_leaf_hash, new_root);
     
     if (ret == 0) {
         memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
@@ -209,10 +174,7 @@ int extend_merkle_root(const u8 *container_leaf_hash)
 cleanup:
     memzero_explicit(old_root, sizeof(old_root));
     memzero_explicit(new_root, sizeof(new_root));
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm));
-        kfree(desc);
-    }
+    /* Helper handles desc cleanup internally */
     return ret;
 }
 
@@ -253,7 +215,11 @@ int recalculate_merkle_root(void)
     spin_lock_irqsave(&container_list_lock, flags);
     list_for_each_entry(container, &container_list, list)
     {
+        /* Fix inconsistent read: acquire container lock before reading leaf_hash */
+        spin_lock(&container->measurement_lock);
         ret = crypto_shash_update(desc, container->leaf_hash, MERKLE_HASH_SIZE);
+        spin_unlock(&container->measurement_lock);
+        
         if (ret < 0)
         {
             spin_unlock_irqrestore(&container_list_lock, flags);

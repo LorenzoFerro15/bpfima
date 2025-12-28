@@ -51,9 +51,11 @@ struct container_node *find_container_by_id(const char *container_id)
 struct container_node *create_container_node(const char *container_id)
 {
     struct container_node *container;
+    struct container_node *existing_container;
     unsigned long flags;
     int ret;
 
+    /* pre-allocate memory outside lock */
     container = kzalloc(sizeof(*container), GFP_KERNEL);
     if (!container)
         return ERR_PTR(-ENOMEM);
@@ -75,6 +77,19 @@ struct container_node *create_container_node(const char *container_id)
     container->securityfs_measurements_file = NULL;
 
     spin_lock_irqsave(&container_list_lock, flags);
+    
+    /* Double-check if container exists after acquiring lock */
+    existing_container = find_container_by_id(container_id);
+    if (existing_container)
+    {
+        spin_unlock_irqrestore(&container_list_lock, flags);
+        /* Lost the race: free our allocation and return the winner */
+        crypto_free_shash(container->tfm);
+        kfree(container);
+        pr_debug("bpfima: Container %s created concurrently, returning existing\n", container_id);
+        return existing_container;
+    }
+
     list_add_tail(&container->list, &container_list);
     spin_unlock_irqrestore(&container_list_lock, flags);
 
@@ -89,6 +104,7 @@ struct container_node *create_container_node(const char *container_id)
         list_del(&container->list);
         spin_unlock_irqrestore(&container_list_lock, flags);
         atomic_dec(&container_count);
+        crypto_free_shash(container->tfm);
         kfree(container);
         return ERR_PTR(ret);
     }
@@ -137,12 +153,18 @@ void cleanup_all_containers(void)
     unsigned long flags;
     int count = 0;
 
+    LIST_HEAD(temp_list);
+
+    /* Safely move all items to temp list under lock */
     spin_lock_irqsave(&container_list_lock, flags);
-    list_for_each_entry_safe(container, tmp, &container_list, list)
+    list_splice_init(&container_list, &temp_list);
+    spin_unlock_irqrestore(&container_list_lock, flags);
+
+    /* Process cleanup without holding the lock */
+    list_for_each_entry_safe(container, tmp, &temp_list, list)
     {
         list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-
+        
         remove_container_securityfs(container);
 
         cleanup_container_measurements(container);
@@ -152,10 +174,7 @@ void cleanup_all_containers(void)
 
         kfree(container);
         count++;
-
-        spin_lock_irqsave(&container_list_lock, flags);
     }
-    spin_unlock_irqrestore(&container_list_lock, flags);
 
     pr_info("bpfima: Cleaned up %d containers\n", count);
 }

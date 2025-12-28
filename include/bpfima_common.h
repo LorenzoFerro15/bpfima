@@ -132,7 +132,23 @@ void cleanup_hash_table(void);
 int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
 int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name);
 
+
+
 int create_container_securityfs(struct container_node *container);
 void remove_container_securityfs(struct container_node *container);
+
+/**
+ * bpfima_extend_hash - Extend a hash value with new data using SHA256
+ * @tfm: Crypto transform to use (must be allocated by caller)
+ * @old_hash: Current hash value (must be SHA256_DIGEST_SIZE)
+ * @new_data: Data to extend with (must be SHA256_DIGEST_SIZE checks context)
+ * @out_hash: Buffer to store the result
+ *
+ * Computes: out_hash = SHA256(old_hash || new_data)
+ * Handles shash descriptor allocation internally (atomic/kernel based on context).
+ *
+ * Returns: 0 on success, negative error code on failure.
+ */
+int bpfima_extend_hash(struct crypto_shash *tfm, const u8 *old_hash, const u8 *new_data, u8 *out_hash);
 
 #endif /* BPFIMA_COMMON_H */
