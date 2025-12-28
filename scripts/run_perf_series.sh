@@ -5,6 +5,12 @@ if [ "$#" -ne 2 ]; then
     exit 1
 fi
 
+if [ -n "$VIRTUAL_ENV" ]; then
+    VENV_PYTHON="$VIRTUAL_ENV/bin/python3"
+else
+    VENV_PYTHON=$(which python3)
+fi
+
 RUNS=$1
 OUTPUT=$2
 
@@ -21,7 +27,7 @@ for ((i=1; i<=RUNS; i++)); do
 done
 
 echo "Generating graphs from $OUTPUT..."
-python3 scripts/plot_averages.py "$OUTPUT"
+$VENV_PYTHON scripts/plot_averages.py "$OUTPUT"
 
 HEATMAP_LOG="size_exec_latency.log"
 rm -f "$HEATMAP_LOG"
@@ -36,7 +42,7 @@ for ((i=1; i<=RUNS; i++)); do
 done
 
 echo "Generating Heatmap..."
-python3 scripts/plot_heatmap.py "$HEATMAP_LOG"
+$VENV_PYTHON scripts/plot_heatmap.py "$HEATMAP_LOG"
 
 echo "Completed $RUNS runs."
 
@@ -54,5 +60,5 @@ for load in "${LOADS[@]}"; do
 done
 
 echo "Generating Throughput Graph..."
-python3 scripts/plot_throughput.py "$THROUGHPUT_LOG"
+$VENV_PYTHON scripts/plot_throughput.py "$THROUGHPUT_LOG"
 echo "Throughput tests completed."

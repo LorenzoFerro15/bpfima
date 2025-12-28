@@ -76,7 +76,7 @@ struct container_node
     char id[CONTAINER_ID_MAX_LEN];
     struct list_head measurement_list;
     spinlock_t measurement_lock;
-    struct mutex measurement_mutex;
+    struct crypto_shash *tfm;
     u8 leaf_hash[MERKLE_HASH_SIZE];
     atomic_t measurement_count;
     struct dentry *securityfs_dir;
@@ -107,12 +107,14 @@ struct merkle_root_entry
  * @root_hash: Current Merkle root hash (virtual PCR value)
  * @lock: Spinlock for thread-safe tree operations
  * @leaf_count: Number of leaf nodes (containers) in the tree
+ * @tfm: Pre-allocated SHA256 transform for atomic operations
  */
 struct merkle_tree_root
 {
     u8 root_hash[MERKLE_HASH_SIZE];
     spinlock_t lock;
     u32 leaf_count;
+    struct crypto_shash *tfm;
 };
 
 struct hash_entry

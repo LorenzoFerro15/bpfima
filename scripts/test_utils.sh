@@ -21,6 +21,22 @@ wait_for_process() {
     return 1
 }
 
+wait_for_process_exit() {
+    local pid=$1
+    local timeout=${2:-5}
+    local timeout_ds=$((timeout * 10))
+    local elapsed=0
+    
+    while [ $elapsed -lt $timeout_ds ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.2
+        elapsed=$((elapsed + POLL_INTERVAL))
+    done
+    return 1
+}
+
 wait_for_file() {
     local file=$1
     local timeout=${2:-30}
@@ -53,16 +69,75 @@ wait_for_module() {
     return 1
 }
 
+wait_for_module_unload() {
+    local module=$1
+    local timeout=${2:-10}
+    local timeout_ds=$((timeout * 10))
+    local elapsed=0
+    
+    while [ $elapsed -lt $timeout_ds ]; do
+        if ! lsmod | grep -q "^${module} "; then
+            return 0
+        fi
+        sleep 0.2
+        elapsed=$((elapsed + POLL_INTERVAL))
+    done
+    return 1
+}
+
 wait_for_bpf_map() {
     local map_name=$1
     local timeout=${2:-10}
     wait_for_file "/sys/fs/bpf/${map_name}" "$timeout"
 }
 
+wait_for_bpf_maps() {
+    local maps=("$@")
+    local timeout=30
+    local elapsed=0
+    
+    # Last argument might be timeout if it's numeric, but for now assuming default or fixed
+    
+    while [ $elapsed -lt $((timeout * 10)) ]; do
+        local all_found=1
+        for map in "${maps[@]}"; do
+            if [ ! -e "/sys/fs/bpf/$map" ]; then
+                all_found=0
+                break
+            fi
+        done
+        
+        if [ $all_found -eq 1 ]; then
+            return 0
+        fi
+        
+        sleep 0.2
+        elapsed=$((elapsed + POLL_INTERVAL))
+    done
+    return 1
+}
+
 wait_for_securityfs() {
     local path="/sys/kernel/security/$1"
     local timeout=${2:-10}
     wait_for_file "$path" "$timeout"
+}
+
+wait_for_container() {
+    local container_name=$1
+    local container_cli=${2:-docker}
+    local timeout=${3:-30}
+    local timeout_ds=$((timeout * 10))
+    local elapsed=0
+    
+    while [ $elapsed -lt $timeout_ds ]; do
+        if $container_cli inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -q "true"; then
+            return 0
+        fi
+        sleep 0.2
+        elapsed=$((elapsed + POLL_INTERVAL))
+    done
+    return 1
 }
 
 cleanup_bpf() {
@@ -102,6 +177,10 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     export -f wait_for_module
     export -f wait_for_bpf_map
     export -f wait_for_securityfs
+    export -f wait_for_process_exit
+    export -f wait_for_bpf_maps
+    export -f wait_for_module_unload
+    export -f wait_for_container
     export -f cleanup_bpf
     export -f load_bpf_hook
 fi
