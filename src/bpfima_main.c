@@ -184,6 +184,13 @@ static int __init bpfima_init(void)
 
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
     spin_lock_init(&system_merkle_root.lock);
+    
+    system_merkle_root.tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(system_merkle_root.tfm))
+    {
+        pr_err("bpfima: Failed to allocate tfm for system merkle root\n");
+        return PTR_ERR(system_merkle_root.tfm);
+    }
     pr_info("bpfima: Merkle tree root initialized\n");
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
@@ -250,6 +257,9 @@ static void __exit bpfima_exit(void)
     /* Clean up container tracking structures FIRST (includes per-container securityfs) */
     cleanup_all_containers();
     cleanup_merkle_root_history();
+
+    if (system_merkle_root.tfm)
+        crypto_free_shash(system_merkle_root.tfm);
 
     /* Now clean up main securityfs interface (after containers are gone) */
     bpfima_securityfs_cleanup();

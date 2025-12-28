@@ -58,10 +58,17 @@ struct container_node *create_container_node(const char *container_id)
     if (!container)
         return ERR_PTR(-ENOMEM);
 
+    container->tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(container->tfm))
+    {
+        kfree(container);
+        pr_err("bpfima: Failed to allocate tfm for container %s\n", container_id);
+        return ERR_PTR(-ENOMEM);
+    }
+
     strscpy(container->id, container_id, CONTAINER_ID_MAX_LEN);
     INIT_LIST_HEAD(&container->measurement_list);
     spin_lock_init(&container->measurement_lock);
-    mutex_init(&container->measurement_mutex);
     memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
     atomic_set(&container->measurement_count, 0);
     container->securityfs_dir = NULL;
@@ -139,6 +146,9 @@ void cleanup_all_containers(void)
         remove_container_securityfs(container);
 
         cleanup_container_measurements(container);
+
+        if (container->tfm)
+            crypto_free_shash(container->tfm);
 
         kfree(container);
         count++;

@@ -137,7 +137,8 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name,
     ret = add_container_measurement(container, event_name,
                                     additional_data && additional_data_len > 0 ? (const char *)additional_data : "",
                                     dependencies ? dependencies : "",
-                                    hash_value);
+                                    hash_value,
+                                    can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (ret < 0)
     {
         printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",
