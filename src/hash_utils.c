@@ -3,9 +3,14 @@
  * 
  * Common hash calculation and tracking functions used across
  * the BPF-IMA module for SHA256 operations and duplicate detection.
+ * 
+ * Refactored to use per-CPU crypto descriptors to ensure safety
+ * atomic contexts and improve performance by avoiding repeated allocations.
  */
 
 #include "bpfima_common.h"
+#include <linux/percpu.h>
+#include <crypto/hash.h>
 
 #define HASH_TABLE_BITS 8
 
@@ -13,38 +18,92 @@
 static DEFINE_HASHTABLE(sha256_hash_table, HASH_TABLE_BITS);
 static DEFINE_SPINLOCK(hash_table_lock);
 
+/* Per-CPU crypto transform and descriptor */
+/* We only need one TFM globally, but descriptors must be per-CPU */
+static struct crypto_shash *sha256_tfm;
+struct bpfima_shash_desc {
+    struct shash_desc desc;
+    /* Reserve space for SHA256 context state */
+    char ctx[128]; // SHA256 context is roughly 100-112 bytes usually
+};
+
+static DEFINE_PER_CPU(struct bpfima_shash_desc, percpu_shash_desc);
+
+
+/**
+ * bpfima_hash_init - Initialize the hash subsystem
+ * 
+ * Allocates the global SHA256 transform and confirms per-CPU
+ * descriptors are ready for use.
+ * 
+ * Returns: 0 on success, negative error code on failure
+ */
+int bpfima_hash_init(void)
+{
+    sha256_tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(sha256_tfm)) {
+        pr_err("bpfima: Failed to allocate SHA256 transform: %ld\n", PTR_ERR(sha256_tfm));
+        return PTR_ERR(sha256_tfm);
+    }
+    
+    if (crypto_shash_descsize(sha256_tfm) > sizeof(((struct bpfima_shash_desc *)0)->ctx)) {
+        pr_err("bpfima: SHA256 desc size too large for static allocation\n");
+        crypto_free_shash(sha256_tfm);
+        return -EINVAL;
+    }
+
+    pr_info("bpfima: Hash subsystem initialized (per-CPU buffers)\n");
+    return 0;
+}
+
+/**
+ * bpfima_hash_cleanup - Cleanup the hash subsystem
+ * 
+ * Frees the global SHA256 transform.
+ */
+void bpfima_hash_cleanup(void)
+{
+    if (sha256_tfm) {
+        crypto_free_shash(sha256_tfm);
+        sha256_tfm = NULL;
+    }
+    cleanup_hash_table();
+    pr_info("bpfima: Hash subsystem cleaned up\n");
+}
+
+
 /**
  * calculate_sha256_hash - Compute SHA256 hash digest of input data
  * @data: Input data buffer to hash
  * @len: Length of input data in bytes
  * @digest: Output buffer to store SHA256 digest (must be SHA256_DIGEST_SIZE bytes)
  *
- * Allocates crypto transform and descriptor to compute SHA256 hash using kernel
- * crypto API. The function handles all memory allocation/deallocation internally.
+ * Uses pre-allocated per-CPU crypto descriptors to ensure safety in atomic
+ * contexts (no memory allocation). Disables preemption to ensure exclusive
+ * access to the per-CPU buffer.
  *
  * Returns: 0 on success, negative error code on failure
  */
 int calculate_sha256_hash(const void *data, size_t len, u8 *digest)
 {
-    struct crypto_shash *tfm;
+    struct bpfima_shash_desc *b_desc;
     struct shash_desc *desc;
     int ret;
 
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-        return PTR_ERR(tfm);
+    if (!sha256_tfm)
+        return -EINVAL;
 
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc) {
-        crypto_free_shash(tfm);
-        return -ENOMEM;
-    }
-
-    desc->tfm = tfm;
+    /* Get pointer to per-CPU descriptor and disable preemption */
+    b_desc = get_cpu_ptr(&percpu_shash_desc);
+    desc = &b_desc->desc;
+    
+    desc->tfm = sha256_tfm;
+    
     ret = crypto_shash_digest(desc, data, len, digest);
 
-    kfree(desc);
-    crypto_free_shash(tfm);
+    /* Re-enable preemption */
+    put_cpu_ptr(&percpu_shash_desc);
+
     return ret;
 }
 
@@ -161,6 +220,11 @@ void cleanup_hash_table(void)
  * @out_hash: Buffer to store the result
  *
  * Computes: out_hash = SHA256(old_hash || new_data)
+ *
+ * This function is used where explicit TFM is passed (e.g. from container nodes)
+ * so it still uses the existing allocation pattern unless we also migrate
+ * container nodes to use per-CPU tfm. For now, we leave it as is to avoid
+ * breaking container logic, but mark it safe if tfm is valid.
  */
 int bpfima_extend_hash(struct crypto_shash *tfm, const u8 *old_hash, const u8 *new_data, u8 *out_hash)
 {

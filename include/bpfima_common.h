@@ -128,6 +128,8 @@ int calculate_sha256_hash(const void *data, size_t len, u8 *digest);
 bool hash_exists(const u8 *hash_value, const char *namespace_id);
 int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep);
 void cleanup_hash_table(void);
+int bpfima_hash_init(void);
+void bpfima_hash_cleanup(void);
 
 int extend_tpm_pcr(const u8 *hash_value, const char *event_name);
 int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name);
