@@ -174,6 +174,14 @@ static int __init bpfima_init(void)
         return ret;
     }
 
+    ret = bpfima_hash_init();
+    if (ret)
+    {
+        pr_err("bpfima: Failed to initialize hash subsystem: %d\n", ret);
+        bpfima_policy_cleanup();
+        return ret;
+    }
+
     ret = bpfima_policy_namespace_init();
     if (ret)
     {
@@ -268,7 +276,9 @@ static void __exit bpfima_exit(void)
     bpfima_policy_namespace_cleanup();
     bpfima_policy_cleanup();
 
-    cleanup_hash_table();
+
+
+    bpfima_hash_cleanup();
 
     printk(KERN_INFO "Container tracking: %d containers tracked\n",
            atomic_read(&container_count));
