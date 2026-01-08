@@ -72,7 +72,7 @@ int status_show(struct seq_file *s, void *unused)
     if (chip)
     {
         tpm_available = true;
-        tpm_put_ops(chip);
+        put_device(&chip->dev);
     }
 
     seq_printf(s, "module=bpfima\n");
