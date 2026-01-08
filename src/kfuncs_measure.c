@@ -216,8 +216,8 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
     memset(digest, 0, sizeof(digest));
     digest[0].alg_id = TPM_ALG_SHA256;
 
-    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
-    tpm_put_ops(chip);
+    tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
+    put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);
 
@@ -258,7 +258,7 @@ __bpf_kfunc int bpfima_tpm_is_available(void)
     if (!chip)
         return 0;
 
-    tpm_put_ops(chip);
+    put_device(&chip->dev);
     return 1;
 }
 
