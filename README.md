@@ -67,6 +67,15 @@ make all
 
 Output: `build/bpfima.ko`, `build/bpfima-tool`, `build/*.o`
 
+### Python Dependencies
+
+For running performance tests and generating graphs:
+
+```bash
+sudo pip3 install matplotlib pandas seaborn
+```
+
+
 ## Usage
 
 ### Testing

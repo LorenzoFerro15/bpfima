@@ -26,6 +26,13 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     }
 
+    u64 start_time_total = 0, end_time_total = 0;
+    u64 start_time_deps = 0, end_time_deps = 0;
+    u64 start_time_measure = 0, end_time_measure = 0;
+    u64 extend_time = 0;
+
+    start_time_total = bpf_ktime_get_ns();
+
     char *deps = scratch->buf;
     char cgroup_name[64] = {0};
     int deps_max = sizeof(scratch->buf), deps_actual = 0;
@@ -195,7 +202,9 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     /* Build dependencies if enabled in policy */
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
+        start_time_deps = bpf_ktime_get_ns();
         deps_actual = build_dependencies(deps, deps_max, socket_path, cur);
+        end_time_deps = bpf_ktime_get_ns();
         
         if (!policy || policy->log_level >= 2) {
             bpf_printk(" dependencies -> %s\n", deps);
@@ -204,6 +213,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     /* Measure the executable file making the connection */
     char event_name[] = "socket_connect";
+    start_time_measure = bpf_ktime_get_ns();
     int ret = measure_socket_data(event_name,
                                  cgroup_name,
                                  is_container_context,
@@ -211,7 +221,9 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
                                  deps_actual,
                                  deps_max,
                                  additional_data,
-                                 buffer_len);
+                                 buffer_len,
+                                 &extend_time);
+    end_time_measure = bpf_ktime_get_ns();
     
     if (ret < 0) {
         if (!policy || policy->log_level >= 1) {
@@ -219,6 +231,26 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         }
         return ret;
     }
+
+    u32 stats_key = TIMING_SOCKET;
+    end_time_total = bpf_ktime_get_ns();
+    
+    struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats, &stats_key);
+    if (timing) {
+        __sync_fetch_and_add(&timing->count, 1);
+        __sync_fetch_and_add(&timing->total_time, end_time_total - start_time_total);
+        if (end_time_deps > start_time_deps)
+            __sync_fetch_and_add(&timing->deps_time, end_time_deps - start_time_deps);
+        if (end_time_measure > start_time_measure)
+            __sync_fetch_and_add(&timing->measure_time, end_time_measure - start_time_measure);
+        __sync_fetch_and_add(&timing->extend_time, extend_time);
+    }
+    
+    bpf_printk("SOCKET: total=%llu deps=%llu measure=%llu extend=%llu\n", 
+               end_time_total - start_time_total,
+               (end_time_deps > start_time_deps) ? (end_time_deps - start_time_deps) : 0,
+               (end_time_measure > start_time_measure) ? (end_time_measure - start_time_measure) : 0,
+               extend_time);
 
     return 0;
 }

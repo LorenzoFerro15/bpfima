@@ -137,7 +137,8 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name,
     ret = add_container_measurement(container, event_name,
                                     additional_data && additional_data_len > 0 ? (const char *)additional_data : "",
                                     dependencies ? dependencies : "",
-                                    hash_value);
+                                    hash_value,
+                                    can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (ret < 0)
     {
         printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",
@@ -215,8 +216,8 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
     memset(digest, 0, sizeof(digest));
     digest[0].alg_id = TPM_ALG_SHA256;
 
-    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
-    tpm_put_ops(chip);
+    tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
+    put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);
 
@@ -257,7 +258,7 @@ __bpf_kfunc int bpfima_tpm_is_available(void)
     if (!chip)
         return 0;
 
-    tpm_put_ops(chip);
+    put_device(&chip->dev);
     return 1;
 }
 

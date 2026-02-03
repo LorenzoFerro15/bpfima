@@ -25,12 +25,6 @@ struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
 /* Counter for merkle_root_history entries (for circular buffer management) */
 static atomic_t merkle_root_history_count = ATOMIC_INIT(0);
 
-/*
- * Mutex to serialize merkle root extensions including TPM operations.
- * This prevents race conditions where the merkle root could be modified
- * between updating the hash and extending the TPM.
- */
-static DEFINE_MUTEX(bpfima_merkle_root_mutex);
 
 /**
  * try_extend_tpm_with_root - Attempt to extend TPM with merkle root
@@ -60,85 +54,6 @@ static inline void try_extend_tpm_with_root(const u8 *new_root, bool can_sleep)
 }
 
 /**
- * compute_container_leaf_hash - Compute the leaf hash for a container
- * @container: Container node to compute hash for
- *
- * Computes SHA-256 hash of all measurement digests in the container's
- * measurement list. This hash becomes the container's leaf in the Merkle tree.
- * This is used only for initialization or rebuilding from scratch.
- * For normal operations, use extend_container_leaf_hash() instead.
- *
- * Returns: 0 on success, negative error code on failure
- */
-int compute_container_leaf_hash(struct container_node *container)
-{
-    struct measurement_entry *entry;
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
-    unsigned long flags;
-    int ret = 0;
-
-    if (!container) {
-        pr_err("bpfima: compute_container_leaf_hash: NULL container\n");
-        return -EINVAL;
-    }
-
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
-        ret = PTR_ERR(tfm);
-        pr_err("bpfima: Failed to allocate sha256 hash: %d\n", ret);
-        return ret;
-    }
-
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc)
-    {
-        pr_err("bpfima: Failed to allocate shash descriptor\n");
-        crypto_free_shash(tfm);
-        return -ENOMEM;
-    }
-
-    desc->tfm = tfm;
-    ret = crypto_shash_init(desc);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_init failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    /* Hash all measurement digests in order */
-    spin_lock_irqsave(&container->measurement_lock, flags);
-    list_for_each_entry(entry, &container->measurement_list, list)
-    {
-        if (!entry) {
-            pr_warn("bpfima: NULL entry in measurement list\n");
-            continue;
-        }
-        ret = crypto_shash_update(desc, entry->digest, MERKLE_HASH_SIZE);
-        if (ret < 0)
-        {
-            pr_err("bpfima: crypto_shash_update failed: %d\n", ret);
-            spin_unlock_irqrestore(&container->measurement_lock, flags);
-            goto cleanup;
-        }
-    }
-    spin_unlock_irqrestore(&container->measurement_lock, flags);
-
-    /* Finalize the hash */
-    ret = crypto_shash_final(desc, container->leaf_hash);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_final failed: %d\n", ret);
-    }
-
-cleanup:
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
-        kfree(desc);
-    }
-    crypto_free_shash(tfm);
-    return ret;
-}
-
-/**
  * extend_container_leaf_hash - Extend container leaf hash with new measurement
  * @container: Container node to extend
  * @new_digest: New measurement digest to extend into the leaf hash
@@ -146,21 +61,18 @@ cleanup:
  * Extends the container's leaf hash using PCR-style extend operation:
  * new_leaf = hash(old_leaf || new_digest)
  *
- * This is more efficient than recomputing the hash from all measurements.
+ * Uses pre-allocated tfm and atomic allocations to be safe in spinlock context.
  *
  * Returns: 0 on success, negative error code on failure
  */
 int extend_container_leaf_hash(struct container_node *container, const u8 *new_digest)
 {
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
-    unsigned long flags;
     int ret = 0;
     u8 old_leaf[MERKLE_HASH_SIZE];
     u8 new_leaf[MERKLE_HASH_SIZE];
 
-    if (!container) {
-        pr_err("bpfima: extend_container_leaf_hash: NULL container\n");
+    if (!container || !container->tfm) {
+        pr_err("bpfima: extend_container_leaf_hash: NULL container or tfm\n");
         return -EINVAL;
     }
 
@@ -169,64 +81,27 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
         return -EINVAL;
     }
 
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
-        ret = PTR_ERR(tfm);
-        pr_err("bpfima: Failed to allocate sha256 hash: %d\n", ret);
-        return ret;
+    if (!new_digest) {
+        pr_err("bpfima: extend_container_leaf_hash: NULL digest\n");
+        return -EINVAL;
     }
 
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
-    if (!desc)
-    {
-        pr_err("bpfima: Failed to allocate shash descriptor\n");
-        crypto_free_shash(tfm);
-        return -ENOMEM;
-    }
+    /* desc allocation removed - bpfima_extend_hash handles it */
 
-    desc->tfm = tfm;
-    ret = crypto_shash_init(desc);
+    ret = bpfima_extend_hash(container->tfm, old_leaf, new_digest, new_leaf);
     if (ret < 0) {
-        pr_err("bpfima: crypto_shash_init failed: %d\n", ret);
+        pr_err("bpfima: bpfima_extend_hash failed: %d\n", ret);
         goto cleanup;
     }
 
-    spin_lock_irqsave(&container->measurement_lock, flags);
-    memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&container->measurement_lock, flags);
-
-    ret = crypto_shash_update(desc, old_leaf, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (old_leaf) failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    ret = crypto_shash_update(desc, new_digest, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (new_digest) failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    ret = crypto_shash_final(desc, new_leaf);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_final failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    spin_lock_irqsave(&container->measurement_lock, flags);
     memcpy(container->leaf_hash, new_leaf, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&container->measurement_lock, flags);
 
     pr_debug("bpfima: Container %s leaf hash extended\n", container->id);
 
 cleanup:
     memzero_explicit(old_leaf, sizeof(old_leaf));
     memzero_explicit(new_leaf, sizeof(new_leaf));
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
-        kfree(desc);
-    }
-    crypto_free_shash(tfm);
+    /* No manual desc cleanup needed with helper */
     return ret;
 }
 
@@ -234,24 +109,13 @@ cleanup:
  * extend_merkle_root - Extend the Merkle tree root with a new container leaf hash
  * @container_leaf_hash: The new container leaf hash to extend into the root
  *
- * Computes the new Merkle root by extending the old root with the new leaf hash:
- * root_new = hash(root_old || leaf_hash_new)
- *
- * This implements a PCR-style extend operation rather than recalculating from
- * all leaves, making it more efficient and following TPM extend semantics.
- *
- * Uses mutex to serialize the entire operation including TPM extension,
- * preventing race conditions where another thread could modify the root
- * between hash update and TPM extension.
- *
- * For atomic context calls, we defer TPM extension as it requires sleeping.
+ * Computes the new Merkle root using pre-allocated tfm and atomic operations.
+ * Protected by system_merkle_root.lock.
  *
  * Returns: 0 on success, negative error code on failure
  */
 int extend_merkle_root(const u8 *container_leaf_hash)
 {
-    struct crypto_shash *tfm;
-    struct shash_desc *desc;
     unsigned long flags;
     int ret = 0;
     u8 old_root[MERKLE_HASH_SIZE];
@@ -263,65 +127,35 @@ int extend_merkle_root(const u8 *container_leaf_hash)
         return -EINVAL;
     }
 
-    if (can_sleep)
-    {
-        mutex_lock(&bpfima_merkle_root_mutex);
+    if (!system_merkle_root.tfm) {
+        pr_err("bpfima: extend_merkle_root: System tfm not allocated\n");
+        return -EINVAL;
     }
 
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-    {
-        ret = PTR_ERR(tfm);
-        pr_err("bpfima: Failed to allocate sha256 hash for merkle root: %d\n", ret);
-        if (can_sleep)
-            mutex_unlock(&bpfima_merkle_root_mutex);
-        return ret;
+    if (!system_merkle_root.tfm) {
+        pr_err("bpfima: extend_merkle_root: System tfm not allocated\n");
+        return -EINVAL;
     }
 
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm),
-                   can_sleep ? GFP_KERNEL : GFP_ATOMIC);
-    if (!desc)
-    {
-        pr_err("bpfima: Failed to allocate shash descriptor for merkle root\n");
-        crypto_free_shash(tfm);
-        if (can_sleep)
-            mutex_unlock(&bpfima_merkle_root_mutex);
-        return -ENOMEM;
-    }
-
-    desc->tfm = tfm;
-    ret = crypto_shash_init(desc);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_init failed for merkle root: %d\n", ret);
-        goto cleanup;
-    }
+    /* desc allocation removed - bpfima_extend_hash handles it */
 
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&system_merkle_root.lock, flags);
-
+    
     /* Extend: new_root = hash(old_root || container_leaf_hash) */
-    ret = crypto_shash_update(desc, old_root, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (old_root) failed: %d\n", ret);
-        goto cleanup;
+    /* Note: Calling these inside spinlock is why we need simple crypto ops */
+    ret = bpfima_extend_hash(system_merkle_root.tfm, old_root, container_leaf_hash, new_root);
+    
+    if (ret == 0) {
+        memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
     }
-
-    ret = crypto_shash_update(desc, container_leaf_hash, MERKLE_HASH_SIZE);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_update (leaf_hash) failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    ret = crypto_shash_final(desc, new_root);
-    if (ret < 0) {
-        pr_err("bpfima: crypto_shash_final failed for merkle root: %d\n", ret);
-        goto cleanup;
-    }
-
-    spin_lock_irqsave(&system_merkle_root.lock, flags);
-    memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
+    
     spin_unlock_irqrestore(&system_merkle_root.lock, flags);
+
+    if (ret < 0) {
+        pr_err("bpfima: crypto sha256 failed for merkle root: %d\n", ret);
+        goto cleanup;
+    }
 
     pr_debug("bpfima: Merkle root extended with container leaf hash\n");
 
@@ -332,13 +166,7 @@ int extend_merkle_root(const u8 *container_leaf_hash)
 cleanup:
     memzero_explicit(old_root, sizeof(old_root));
     memzero_explicit(new_root, sizeof(new_root));
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
-        kfree(desc);
-    }
-    crypto_free_shash(tfm);
-    if (can_sleep)
-        mutex_unlock(&bpfima_merkle_root_mutex);
+    /* Helper handles desc cleanup internally */
     return ret;
 }
 
@@ -357,7 +185,6 @@ cleanup:
 int recalculate_merkle_root(void)
 {
     struct container_node *container;
-    struct crypto_shash *tfm;
     struct shash_desc *desc;
     unsigned long flags;
     int ret = 0;
@@ -365,30 +192,14 @@ int recalculate_merkle_root(void)
     u8 new_root[MERKLE_HASH_SIZE];
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
-    if (can_sleep)
-    {
-        mutex_lock(&bpfima_merkle_root_mutex);
-    }
+    if (!system_merkle_root.tfm)
+        return -EINVAL;
 
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm))
-    {
-        if (can_sleep)
-            mutex_unlock(&bpfima_merkle_root_mutex);
-        return PTR_ERR(tfm);
-    }
-
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm),
-                   can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm), GFP_ATOMIC);
     if (!desc)
-    {
-        crypto_free_shash(tfm);
-        if (can_sleep)
-            mutex_unlock(&bpfima_merkle_root_mutex);
         return -ENOMEM;
-    }
 
-    desc->tfm = tfm;
+    desc->tfm = system_merkle_root.tfm;
     ret = crypto_shash_init(desc);
     if (ret < 0)
         goto cleanup;
@@ -396,7 +207,11 @@ int recalculate_merkle_root(void)
     spin_lock_irqsave(&container_list_lock, flags);
     list_for_each_entry(container, &container_list, list)
     {
+        /* Fix inconsistent read: acquire container lock before reading leaf_hash */
+        spin_lock(&container->measurement_lock);
         ret = crypto_shash_update(desc, container->leaf_hash, MERKLE_HASH_SIZE);
+        spin_unlock(&container->measurement_lock);
+        
         if (ret < 0)
         {
             spin_unlock_irqrestore(&container_list_lock, flags);
@@ -423,9 +238,6 @@ int recalculate_merkle_root(void)
 
 cleanup:
     kfree(desc);
-    crypto_free_shash(tfm);
-    if (can_sleep)
-        mutex_unlock(&bpfima_merkle_root_mutex);
     return ret;
 }
 
@@ -503,38 +315,32 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
  * @container: Container node to add measurement to
  * @event_name: Name of the event
  * @event_data: Event data string
- * @dependencies: Dependencies string (e.g., previous measurement hash)
+ * @dependencies: Dependencies string
  * @digest: SHA256 hash of the measurement
+ * @flags: Allocation flags (GFP_KERNEL or GFP_ATOMIC)
  *
- * Checks if this file (identified by digest) has already been accessed by this
- * namespace. If so, skips adding a duplicate measurement. If not, adds the
- * measurement to the container's list, updates the container's leaf hash,
- * and recalculates the Merkle root.
- *
- * Uses per-container mutex to serialize the entire operation (leaf hash extension
- * and merkle root update) preventing race conditions where inconsistent state
- * could result from interleaved operations.
- *
- * Returns: 0 on success, negative error code on failure, 1 if duplicate skipped
+ * Uses spinlocks for safe atomic context execution.
  */
 int add_container_measurement(struct container_node *container,
                               const char *event_name,
                               const char *event_data,
                               const char *dependencies,
-                              const u8 *digest)
+                              const u8 *digest,
+                              gfp_t flags)
 {
     struct measurement_entry *entry;
-    unsigned long flags;
+    unsigned long irq_flags;
     int ret;
+    bool can_sleep = (flags & __GFP_DIRECT_RECLAIM);
 
     if (hash_exists(digest, container->id))
     {
         pr_info("bpfima: Duplicate file access for namespace %s, digest=%*ph (skipped)\n",
-                container->id, SHA256_DIGEST_SIZE, digest);
+                 container->id, SHA256_DIGEST_SIZE, digest);
         return 1;
     }
 
-    ret = add_hash_to_table(digest, container->id, true);
+    ret = add_hash_to_table(digest, container->id, can_sleep);
     if (ret)
     {
         pr_err("bpfima: Failed to add hash to tracking table for namespace %s: %d\n",
@@ -542,33 +348,28 @@ int add_container_measurement(struct container_node *container,
         return ret;
     }
 
-    entry = create_measurement_entry(event_name, event_data, dependencies, digest, GFP_KERNEL);
+    entry = create_measurement_entry(event_name, event_data, dependencies, digest, flags);
     if (!entry)
         return -ENOMEM;
 
-    mutex_lock(&container->measurement_mutex);
-
-    spin_lock_irqsave(&container->measurement_lock, flags);
+    /* Critical section: lock container, add entry, extend leaf */
+    spin_lock_irqsave(&container->measurement_lock, irq_flags);
+    
     list_add_tail(&entry->list, &container->measurement_list);
-    spin_unlock_irqrestore(&container->measurement_lock, flags);
-
     atomic_inc(&container->measurement_count);
 
     ret = extend_container_leaf_hash(container, digest);
     if (ret < 0)
     {
-        pr_err("bpfima: Failed to extend leaf hash for container %s: %d\n",
-               container->id, ret);
-
-        spin_lock_irqsave(&container->measurement_lock, flags);
         list_del(&entry->list);
-        spin_unlock_irqrestore(&container->measurement_lock, flags);
-
         atomic_dec(&container->measurement_count);
+        spin_unlock_irqrestore(&container->measurement_lock, irq_flags);
+        
         kfree(entry);
-        mutex_unlock(&container->measurement_mutex);
         return ret;
     }
+
+    spin_unlock_irqrestore(&container->measurement_lock, irq_flags);
 
     ret = add_merkle_root_history_entry(container->leaf_hash, container->id);
     if (ret < 0)
@@ -579,25 +380,12 @@ int add_container_measurement(struct container_node *container,
     ret = extend_merkle_root(container->leaf_hash);
     if (ret < 0)
     {
+        /* Rollback is hard because we already released lock, but typical usage allows log warning */
         pr_err("bpfima: Failed to extend merkle root: %d\n", ret);
-
-        spin_lock_irqsave(&container->measurement_lock, flags);
-        list_del(&entry->list);
-        spin_unlock_irqrestore(&container->measurement_lock, flags);
-
-        atomic_dec(&container->measurement_count);
-        kfree(entry);
-        pr_warn("bpfima: Merkle root extension failed. Container %s leaf hash is now inconsistent.\n",
-                container->id);
-
-        mutex_unlock(&container->measurement_mutex);
         return ret;
     }
 
-    mutex_unlock(&container->measurement_mutex);
-
-    pr_debug("bpfima: Added measurement to container %s, leaf hash updated and root extended\n",
-             container->id);
+    pr_debug("bpfima: Added measurement to container %s\n", container->id);
 
     return 0;
 }
@@ -619,7 +407,6 @@ int add_container_measurement(struct container_node *container,
 int aggregate_merkle_entries(struct list_head *entries_to_aggregate, u8 *aggregate_hash, u32 *count_out)
 {
     struct merkle_root_entry *entry;
-    struct crypto_shash *tfm;
     struct shash_desc *desc;
     u8 current_val[MERKLE_HASH_SIZE];
     u8 zero_init[MERKLE_HASH_SIZE];
@@ -636,21 +423,19 @@ int aggregate_merkle_entries(struct list_head *entries_to_aggregate, u8 *aggrega
     memset(zero_init, 0, MERKLE_HASH_SIZE);
     memset(current_val, 0, MERKLE_HASH_SIZE);
 
-    tfm = crypto_alloc_shash("sha256", 0, 0);
-    if (IS_ERR(tfm)) {
-        ret = PTR_ERR(tfm);
-        pr_err("bpfima: Failed to allocate sha256 for aggregation: %d\n", ret);
-        return ret;
+    if (!system_merkle_root.tfm) {
+        pr_err("bpfima: aggregate_merkle_entries: System tfm not allocated\n");
+        return -EINVAL;
     }
 
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    /* desc allocation must be atomic because we might be in atomic context (via trim history) */
+    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm), GFP_ATOMIC);
     if (!desc) {
         pr_err("bpfima: Failed to allocate shash descriptor for aggregation\n");
-        crypto_free_shash(tfm);
         return -ENOMEM;
     }
 
-    desc->tfm = tfm;
+    desc->tfm = system_merkle_root.tfm;
 
     /* Iterate through entries and perform TPM-style extension */
     list_for_each_entry(entry, entries_to_aggregate, list) {
@@ -705,10 +490,9 @@ cleanup:
     memzero_explicit(current_val, sizeof(current_val));
     memzero_explicit(zero_init, sizeof(zero_init));
     if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
+        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm));
         kfree(desc);
     }
-    crypto_free_shash(tfm);
     return ret;
 }
 

@@ -83,6 +83,8 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_policy_map SEC(".maps");
 
+
+
 /* Cgroup ignore patterns map */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);

@@ -184,6 +184,7 @@ int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 ne
 int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
 int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
 int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
+int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config);
 
 /* Global policy change history management */
 int bpfima_global_policy_init_history(void);
