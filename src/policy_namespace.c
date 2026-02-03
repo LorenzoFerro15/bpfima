@@ -67,6 +67,35 @@ static struct bpfima_policy_namespace *find_policy_namespace(const char *namespa
 }
 
 /**
+ * bpfima_policy_namespace_get_config - Get policy config for a namespace (kfunc)
+ * @namespace_id: Namespace identifier
+ * @config: Output buffer for policy configuration
+ *
+ * Copies the policy configuration for the given namespace into the provided buffer.
+ * Safe to call from BPF programs (sleepable).
+ *
+ * Returns: 0 on success, -ENOENT if not found, -EINVAL on bad args
+ */
+int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config)
+{
+    struct bpfima_policy_namespace *policy_ns;
+
+    if (!namespace_id || !config)
+        return -EINVAL;
+
+    mutex_lock(&bpfima_policy_namespace_mutex);
+    policy_ns = find_policy_namespace(namespace_id);
+    if (!policy_ns) {
+        mutex_unlock(&bpfima_policy_namespace_mutex);
+        return -ENOENT;
+    }
+
+    memcpy(config, &policy_ns->policy, sizeof(*config));
+    mutex_unlock(&bpfima_policy_namespace_mutex);
+    return 0;
+}
+
+/**
  * update_changes_string - Append a policy change to the changes string
  * @policy_ns: Policy namespace to update
  * @field_name: Name of the field that changed
