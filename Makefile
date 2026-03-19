@@ -20,7 +20,10 @@ KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
 BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
 
-CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_x86 $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
+# Mapping shell arch to BPF arch names
+ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/')
+
+CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_$(ARCH) $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
