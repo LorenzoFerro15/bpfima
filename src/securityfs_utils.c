@@ -227,7 +227,21 @@ void bpfima_securityfs_cleanup(void)
         status_file = NULL;
     }
 
+    // After kernel version 6.16, the behavior of securityfs_remove was fixed and securityfs_recursive_remove removed
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
     if (containers_dir && !IS_ERR(containers_dir))
+    {
+        securityfs_remove(containers_dir);
+        containers_dir = NULL;
+    }
+
+    if (bpfima_dir && !IS_ERR(bpfima_dir))
+    {
+        securityfs_remove(bpfima_dir);
+        bpfima_dir = NULL;
+    }
+    #else
+        if (containers_dir && !IS_ERR(containers_dir))
     {
         securityfs_recursive_remove(containers_dir);
         containers_dir = NULL;
@@ -238,6 +252,7 @@ void bpfima_securityfs_cleanup(void)
         securityfs_recursive_remove(bpfima_dir);
         bpfima_dir = NULL;
     }
+    #endif
 
     pr_info("bpfima: SecurityFS interface removed\n");
 }
