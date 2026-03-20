@@ -20,10 +20,14 @@ KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
 BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
 
+# Directory where vmlinux.h will be copied
+VMLINUX_DIR := include-vmlinux
+VMLINUX_H := $(VMLINUX_DIR)/vmlinux.h
+
 # Mapping shell arch to BPF arch names
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/')
 
-CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_$(ARCH) $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
+CFLAGS := -O2 -g -target $(BPF_TARGET) -isystem $(VMLINUX_DIR) -Wall -Werror -D__TARGET_ARCH_$(ARCH) $(BPF_HEADERS) -mllvm -bpf-stack-size=1024
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
@@ -39,7 +43,15 @@ BPF_OBJS := $(patsubst hooks/lsm/%.c,$(BUILD_DIR)/%.o,$(BPF_SRCS))
 # Userspace tools
 BPFIMA_TOOL := $(BUILD_DIR)/bpfima-tool
 
-all: $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
+all: $(VMLINUX_H) $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
+
+# Create the folder where vmlinux will be stored
+$(VMLINUX_DIR):
+	mkdir -p $(VMLINUX_DIR)
+
+# Create vmlinux.h
+$(VMLINUX_H): | $(VMLINUX_DIR)
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX_H)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
