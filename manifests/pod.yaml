@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bpfima
+spec:
+  containers:
+  - name: bpfima-v0
+    image: iochia02/bpfima:v0
+    command: ["bin/bash", "-c", "sleep infinity"]
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: host-modules
+      mountPath: /lib/modules
+    - name: host-src
+      mountPath: /usr/src
+    - name: host-securityfs
+      mountPath: /sys/kernel/security
+    - name: host-policy-maps
+      mountPath: /sys/fs/bpf
+  volumes:
+  - name: host-modules
+    hostPath:
+      path: /lib/modules
+  - name: host-src
+    hostPath:
+      path: /usr/src
+  - name: host-securityfs
+    hostPath:
+      path: /sys/kernel/security
+  - name: host-policy-maps
+    hostPath:
+      path: /sys/fs/bpf
+  terminationGracePeriodSeconds: 0
+  imagePullSecrets:
+  - name: regcred
