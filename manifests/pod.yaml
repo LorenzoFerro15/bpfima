@@ -4,9 +4,8 @@ metadata:
   name: bpfima
 spec:
   containers:
-  - name: bpfima-v0
-    image: iochia02/bpfima:v0
-    command: ["bin/bash", "-c", "sleep infinity"]
+  - name: bpfima-v1
+    image: iochia02/bpfima:v1.1
     securityContext:
       privileged: true
     volumeMounts:
