@@ -363,13 +363,13 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     fi
     
     # Change 2: Update action_flags
-    log_info "Test 2: Changing action_flags to 0x1F"
-    echo "action_flags=0x1F" > /sys/kernel/security/bpfima/policy
+    log_info "Test 2: Changing action_flags to 0x7F"
+    echo "action_flags=0x7F" > /sys/kernel/security/bpfima/policy
     log_info "  action_flags updated"
     
     # Verify the change was applied
-    if grep -q "action_flags: 0x0000001f" /sys/kernel/security/bpfima/policy; then
-        log_info "     Verified: action_flags is now 0x1F"
+    if grep -q "action_flags: 0x0000007f" /sys/kernel/security/bpfima/policy; then
+        log_info "     Verified: action_flags is now 0x7F"
     else
         log_warn "     Failed to verify action_flags update"
     fi
@@ -606,13 +606,13 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             fi
             
             # Change 2: Update action_flags
-            log_info "Test 2: Changing namespace action_flags to 0x3E"
-            echo "action_flags=0x3E" > "$POLICY_FILE"
+            log_info "Test 2: Changing namespace action_flags to 0x7E"
+            echo "action_flags=0x7E" > "$POLICY_FILE"
             log_info "  Namespace action_flags updated"
             
             # Verify the change
-            if grep -q "action_flags: 0x0000003e" "$POLICY_FILE"; then
-                log_info "     Verified: namespace action_flags is now 0x3E"
+            if grep -q "action_flags: 0x0000007e" "$POLICY_FILE"; then
+                log_info "     Verified: namespace action_flags is now 0x7E"
             else
                 log_warn "     Failed to verify namespace action_flags update"
             fi
