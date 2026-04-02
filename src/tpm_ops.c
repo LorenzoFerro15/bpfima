@@ -9,6 +9,10 @@ MODULE_PARM_DESC(tpm_pcr_index, "TPM PCR index to use for measurements (default:
 
 DEFINE_MUTEX(bpfima_tpm_mutex);
 
+#ifndef TPM_MAX_DIGEST_SIZE
+#define TPM_MAX_DIGEST_SIZE 64
+#endif
+
 /**
  * extend_tpm_pcr - Extend TPM Platform Configuration Register with measurement
  * @hash_value: SHA256 digest to extend into the PCR (must be SHA256_DIGEST_SIZE bytes)
@@ -28,8 +32,9 @@ DEFINE_MUTEX(bpfima_tpm_mutex);
 int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
 {
     struct tpm_chip *chip;
-    struct tpm_digest digest[1];
+    struct tpm_digest *digests;
     int ret;
+    int i;
 
     if (!hash_value || !event_name)
     {
@@ -60,13 +65,36 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         return -ENODEV;
     }
 
-    memset(digest, 0, sizeof(digest));
-    digest[0].alg_id = TPM_ALG_SHA256;
-    memcpy(digest[0].digest, hash_value, SHA256_DIGEST_SIZE);
+    /* Allocate digests array for all allocated banks */
+    digests = kcalloc(chip->nr_allocated_banks, sizeof(struct tpm_digest), GFP_KERNEL);
+    if (!digests)
+    {
+        put_device(&chip->dev);
+        mutex_unlock(&bpfima_tpm_mutex);
+        printk(KERN_ERR "bpfima: Failed to allocate memory for TPM digests\n");
+        return -ENOMEM;
+    }
 
-    ret = tpm_pcr_extend(chip, tpm_pcr_index, digest);
+    /* Populate digests for all banks */
+    for (i = 0; i < chip->nr_allocated_banks; i++)
+    {
+        digests[i].alg_id = chip->allocated_banks[i].alg_id;
 
-    tpm_put_ops(chip);
+        if (digests[i].alg_id == TPM_ALG_SHA256)
+        {
+            memcpy(digests[i].digest, hash_value, SHA256_DIGEST_SIZE);
+        }
+        else
+        {
+            /* For other banks, extend with zeros to maintain consistency */
+            memset(digests[i].digest, 0, TPM_MAX_DIGEST_SIZE);
+        }
+    }
+
+    ret = tpm_pcr_extend(chip, tpm_pcr_index, digests);
+
+    kfree(digests);
+    put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);
 

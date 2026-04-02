@@ -28,7 +28,9 @@ static __always_inline int measure_accessed_file(
                                                 char *deps,
                                                 int deps_actual,
                                                 int deps_max,
-                                                u8 *out_hash)
+                                                u8 *out_hash,
+                                                u64 *hash_duration,
+                                                u64 *extend_duration)
 {
     if (!file) {
         bpf_printk("No file provided for hashing.\n");
@@ -46,7 +48,11 @@ static __always_inline int measure_accessed_file(
         u64 file_scalar = 0;
 
         if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) == 0 && file_scalar != 0) {
+            u64 start = bpf_ktime_get_ns();
             ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
+            u64 end = bpf_ktime_get_ns();
+            if (hash_duration) *hash_duration = end - start;
+
             if (ret == 0) {
                 if (out_hash) {
                     __builtin_memcpy(out_hash, digest, 32);
@@ -65,11 +71,15 @@ static __always_inline int measure_accessed_file(
                 deps[(deps_actual < deps_max ? deps_actual : deps_max - 1)] = '\0';
 
                 digest_hex[64] = '\0';
+                
+                start = bpf_ktime_get_ns();
                 ret = bpfima_measurement_extend(event_name, 
                                                 (const char *)(is_container_context ? cgroup_name : NULL), 
                                                 deps, 
                                                 digest_hex, 
                                                 64);
+                end = bpf_ktime_get_ns();
+                if (extend_duration) *extend_duration = end - start;
                 if (ret == 0) {
                     bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
                             event_name, is_container_context ? cgroup_name : "host");
@@ -108,7 +118,8 @@ static __always_inline int measure_socket_data(const char *event_name,
                                                int deps_actual,
                                                int deps_max,
                                                const char *additional_data,
-                                               int additional_data_len)
+                                               int additional_data_len,
+                                               u64 *extend_duration)
 {
     if (additional_data_len < 0 || additional_data_len >= 512) {
         bpf_printk("Invalid additional data length: %d\n", additional_data_len);
@@ -120,11 +131,14 @@ static __always_inline int measure_socket_data(const char *event_name,
         return -1;
     }
 
+    u64 start = bpf_ktime_get_ns();
     int ret = bpfima_measurement_extend(event_name, 
                                         (const char *)(is_container_context ? cgroup_name : NULL), 
                                         deps, 
                                         additional_data, 
                                         additional_data_len);
+    u64 end = bpf_ktime_get_ns();
+    if (extend_duration) *extend_duration = end - start;
     if (ret == 0) {
         bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
                 event_name, is_container_context ? cgroup_name : "host");

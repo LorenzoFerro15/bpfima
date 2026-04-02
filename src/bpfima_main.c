@@ -139,6 +139,7 @@ BTF_ID_FLAGS(func, bpfima_policy_update_action_flags)
 BTF_ID_FLAGS(func, bpfima_policy_update_min_file_size)
 BTF_ID_FLAGS(func, bpfima_policy_update_log_level)
 BTF_ID_FLAGS(func, bpfima_policy_get_changes_hash)
+BTF_ID_FLAGS(func, bpfima_policy_namespace_get_config, KF_SLEEPABLE)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
@@ -173,6 +174,14 @@ static int __init bpfima_init(void)
         return ret;
     }
 
+    ret = bpfima_hash_init();
+    if (ret)
+    {
+        pr_err("bpfima: Failed to initialize hash subsystem: %d\n", ret);
+        bpfima_policy_cleanup();
+        return ret;
+    }
+
     ret = bpfima_policy_namespace_init();
     if (ret)
     {
@@ -183,6 +192,13 @@ static int __init bpfima_init(void)
 
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
     spin_lock_init(&system_merkle_root.lock);
+    
+    system_merkle_root.tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(system_merkle_root.tfm))
+    {
+        pr_err("bpfima: Failed to allocate tfm for system merkle root\n");
+        return PTR_ERR(system_merkle_root.tfm);
+    }
     pr_info("bpfima: Merkle tree root initialized\n");
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
@@ -250,6 +266,9 @@ static void __exit bpfima_exit(void)
     cleanup_all_containers();
     cleanup_merkle_root_history();
 
+    if (system_merkle_root.tfm)
+        crypto_free_shash(system_merkle_root.tfm);
+
     /* Now clean up main securityfs interface (after containers are gone) */
     bpfima_securityfs_cleanup();
 
@@ -257,7 +276,9 @@ static void __exit bpfima_exit(void)
     bpfima_policy_namespace_cleanup();
     bpfima_policy_cleanup();
 
-    cleanup_hash_table();
+
+
+    bpfima_hash_cleanup();
 
     printk(KERN_INFO "Container tracking: %d containers tracked\n",
            atomic_read(&container_count));

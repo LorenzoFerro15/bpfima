@@ -88,11 +88,10 @@ static int daemonize(void)
     }
 
     /* Close all open file descriptors */
-    int x;
-    for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
-    {
-        close(x);
-    }
+    /* Close standard file descriptors */
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
     
     // Redirect stdin/stdout/stderr to /dev/null
     open("/dev/null", O_RDWR);
@@ -576,6 +575,7 @@ static int cmd_unload(void)
     unlink(CGROUP_PATTERNS_MAP_PATH);
     unlink(PATH_PATTERNS_MAP_PATH);
     unlink(HOOK_CONFIG_MAP_PATH);
+    unlink("/sys/fs/bpf/bpf_timing_stats");
 
 
     printf("  BPF IMA unloaded successfully\n");
