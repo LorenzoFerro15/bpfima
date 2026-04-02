@@ -1,0 +1,111 @@
+\section{Implementation}
+\label{sec:implementation}
+
+The \ac{bpfima} framework leverages \ac{eBPF} technology to extend Linux kernel integrity measurement capabilities.
+It introduces container-aware monitoring and dynamic policy enforcement.
+System composition includes a custom kernel module, \ac{eBPF} programs hooked into \ac{LSM} points, and a user space control utility.
+
+\subsection{Kernel Module}
+Core functionality resides in a Linux kernel module establishing the integrity measurement infrastructure.
+Upon initialization, it creates a \texttt{SecurityFS} interface at \texttt{/sys/kernel/security/bpfima/}.
+This interface serves as the primary communication channel between kernel and user space.
+It exposes global status, policy configurations, and a hierarchical view of measurements organized by container namespaces.
+
+Central to the design is a non-binary Merkle tree.
+Unlike traditional flat lists in \ac{IMA}, \ac{bpfima} assigns a dedicated leaf node to each active container.
+Each leaf corresponds to a unique namespace identifier.
+This structure isolates measurement chains.
+Therefore, the integrity state of one container does not obscure others.
+The Merkle root hash acts as a global system state.
+It is periodically extended into the \ac{TPM} \ac{PCR} 23 to provide a hardware root of trust.
+This behavior is configurable through policies.
+
+Custom \ac{BTF}-enabled \textit{kfuncs} are registered by the module.
+These functions expose internal kernel operations to \ac{eBPF} programs.
+Such design bypasses standard \ac{eBPF} helper limitations.
+It enables direct interaction with the \ac{IMA} subsystem and \ac{TPM} drivers from \ac{LSM} hooks.
+Key functions include \texttt{bpfima\_measurement\_extend} for recording events and container handling.
+
+\subsection{User Space Tool}
+\texttt{bpfima-tool} is the user space control component.
+Developed in C, it uses \texttt{libbpf} for robust \ac{CO-RE} (Compile Once - Run Everywhere) support.
+Primary responsibilities include loading \ac{eBPF} bytecode into the kernel and attaching programs to hooks.
+It also manages the entire monitoring process lifecycle, measuring loaded/unloaded \ac{eBPF} programs.
+
+Two operational modes are available.
+Management tasks like loading policies or checking status use an interactive command-line interface.
+Continuous monitoring relies on a daemon mode.
+Bpfima-tool facilitates through bpf maps the storage of lists at user side.
+The tool handles signal processing (\texttt{SIGINT}, \texttt{SIGTERM}) for graceful shutdown.
+Cleanup routines ensure that BPF maps are unpinned and resources are released upon exit.
+
+\subsection{Policies}
+A dynamic, granular policy engine decouples security logic from enforcement mechanisms.
+Policies are defined in human-readable YAML format.
+The user space tool translates these into \ac{eBPF} Maps, specifically \texttt{BPF\_MAP\_TYPE\_ARRAY} for efficient O(1) lookups.
+Kernel-side hooks read these maps directly.
+This architecture allows administrators to update security policies at runtime.
+No kernel module reload or application restart is required.
+
+Three distinct layers structure the policy model.
+Global Policy configuration controls system-wide behavior.
+This includes the master enable switch, minimum file size thresholds, and logging verbosity.
+Underneath, a filtering layer manages exclusion patterns.
+It acts as a deny-list for control groups (cgroups) and file paths.
+Noise from infrastructure processes or ephemeral filesystems is thus filtered out.
+Finally, the Hook Configuration layer provides fine-grained control.
+Individual \ac{LSM} hooks can be independently enabled, disabled, or set to "track-only" mode.
+
+Integrity of the policy itself is strictly monitored.
+Any active policy map modification is treated as a measureable event.
+New configurations are serialized, hashed, and extended into the global Merkle tree root.
+Consequently, the security configuration state is cryptographically bound to the hardware root of trust.
+
+A typical policy configuration enables comprehensive monitoring while reducing noise.
+For instance, a standard deployment might enforce:
+\begin{verbatim}
+policy:
+  enabled: true
+  log_level: 2
+filters:
+  proc_sys: false    # Monitor /proc and /sys
+  tmp_files: false   # Monitor /tmp
+actions:
+  extend_tpm: true
+  track_container: true
+hooks:
+  lsm_bprm_check_security:
+    enabled: true
+\end{verbatim}
+This example effectively activates the system with informational logging.
+By disabling the `proc_sys` and `tmp_files` filters, it mandates coverage of all file operations, including those in temporary directories often targeted by attackers.
+The actions ensure that every event is both recorded for software audit and cryptographically extended into the \ac{TPM}, satisfying strict integrity requirements.
+Reference hooks like \texttt{lsm\_bprm\_check\_security} are explicitly activated to intercept binary execution, ensuring that no code runs inside a container without being measured.
+
+\subsection{eBPF Functions and Library}
+\texttt{headers\_bpf.h} is a specialized library provided to facilitate secure integrity extensions.
+It abstracts the complexity of raw \ac{eBPF} interactions.
+Standard data structures for policies and measurements are defined here.
+Inline helper functions like \texttt{bpfima\_should\_process} standardizes "policy check" logic across all hooks.
+This ensures consistent filtering rule application.
+
+Core \textit{kfuncs} exported by the kernel module back the library.
+These perform privileged operations typically unavailable to unprivileged \ac{eBPF} bytecode:
+
+\textbf{Measurement Extension:} \texttt{bpfima\_measurement\_extend} is the primary interface for recording integrity violations.
+When an \ac{eBPF} program detects a relevant event, it invokes this function.
+Arguments include the event name, target namespace ID, and dependency metadata.
+Atomicity is handled entirely within the kernel.
+The function locks the container's leaf node, calculates the new hash chain value, and updates the global Merkle root.
+Optional hardware TPM extension is also triggered here.
+
+\textbf{File Hashing:} Standard \ac{eBPF} programs encounter limits when computing cryptographic hashes of large files.
+The \texttt{bpfima\_file\_hash} kfunc solves this.
+It accepts a scalar representation of a `struct file` pointer.
+This pointer is safely cast to avoid verifier rejection.
+Actual SHA-256 computation is then delegated to the kernel's native \ac{IMA} subsystem.
+
+\textbf{Trust Anchor Retrieval:} Conditional security logic is enabled by functions like \texttt{bpfima\_tpm\_get\_pcr\_value}.
+\ac{eBPF} programs can read current PCR register values directly from TPM hardware.
+Developers can thus write "smart" hooks.
+For example, access to sensitive keys might be permitted only if the system's integrity state matches a known-good policy.

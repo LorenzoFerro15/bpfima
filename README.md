@@ -377,3 +377,7 @@ sudo dmesg | tail -20
 sudo bpftool prog list
 sudo cat /sys/kernel/debug/tracing/trace
 ```
+
+# License
+
+This project is open-source software distributed under the terms of the GNU General Public License version 2 (GPLv2).
