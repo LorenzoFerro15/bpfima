@@ -16,9 +16,10 @@ export PAHOLE_FLAGS=--btf_gen_floats
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 BPF_TARGET := bpf
+KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
-BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
+BPF_HEADERS := -I$(KERNEL_HEADERS)tools/lib/bpf -I$(KERNEL_HEADERS)tools/bpf/resolve_btfids/libbpf/include
 
 # Directory where vmlinux.h will be copied
 VMLINUX_DIR := include-vmlinux
@@ -57,7 +58,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 modules:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	make -C $(KERNEL_SRC) M=$(PWD) CC=gcc LD=ld OBJCOPY=objcopy modules
 	@mkdir -p $(BUILD_DIR)
 	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
@@ -75,7 +76,7 @@ $(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
 	@echo "Built eBPF object: $@"
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	make -C $(KERNEL_SRC) M=$(PWD) clean
 	rm -rf $(BUILD_DIR)
 	rm -f .*.cmd .*.o 2>/dev/null || true
 	rm -rf .tmp_versions 2>/dev/null || true
