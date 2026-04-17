@@ -92,7 +92,7 @@ static int daemonize(void)
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    
+
     // Redirect stdin/stdout/stderr to /dev/null
     open("/dev/null", O_RDWR);
     dup(0);
@@ -268,17 +268,17 @@ static struct monitored_file *get_monitored_file(const char *src_path, const cha
         }
         mf = mf->next;
     }
-    
+
     // Create new entry
     mf = malloc(sizeof(struct monitored_file));
     if (!mf) return NULL;
-    
+
     snprintf(mf->src_path, sizeof(mf->src_path), "%s", src_path);
     snprintf(mf->dst_path, sizeof(mf->dst_path), "%s", dst_path);
     mf->fd = -1;
     mf->next = g_monitored_files;
     g_monitored_files = mf;
-    
+
     return mf;
 }
 
@@ -290,10 +290,10 @@ static void append_new_content(struct monitored_file *mf) {
         mf->fd = open(mf->src_path, O_RDONLY);
         if (mf->fd < 0) return; // File might not exist yet
     }
-    
+
     char buffer[4096];
     ssize_t bytes;
-    
+
     // Read from current position
     while ((bytes = read(mf->fd, buffer, sizeof(buffer))) > 0) {
         FILE *dst = fopen(mf->dst_path, "a");
@@ -310,24 +310,24 @@ static void append_new_content(struct monitored_file *mf) {
  */
 static void dump_securityfs_to_files(void) {
     struct stat st = {0};
-    
+
     // Create root directory
     if (stat("build/namespaces/root", &st) == -1) {
         mkdir("build/namespaces/root", 0755);
     }
-    
+
     // Monitor global files
     struct monitored_file *mf;
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
     if (mf) append_new_content(mf);
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
     if (mf) append_new_content(mf);
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
     if (mf) append_new_content(mf);
-    
+
     // Dump namespace-specific data
     DIR *dir = opendir("/sys/kernel/security/bpfima/namespaces");
     if (dir) {
@@ -337,22 +337,22 @@ static void dump_securityfs_to_files(void) {
                 char src_path[1024];
                 char dst_dir[512];
                 char dst_path[1024];
-                
+
                 snprintf(dst_dir, sizeof(dst_dir), "build/namespaces/%s", entry->d_name);
                 if (stat(dst_dir, &st) == -1) {
                     mkdir(dst_dir, 0755);
                 }
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/measurements", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/measurements", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
                 if (mf) append_new_content(mf);
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
                 if (mf) append_new_content(mf);
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy_changes", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy_changes", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
@@ -515,6 +515,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
     if (daemon_mode)
     {
         printf("\nStarting daemon...\n");
+        fflush(NULL);
         if (daemonize() < 0) {
             fprintf(stderr, "Error: Failed to daemonize\n");
             goto cleanup;
@@ -522,7 +523,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
 
         // We are now in the child process
         write_pid_file();
-        
+
         signal(SIGINT, sig_handler);
         signal(SIGTERM, sig_handler);
 
@@ -535,7 +536,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
         }
 
         printf("\nShutting down...\n");
-        
+
         // Final dump before exit
         dump_securityfs_to_files();
     }
