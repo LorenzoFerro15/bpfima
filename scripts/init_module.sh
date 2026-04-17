@@ -43,13 +43,24 @@ cd /opt/bpfima
 make all KERNEL_SRC=$KERNEL_SRC KERNEL_HEADERS=$KERNEL_SRC
 rm -f /host/lib/modules/$KERNEL_VER/build/vmlinux
 
-# Unload the module if already present
-if cat /proc/modules | grep bpfima; then
-    rmmod bpfima
+# Unload the module only if already present and newer version available
+# Otherwise leave the old module to avoid losing logs
+if cat /proc/modules | grep -q bpfima; then
+    LOADED_VER=$(cat /sys/module/bpfima/version 2>/dev/null)
+    DISK_VER=$(modinfo -F version /opt/bpfima/build/bpfima.ko 2>/dev/null)
+    if [ "$LOADED_VER" != "$DISK_VER" ]; then
+        echo "Different bpfima module version available: loading it"
+        rmmod bpfima
+        insmod build/bpfima.ko
+        echo "Module inserted"
+    else
+        echo "Module already inserted"
+    fi
+# Load the module if not present
+else
+    insmod build/bpfima.ko
+    echo "Module inserted"
 fi
-
-insmod build/bpfima.ko
-echo "Module inserted"
 
 ./build/bpfima-tool load build/lsm_bprm_check_security.o -d
 ./build/bpfima-tool policy-init
