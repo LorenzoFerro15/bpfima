@@ -1,0 +1,482 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: policies.bpfima.polito.it
+spec:
+  group: bpfima.polito.it
+  names:
+    kind: Policy
+    listKind: PolicyList
+    plural: policies
+    singular: policy
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Policy is the Schema for the policies API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Policy
+            properties:
+              actions:
+                description: Action flags - What to do when an event is captured
+                properties:
+                  alert_suspicious:
+                    description: AlertSuspicious alert on suspicious activity
+                    type: boolean
+                  block:
+                    description: Block block the operation
+                    type: boolean
+                  build_deps:
+                    description: BuildDeps build dependency chain
+                    type: boolean
+                  extend_tpm:
+                    description: ExtendTPM extend measurement to TPM PCR
+                    type: boolean
+                  log_kernel:
+                    description: LogKernel log to kernel log (dmesg)
+                    type: boolean
+                  log_securityfs:
+                    description: LogSecurityFS log to /sys/kernel/security/bpfima/
+                    type: boolean
+                  track_container:
+                    description: TrackContainer track per-container measurements
+                    type: boolean
+                required:
+                - alert_suspicious
+                - block
+                - build_deps
+                - extend_tpm
+                - log_kernel
+                - log_securityfs
+                - track_container
+                type: object
+              cgroup_patterns:
+                description: Cgroup ignore patterns
+                items:
+                  description: PatternEntry defines a single pattern for filtering
+                  properties:
+                    enabled:
+                      description: Enabled whether this pattern is active
+                      type: boolean
+                    match_type:
+                      description: MatchType 0=exact, 1=prefix
+                      format: int32
+                      maximum: 1
+                      minimum: 0
+                      type: integer
+                    pattern:
+                      description: Pattern the pattern string to match
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                  required:
+                  - enabled
+                  - match_type
+                  - pattern
+                  type: object
+                maxItems: 32
+                type: array
+              filters:
+                description: Filter flags - Control what to skip/filter out
+                properties:
+                  dev:
+                    description: Dev filter /dev paths
+                    type: boolean
+                  libraries:
+                    description: Libraries filter .so libraries
+                    type: boolean
+                  non_executable:
+                    description: NonExecutable filter non-executable files
+                    type: boolean
+                  proc_sys:
+                    description: ProcSys filter /proc, /sys paths
+                    type: boolean
+                  readonly_files:
+                    description: ReadonlyFiles filter readonly file opens
+                    type: boolean
+                  small_files:
+                    description: SmallFiles filter files below min_file_size
+                    type: boolean
+                  system_cgroups:
+                    description: SystemCgroups filter system cgroups (/, init.scope)
+                    type: boolean
+                  tmp_files:
+                    description: TmpFiles filter /tmp files
+                    type: boolean
+                required:
+                - dev
+                - libraries
+                - non_executable
+                - proc_sys
+                - readonly_files
+                - small_files
+                - system_cgroups
+                - tmp_files
+                type: object
+              hooks:
+                description: Hook-specific configuration
+                properties:
+                  kprobe_file_open:
+                    description: KprobeFileOpen configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_bprm_check_security:
+                    description: LSMBprmCheckSecurity configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_container_events:
+                    description: LSMContainerEvents configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_file_open:
+                    description: LSMFileOpen configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_file_post_open:
+                    description: LSMFilePostOpen configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_mmap_file:
+                    description: LSMMmapFile configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                  lsm_socket_connect:
+                    description: LSMSocketConnect configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
+                type: object
+              path_patterns:
+                description: Path ignore patterns
+                items:
+                  description: PatternEntry defines a single pattern for filtering
+                  properties:
+                    enabled:
+                      description: Enabled whether this pattern is active
+                      type: boolean
+                    match_type:
+                      description: MatchType 0=exact, 1=prefix
+                      format: int32
+                      maximum: 1
+                      minimum: 0
+                      type: integer
+                    pattern:
+                      description: Pattern the pattern string to match
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                  required:
+                  - enabled
+                  - match_type
+                  - pattern
+                  type: object
+                maxItems: 64
+                type: array
+              policy:
+                description: Policy configuration
+                properties:
+                  enabled:
+                    description: Enabled controls whether BPF IMA is active
+                    type: boolean
+                  log_level:
+                    description: LogLevel sets the logging verbosity (0=ERROR, 1=WARN,
+                      2=INFO, 3=DEBUG)
+                    format: int32
+                    maximum: 3
+                    minimum: 0
+                    type: integer
+                  max_path_depth:
+                    description: MaxPathDepth maximum depth of file paths to track
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  min_file_size:
+                    description: MinFileSize minimum file size to track
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - enabled
+                - log_level
+                type: object
+            required:
+            - actions
+            - filters
+            - policy
+            type: object
+          status:
+            description: status defines the observed state of Policy
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the current state of the Policy resource.
+                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
+
+                  Standard condition types include:
+                  - "Available": the resource is fully functional
+                  - "Progressing": the resource is being created or updated
+                  - "Degraded": the resource failed to reach or maintain its desired state
+
+                  The status of each condition is one of True, False, or Unknown.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
