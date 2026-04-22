@@ -8,6 +8,15 @@ build/
 vmlinux.h
 log.txt
 
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+**/bin/*
+Dockerfile.cross
+
 # Editor temporary files
 *~
 *.swp
@@ -17,6 +26,10 @@ log.txt
 *.patch
 *.pdf
 out.txt
+*.out
+
+# Test binary, built with `go test -c`
+*.test
 
 # IDE files
 .vscode/
@@ -44,3 +57,12 @@ core.*
 # Temporary files
 *.tmp
 *tmp
+
+# Go workspace file
+go.work
+
+# Kubernetes Generated files - skip generated files, except for vendored files
+!vendor/**/zz_generated.*
+
+# Kubeconfig might contain secrets
+*.kubeconfig

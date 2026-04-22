@@ -66,4 +66,4 @@ fi
 ./build/bpfima-tool policy-init
 echo "eBPF program loaded and maps initialized"
 
-sleep infinity
+/opt/bpfima-manager
