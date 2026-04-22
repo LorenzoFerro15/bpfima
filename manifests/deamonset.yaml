@@ -11,6 +11,7 @@ spec:
       labels:
         app: bpfima
     spec:
+      serviceAccountName: bpfima-manager
       hostPID: true
       containers:
       - name: bpfima-v1

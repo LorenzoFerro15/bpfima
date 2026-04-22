@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bpfima-manager-role
+rules:
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies/status
+  verbs:
+  - get
+  - patch
+  - update
