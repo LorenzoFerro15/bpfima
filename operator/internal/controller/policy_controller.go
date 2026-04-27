@@ -24,14 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"os"
-	"os/exec"
-
 	"k8s.io/apimachinery/pkg/api/errors"
-	"sigs.k8s.io/yaml"
 
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	bpfimapolitoitv1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
+	"github.com/LorenzoFerro15/bpfima/internal/helpers"
 )
 
 // PolicyReconciler reconciles a Policy object
@@ -68,40 +65,46 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Convert in YAML
-	yamlData, err := yaml.Marshal(policy)
+	// Open the maps
+	mapFiles := []string{"bpfima_policy_map", "bpfima_cgroup_patterns_map", "bpfima_path_patterns_map", "bpfima_hook_config_map"}
+	maps, err := helpers.OpenMaps("/sys/fs/bpf/", mapFiles)
 	if err != nil {
-		log.Error(err, "Failed to parse in YAML")
+		log.Error(err, "Failed to open map")
+		log.Error(nil, "Did you load the BPF program first?")
 		return ctrl.Result{}, err
 	}
+	defer func() {
+		for _, m := range maps {
+			m.Close()
+		}
+	}()
 
-	// Create temporary YAML file
-	tmpFile, err := os.CreateTemp("", "policy-update-*.yaml")
+	// Update the maps
+	err = helpers.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
 	if err != nil {
-		log.Error(err, "Failed to create tmp file")
+		log.Error(err, "Failed to update policy map")
 		return ctrl.Result{}, err
 	}
 
-	// The tmp file will be removed at the end of the function
-	defer os.Remove(tmpFile.Name())
-
-	// Write the YAML file
-	if _, err := tmpFile.Write(yamlData); err != nil {
-		log.Error(err, "Failed to write the policy file")
-		tmpFile.Close()
-		return ctrl.Result{}, err
-	}
-	tmpFile.Close()
-
-	// Execute policy-update
-	cmd := exec.Command("/opt/bpfima/build/bpfima-tool", "policy-update", tmpFile.Name())
-	output, err := cmd.CombinedOutput()
+	err = helpers.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
 	if err != nil {
-		log.Error(err, "Failed to update the policy", "output", string(output))
+		log.Error(err, "Failed to update cgroup patterns")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Policy updated successfully", "bpfima_output", string(output))
+	err = helpers.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
+	if err != nil {
+		log.Error(err, "Failed to update cgroup patterns")
+		return ctrl.Result{}, err
+	}
+
+	err = helpers.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
+	if err != nil {
+		log.Error(err, "Failed to update path patterns")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Policy updated successfully")
 	return ctrl.Result{}, nil
 }
 
