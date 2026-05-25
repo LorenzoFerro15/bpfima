@@ -1,4 +1,4 @@
-package helpers
+package mapsmanager
 
 import (
 	"fmt"

@@ -28,7 +28,7 @@ import (
 
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	bpfimapolitoitv1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
-	"github.com/LorenzoFerro15/bpfima/internal/helpers"
+	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
 )
 
 // PolicyReconciler reconciles a Policy object
@@ -43,10 +43,6 @@ type PolicyReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Policy object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
@@ -67,7 +63,7 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Open the maps
 	mapFiles := []string{"bpfima_policy_map", "bpfima_cgroup_patterns_map", "bpfima_path_patterns_map", "bpfima_hook_config_map"}
-	maps, err := helpers.OpenMaps("/sys/fs/bpf/", mapFiles)
+	maps, err := mapsmanager.OpenMaps("/sys/fs/bpf/", mapFiles)
 	if err != nil {
 		log.Error(err, "Failed to open map")
 		log.Error(nil, "Did you load the BPF program first?")
@@ -80,25 +76,25 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}()
 
 	// Update the maps
-	err = helpers.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
+	err = mapsmanager.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
 	if err != nil {
 		log.Error(err, "Failed to update policy map")
 		return ctrl.Result{}, err
 	}
 
-	err = helpers.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
+	err = mapsmanager.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
 	if err != nil {
 		log.Error(err, "Failed to update cgroup patterns")
 		return ctrl.Result{}, err
 	}
 
-	err = helpers.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
+	err = mapsmanager.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
 	if err != nil {
 		log.Error(err, "Failed to update cgroup patterns")
 		return ctrl.Result{}, err
 	}
 
-	err = helpers.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
+	err = mapsmanager.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
 	if err != nil {
 		log.Error(err, "Failed to update path patterns")
 		return ctrl.Result{}, err
