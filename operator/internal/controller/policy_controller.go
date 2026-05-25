@@ -18,15 +18,22 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 
@@ -165,5 +172,52 @@ func (r *PolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&bpfimapolitoitv1alpha1.Policy{}).
 		Named("policy").
+		// Call the reconciliation loop also if a change in the node's label occurs
+		Watches(
+			&corev1.Node{},
+			// Create list of all installed policies
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				var policyList bpfimapolitoitv1alpha1.PolicyList
+				if err := r.List(ctx, &policyList); err != nil {
+					return nil
+				}
+
+				// Create list of reconciliation requests
+				var requests []reconcile.Request
+				for _, policy := range policyList.Items {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      policy.Name,
+							Namespace: policy.Namespace, // If the policy is cluster-wide it is ""
+						},
+					})
+				}
+				return requests
+			}),
+
+			// Filter on label changes
+			builder.WithPredicates(predicate.Funcs{
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					// Convert objects to nodes
+					oldNode, oldOk := e.ObjectOld.(*corev1.Node)
+					newNode, newOk := e.ObjectNew.(*corev1.Node)
+
+					if !oldOk || !newOk {
+						return true
+					}
+
+					// Reconcile only if the label changed for that node
+					return !maps.Equal(oldNode.Labels, newNode.Labels)
+				},
+				CreateFunc: func(e event.CreateEvent) bool {
+					// When a node is created, reconcile
+					return true
+				},
+				DeleteFunc: func(e event.DeleteEvent) bool {
+					// When a node is deleted not reconcile
+					return false
+				},
+			}),
+		).
 		Complete(r)
 }
