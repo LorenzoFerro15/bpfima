@@ -4,6 +4,10 @@ kind: Policy
 metadata:
   name: policy-v1
 spec:
+  selector:
+    matchLabels:
+      color: green
+
   policy:
     enabled: true
     log_level: 1  # WARN only

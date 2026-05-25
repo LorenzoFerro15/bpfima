@@ -15,9 +15,14 @@ spec:
       hostPID: true
       containers:
       - name: bpfima-v1
-        image: iochia02/bpfima:v1.36
+        image: iochia02/bpfima:v2.20
         securityContext:
           privileged: true
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName # Get name from current node
         volumeMounts:
         - name: host-modules
           mountPath: /host/lib/modules

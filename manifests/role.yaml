@@ -5,6 +5,14 @@ metadata:
   name: bpfima-manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - bpfima.polito.it
   resources:
   - policies

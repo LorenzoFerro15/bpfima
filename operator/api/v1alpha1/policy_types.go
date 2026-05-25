@@ -30,6 +30,11 @@ type PolicySpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
+	// Node selector - To which nodes apply the policy
+	//
+	// +kubebuilder:validation:Optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
 	// Policy configuration
 	//
 	// +kubebuilder:validation:Required

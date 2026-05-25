@@ -18,7 +18,11 @@ package controller
 
 import (
 	"context"
+	"os"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -59,6 +63,17 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		log.Error(err, "Failed to get Policy")
 		return ctrl.Result{}, err
+	}
+
+	// Verify if you have to apply the policy to the current node
+	ok, err := r.correctNode(ctx, policy)
+	if err != nil {
+		log.Error(err, "Failed to determine node applicability")
+		return ctrl.Result{}, err
+	}
+	if !ok {
+		log.Info("Policy does not apply to this node, skipping")
+		return ctrl.Result{}, nil
 	}
 
 	// Open the maps
@@ -102,6 +117,47 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	log.Info("Policy updated successfully")
 	return ctrl.Result{}, nil
+}
+
+func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Policy) (bool, error) {
+	log := logf.FromContext(ctx)
+
+	// No selector specified: applies to all nodes
+	if policy.Spec.Selector == nil {
+		return true, nil
+	}
+
+	// Get the selector
+	selector, err := metav1.LabelSelectorAsSelector(policy.Spec.Selector)
+	if err != nil {
+		log.Error(err, "failed to convert LabelSelector")
+		return false, err
+	}
+
+	// Get node name using the environment variable
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		log.Info("NODE_NAME not set, skipping node")
+		return false, nil
+	}
+
+	// Get the node
+	var node corev1.Node
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Node not found", "node", nodeName)
+			return false, nil
+		}
+		log.Error(err, "Failed to get node by name", "node", nodeName)
+		return false, err
+	}
+
+	// Verify it the label in the policy matches the node one
+	if !selector.Matches(labels.Set(node.Labels)) {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
