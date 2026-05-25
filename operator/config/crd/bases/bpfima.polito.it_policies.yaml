@@ -12,7 +12,7 @@ spec:
     listKind: PolicyList
     plural: policies
     singular: policy
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

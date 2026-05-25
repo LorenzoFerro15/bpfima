@@ -285,6 +285,7 @@ type PolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // Policy is the Schema for the policies API
 type Policy struct {
