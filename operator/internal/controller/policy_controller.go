@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"os"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	bpfimapolitoitv1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
+	"github.com/cilium/ebpf"
 )
 
 // PolicyReconciler reconciles a Policy object
@@ -65,21 +67,21 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	err := r.Get(ctx, req.NamespacedName, policy)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Info("Policy resource not found. Ignoring since object must be deleted.")
+			log.Info("policy resource not found; ignoring since object was deleted")
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get Policy")
+		log.Error(err, "failed to get Policy")
 		return ctrl.Result{}, err
 	}
 
 	// Verify if you have to apply the policy to the current node
 	ok, err := r.correctNode(ctx, policy)
 	if err != nil {
-		log.Error(err, "Failed to determine node applicability")
+		log.Error(err, "failed to determine node applicability")
 		return ctrl.Result{}, err
 	}
 	if !ok {
-		log.Info("Policy does not apply to this node, skipping")
+		log.Info("policy does not apply to this node, skipping")
 		return ctrl.Result{}, nil
 	}
 
@@ -87,43 +89,49 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	mapFiles := []string{"bpfima_policy_map", "bpfima_cgroup_patterns_map", "bpfima_path_patterns_map", "bpfima_hook_config_map"}
 	maps, err := mapsmanager.OpenMaps("/sys/fs/bpf/", mapFiles)
 	if err != nil {
-		log.Error(err, "Failed to open map")
-		log.Error(nil, "Did you load the BPF program first?")
+		log.Error(err, "failed to open map")
+		log.Error(nil, "did you load the BPF program first?")
 		return ctrl.Result{}, err
 	}
 	defer func() {
-		for _, m := range maps {
-			m.Close()
+		for _, m := range bpfimaMaps {
+			_ = m.Close()
 		}
 	}()
 
-	// Update the maps
-	err = mapsmanager.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
+	err = r.updateMaps(maps, policy)
 	if err != nil {
-		log.Error(err, "Failed to update policy map")
-		return ctrl.Result{}, err
-	}
-
-	err = mapsmanager.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
-	if err != nil {
-		log.Error(err, "Failed to update cgroup patterns")
-		return ctrl.Result{}, err
-	}
-
-	err = mapsmanager.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
-	if err != nil {
-		log.Error(err, "Failed to update cgroup patterns")
-		return ctrl.Result{}, err
-	}
-
-	err = mapsmanager.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
-	if err != nil {
-		log.Error(err, "Failed to update path patterns")
+		log.Error(err, "failed to update BPF maps")
 		return ctrl.Result{}, err
 	}
 
 	log.Info("Policy updated successfully")
 	return ctrl.Result{}, nil
+}
+
+func (r *PolicyReconciler) updateMaps(maps map[string]*ebpf.Map, policy *v1alpha1.Policy) error {
+	var err error
+
+	err = mapsmanager.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
+	if err != nil {
+		return fmt.Errorf("updating policy map: %w", err)
+	}
+
+	err = mapsmanager.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
+	if err != nil {
+		return fmt.Errorf("updating cgroup patterns map: %w", err)
+	}
+
+	err = mapsmanager.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
+	if err != nil {
+		return fmt.Errorf("updating path patterns map: %w", err)
+	}
+
+	err = mapsmanager.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
+	if err != nil {
+		return fmt.Errorf("updating hook config map: %w", err)
+	}
+	return nil
 }
 
 func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Policy) (bool, error) {
@@ -137,8 +145,7 @@ func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Pol
 	// Get the selector
 	selector, err := metav1.LabelSelectorAsSelector(policy.Spec.Selector)
 	if err != nil {
-		log.Error(err, "failed to convert LabelSelector")
-		return false, err
+		return false, fmt.Errorf("failed to convert LabelSelector: %w", err)
 	}
 
 	// Get node name using the environment variable
@@ -155,8 +162,7 @@ func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Pol
 			log.Info("Node not found", "node", nodeName)
 			return false, nil
 		}
-		log.Error(err, "Failed to get node by name", "node", nodeName)
-		return false, err
+		return false, fmt.Errorf("failed to get node by name %w: %w", nodeName, err)
 	}
 
 	// Verify it the label in the policy matches the node one

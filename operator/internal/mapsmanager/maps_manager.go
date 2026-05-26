@@ -77,7 +77,7 @@ func OpenMaps(baseDir string, names []string) (map[string]*ebpf.Map, error) {
 		m, err := ebpf.LoadPinnedMap(fullPath, nil)
 		if err != nil {
 			for _, opened := range result {
-				opened.Close()
+				_ = opened.Close()
 			}
 			return nil, err
 		}
@@ -153,7 +153,7 @@ func computeActionFlags(a v1alpha1.ActionConfig) uint32 {
 // UpdatePolicy updates the BPF policy map with the given configuration
 func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) error {
 	if policyMap == nil {
-		return fmt.Errorf("Policy map is nil")
+		return fmt.Errorf("policy map is nil")
 	}
 
 	key := uint32(0) // Global policy key
@@ -173,13 +173,13 @@ func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1a
 // UpdatePatterns updates the BPF cgroup/path patterns map
 func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) error {
 	if patternsMap == nil {
-		return fmt.Errorf("Cgroup/path map is nil")
+		return fmt.Errorf("cgroup/path map is nil")
 	}
 
 	// Get the max number of entries storable in the map
 	info, err := patternsMap.Info()
 	if err != nil {
-		return fmt.Errorf("Failed to get cgroup/path map info: %w", err)
+		return fmt.Errorf("failed to get cgroup/path map info: %w", err)
 	}
 
 	maxEntries := int(info.MaxEntries)
@@ -193,7 +193,7 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 
 		// This should never occur due to CR validation, just safe-check
 		if i >= maxEntries {
-			return fmt.Errorf("Too many enabled patterns: %d (max %d)", i+1, maxEntries)
+			return fmt.Errorf("too many enabled patterns: %d (max %d)", i+1, maxEntries)
 		}
 
 		entry := BPFPatternEntry{
@@ -207,7 +207,7 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 
 		key := uint32(i)
 		if err := patternsMap.Put(key, entry); err != nil {
-			return fmt.Errorf("Failed to update cgroup/path pattern %d: %w", i, err)
+			return fmt.Errorf("failed to update cgroup/path pattern %d: %w", i, err)
 		}
 		i++
 	}
@@ -217,7 +217,7 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 	for ; i < maxEntries; i++ {
 		key := uint32(i)
 		if err := patternsMap.Put(key, zero); err != nil {
-			return fmt.Errorf("Failed to clear cgroup/path pattern %d: %w", i, err)
+			return fmt.Errorf("failed to clear cgroup/path pattern %d: %w", i, err)
 		}
 	}
 
@@ -227,7 +227,7 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 // UpdateHookConfig updates the BPF hooks map
 func UpdateHookConfig(hooksMap *ebpf.Map, hooks v1alpha1.HookConfigs) error {
 	if hooksMap == nil {
-		return fmt.Errorf("Hooks map is nil")
+		return fmt.Errorf("hooks map is nil")
 	}
 
 	type hookEntry struct {
@@ -269,7 +269,7 @@ func UpdateHookConfig(hooksMap *ebpf.Map, hooks v1alpha1.HookConfigs) error {
 		}
 
 		if err := hooksMap.Put(entry.index, bpfHook); err != nil {
-			return fmt.Errorf("Failed to update hook %d: %w", entry.index, err)
+			return fmt.Errorf("failed to update hook %d: %w", entry.index, err)
 		}
 	}
 
