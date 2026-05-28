@@ -23,8 +23,7 @@ import (
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,10 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"k8s.io/apimachinery/pkg/api/errors"
-
-	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
-	bpfimapolitoitv1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
+	bpfimav1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
 	"github.com/cilium/ebpf"
 )
@@ -109,25 +105,25 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-func (r *PolicyReconciler) updateMaps(maps map[string]*ebpf.Map, policy *v1alpha1.Policy) error {
+func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy) error {
 	var err error
 
-	err = mapsmanager.UpdatePolicy(maps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
+	err = mapsmanager.UpdatePolicy(bpfimaMaps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
 	if err != nil {
 		return fmt.Errorf("updating policy map: %w", err)
 	}
 
-	err = mapsmanager.UpdatePatterns(maps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
+	err = mapsmanager.UpdatePatterns(bpfimaMaps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
 	if err != nil {
 		return fmt.Errorf("updating cgroup patterns map: %w", err)
 	}
 
-	err = mapsmanager.UpdatePatterns(maps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
+	err = mapsmanager.UpdatePatterns(bpfimaMaps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
 	if err != nil {
 		return fmt.Errorf("updating path patterns map: %w", err)
 	}
 
-	err = mapsmanager.UpdateHookConfig(maps["bpfima_hook_config_map"], policy.Spec.Hooks)
+	err = mapsmanager.UpdateHookConfig(bpfimaMaps["bpfima_hook_config_map"], policy.Spec.Hooks)
 	if err != nil {
 		return fmt.Errorf("updating hook config map: %w", err)
 	}
