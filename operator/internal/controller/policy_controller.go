@@ -37,6 +37,7 @@ import (
 
 	bpfimav1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
+	"github.com/LorenzoFerro15/bpfima/internal/policyselector"
 	"github.com/cilium/ebpf"
 	"github.com/go-logr/logr"
 )
@@ -60,32 +61,36 @@ type PolicyReconciler struct {
 func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 
-	// Get the updated object
-	policy := &v1alpha1.Policy{}
-	err := r.Get(ctx, req.NamespacedName, policy)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			log.Info("policy resource not found; ignoring since object was deleted")
-			return ctrl.Result{}, nil
-		}
-		log.Error(err, "failed to get Policy")
-		return ctrl.Result{}, err
-	}
+	var selectedPolicy *bpfimav1alpha1.Policy
 
 	// Verify if you have to apply the policy to the current node
-	ok, err := r.correctNode(ctx, policy)
+	nodeLabel, err := r.getNodeLabel(ctx)
 	if err != nil {
 		log.Error(err, "failed to determine node applicability")
 		return ctrl.Result{}, err
 	}
-	if !ok {
-		log.Info("policy does not apply to this node, skipping")
+	if nodeLabel == nil {
+		log.Info("node not found, skipping")
 		return ctrl.Result{}, nil
+	}
+
+	// Get the list of all policies
+	var policyList bpfimav1alpha1.PolicyList
+	if err := r.List(ctx, &policyList); err != nil {
+		log.Error(nil, "failed to get the list of policies")
+		return reconcile.Result{}, err
+	}
+
+	// Choose the most appropriate policy to apply
+	selectedPolicy, err = policyselector.IdentifyCorrectPolicy(policyList.Items, nodeLabel)
+	if err != nil {
+		log.Error(err, "failed to determine policy to apply")
+		return ctrl.Result{}, err
 	}
 
 	// Open the maps
 	mapFiles := []string{"bpfima_policy_map", "bpfima_cgroup_patterns_map", "bpfima_path_patterns_map", "bpfima_hook_config_map"}
-	maps, err := mapsmanager.OpenMaps("/sys/fs/bpf/", mapFiles)
+	bpfimaMaps, err := mapsmanager.OpenMaps("/sys/fs/bpf/", mapFiles)
 	if err != nil {
 		log.Error(err, "failed to open map")
 		log.Error(nil, "did you load the BPF program first?")
@@ -97,13 +102,14 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}()
 
-	err = r.updateMaps(maps, policy)
+	// Update the maps using the selected policy
+	err = updateMaps(bpfimaMaps, selectedPolicy)
 	if err != nil {
 		log.Error(err, "failed to update BPF maps")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Policy updated successfully")
+	log.Info("Policy updated successfully", "selected-policy", selectedPolicy.Name)
 	return ctrl.Result{}, nil
 }
 
@@ -132,25 +138,14 @@ func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy) 
 	return nil
 }
 
-func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Policy) (bool, error) {
+func (r *PolicyReconciler) getNodeLabel(ctx context.Context) (map[string]string, error) {
 	log := logf.FromContext(ctx)
-
-	// No selector specified: applies to all nodes
-	if policy.Spec.Selector == nil {
-		return true, nil
-	}
-
-	// Get the selector
-	selector, err := metav1.LabelSelectorAsSelector(policy.Spec.Selector)
-	if err != nil {
-		return false, fmt.Errorf("failed to convert LabelSelector: %w", err)
-	}
 
 	// Get node name using the environment variable
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		log.Info("NODE_NAME not set, skipping node")
-		return false, nil
+		return nil, nil
 	}
 
 	// Get the node
@@ -158,45 +153,29 @@ func (r *PolicyReconciler) correctNode(ctx context.Context, policy *v1alpha1.Pol
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Node not found", "node", nodeName)
-			return false, nil
+			return nil, nil
 		}
-		return false, fmt.Errorf("failed to get node by name %w: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to get node by name %s: %w", nodeName, err)
 	}
 
-	// Verify it the label in the policy matches the node one
-	if !selector.Matches(labels.Set(node.Labels)) {
-		return false, nil
-	}
-
-	return true, nil
+	return node.Labels, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&bpfimapolitoitv1alpha1.Policy{}).
+		For(&bpfimav1alpha1.Policy{}).
 		Named("policy").
 		// Call the reconciliation loop also if a change in the node's label occurs
 		Watches(
 			&corev1.Node{},
-			// Create list of all installed policies
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				var policyList bpfimapolitoitv1alpha1.PolicyList
-				if err := r.List(ctx, &policyList); err != nil {
-					return nil
+				// Queue only one request with a custom name
+				// The reconcile will automatically re-process all the policies
+				// and choose the best one for the node
+				return []reconcile.Request{
+					{NamespacedName: types.NamespacedName{Name: "reconcile-all-policies"}},
 				}
-
-				// Create list of reconciliation requests
-				var requests []reconcile.Request
-				for _, policy := range policyList.Items {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      policy.Name,
-							Namespace: policy.Namespace, // If the policy is cluster-wide it is ""
-						},
-					})
-				}
-				return requests
 			}),
 
 			// Filter on label changes
