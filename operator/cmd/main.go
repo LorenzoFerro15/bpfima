@@ -181,6 +181,7 @@ func main() {
 	if err := (&controller.PolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("policy-reconciler"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Policy")
 		os.Exit(1)

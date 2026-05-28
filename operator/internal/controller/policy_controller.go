@@ -38,12 +38,14 @@ import (
 	bpfimav1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
 	"github.com/cilium/ebpf"
+	"github.com/go-logr/logr"
 )
 
 // PolicyReconciler reconciles a Policy object
 type PolicyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Log    logr.Logger
 }
 
 // +kubebuilder:rbac:groups=bpfima.polito.it,resources=policies,verbs=get;list;watch;create;update;patch;delete
@@ -56,7 +58,7 @@ type PolicyReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
 func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.Log
 
 	// Get the updated object
 	policy := &v1alpha1.Policy{}
