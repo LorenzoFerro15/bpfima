@@ -1,6 +1,6 @@
 # Main module (now using shared components)
 obj-m += bpfima.o
-bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/policy_manager.o src/policy_namespace.o src/kfuncs_policy.o src/policy_securityfs.o
+bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/measure_securityfs.o
 
 # Add include directory for modular headers
 ccflags-y += -I$(src)/include
@@ -24,7 +24,7 @@ CFLAGS := -O2 -g -target $(BPF_TARGET) -Wall -Werror -D__TARGET_ARCH_x86 $(BPF_H
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
-LIBS := -lbpf -lelf -lz -lyaml
+LIBS := -lbpf -lelf -lz -lyaml -lcrypto
 
 # Build directory for all output files
 BUILD_DIR := build
@@ -42,7 +42,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 modules:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) modules
 	@mkdir -p $(BUILD_DIR)
 	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
@@ -60,7 +60,7 @@ $(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
 	@echo "Built eBPF object: $@"
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) clean
 	rm -rf $(BUILD_DIR)
 	rm -f .*.cmd .*.o 2>/dev/null || true
 	rm -rf .tmp_versions 2>/dev/null || true

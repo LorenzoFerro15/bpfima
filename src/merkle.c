@@ -261,7 +261,6 @@ u32 get_merkle_root_history_count(void)
 int add_merkle_root_history_entry(const u8 *value, const char *container_id)
 {
     struct merkle_root_entry *entry;
-    struct bpfima_policy_config *policy;
     unsigned long flags;
     u32 current_count;
     bool should_check_limit = true;
@@ -281,9 +280,8 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
     entry->is_aggregate = false;
     entry->aggregated_count = 0;
 
-    /* Check policy scope */
-    policy = bpfima_policy_get();
-    if (policy && policy->merkle_history_scope == MERKLE_HISTORY_SCOPE_ROOT_ONLY) {
+    /* Check policy scope (using default macros since kernel policy is removed) */
+    if (DEFAULT_MERKLE_HISTORY_SCOPE == MERKLE_HISTORY_SCOPE_ROOT_ONLY) {
         /* Only apply circular buffer to root/global entries (empty container_id) */
         if (container_id && container_id[0] != '\0') {
             should_check_limit = false;
@@ -299,11 +297,11 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
     /* Increment counter and check if we need to trim */
     current_count = atomic_inc_return(&merkle_root_history_count);
 
-    if (should_check_limit && policy && policy->merkle_history_max_size > 0) {
-        if (current_count > policy->merkle_history_max_size) {
+    if (should_check_limit && DEFAULT_MERKLE_HISTORY_MAX_SIZE > 0) {
+        if (current_count > DEFAULT_MERKLE_HISTORY_MAX_SIZE) {
             pr_info("bpfima: Merkle history reached max size (%u), trimming...\n",
-                    policy->merkle_history_max_size);
-            trim_merkle_root_history(policy->merkle_history_max_size);
+                    DEFAULT_MERKLE_HISTORY_MAX_SIZE);
+            trim_merkle_root_history(DEFAULT_MERKLE_HISTORY_MAX_SIZE);
         }
     }
 

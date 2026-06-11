@@ -12,7 +12,6 @@
 #include <linux/string.h>
 
 #include "bpfima_common.h"
-#include "bpfima_policy.h"
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
 #include "bpfima_securityfs.h"
@@ -110,21 +109,6 @@ struct container_node *create_container_node(const char *container_id)
     }
 
     pr_info("bpfima: Created container node for %s\n", container_id);
-
-    /* 
-     * Initialize policy for this namespace by inheriting global policy.
-     * This ensures that the new namespace starts with the current global settings.
-     */
-    {
-        struct bpfima_policy_namespace *policy_ns;
-        policy_ns = bpfima_policy_namespace_get_or_create(container_id);
-        if (IS_ERR(policy_ns)) {
-            pr_warn("bpfima: Failed to create policy namespace for %s: %ld (continuing without policy inheritance)\n",
-                    container_id, PTR_ERR(policy_ns));
-        } else {
-            pr_info("bpfima: Inherited global policy for namespace %s\n", container_id);
-        }
-    }
 
     return container;
 }

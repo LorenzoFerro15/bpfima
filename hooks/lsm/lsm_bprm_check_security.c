@@ -94,12 +94,13 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     }
 
     struct bpfima_policy_config *policy = NULL;
-    struct bpfima_policy_config ns_policy = {0}; /* Stack allocation for namespace policy */
+
     
     /* Try to get namespace-specific policy first */
     if (cgroup_name[0] != '\0') {
-        if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
-            policy = &ns_policy;
+        struct bpfima_policy_config *lookup_policy = bpf_map_lookup_elem(&bpfima_namespace_policy_map, cgroup_name);
+        if (lookup_policy) {
+            policy = lookup_policy;
             /* Debug print if needed implies policy was found */
         }
     }

@@ -25,12 +25,7 @@ __bpf_kfunc int bpfima_container_get_leaf_hash(const char *container_id, u8 *lea
 /* Merkle tree kfuncs */
 __bpf_kfunc int bpfima_merkle_get_root(u8 *root_hash, u32 hash_size);
 
-/* Policy kfuncs */
-__bpf_kfunc int bpfima_policy_update_filter_flags(const char *namespace_id, u32 new_flags);
-__bpf_kfunc int bpfima_policy_update_action_flags(const char *namespace_id, u32 new_flags);
-__bpf_kfunc int bpfima_policy_update_min_file_size(const char *namespace_id, u32 new_size);
-__bpf_kfunc int bpfima_policy_update_log_level(const char *namespace_id, u32 new_level);
-__bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
+
 
 extern const struct btf_kfunc_id_set bpf_kfunc_example_set;
 

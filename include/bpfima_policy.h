@@ -159,43 +159,5 @@ struct bpfima_policy_namespace {
     spinlock_t change_history_lock;
 };
 
-#ifdef __KERNEL__
-/* Kernel-side policy management functions */
-int bpfima_policy_init(void);
-void bpfima_policy_cleanup(void);
-int bpfima_policy_set_default(void);
-struct bpfima_policy_config *bpfima_policy_get(void);
-int bpfima_policy_update(struct bpfima_policy_config *new_config);
-int bpfima_policy_add_cgroup_pattern(const char *pattern);
-int bpfima_policy_add_path_pattern(const char *pattern);
-int bpfima_policy_set_hook_config(enum bpfima_hook_id hook, struct bpfima_hook_config *config);
-
-/* Getters for pattern arrays and hook configs */
-struct bpfima_pattern_entry *bpfima_policy_get_cgroup_patterns(void);
-struct bpfima_pattern_entry *bpfima_policy_get_path_patterns(void);
-struct bpfima_hook_config *bpfima_policy_get_hook_config(enum bpfima_hook_id hook);
-
-/* Per-namespace policy management */
-int bpfima_policy_namespace_init(void);
-void bpfima_policy_namespace_cleanup(void);
-struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char *namespace_id);
-int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 new_flags);
-int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 new_flags);
-int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
-int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
-int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
-int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config);
-
-/* Global policy change history management */
-int bpfima_global_policy_init_history(void);
-void bpfima_global_policy_cleanup_history(void);
-int bpfima_global_policy_record_change(struct bpfima_policy_config *policy);
-struct list_head *bpfima_global_policy_get_history(void);
-spinlock_t *bpfima_global_policy_get_history_lock(void);
-
-/* Policy kfunc registration */
-int register_policy_kfuncs(void);
-void unregister_policy_kfuncs(void);
-#endif
 
 #endif /* BPFIMA_POLICY_H */

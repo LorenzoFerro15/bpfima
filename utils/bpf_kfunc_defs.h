@@ -194,6 +194,5 @@ extern int bpfima_policy_update_log_level(const char *namespace_id, u32 new_leve
  * Returns: 0 on success, negative error code on failure
  */
 extern int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size) __ksym;
-extern int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config) __ksym;
 
 #endif /* BPF_KFUNC_DEFS_H */

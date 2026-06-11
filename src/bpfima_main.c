@@ -3,7 +3,6 @@
 #include "bpfima_kfuncs.h"
 #include "bpfima_merkle.h"
 #include "bpfima_securityfs.h"
-#include "bpfima_policy.h"
 
 /*
  * bpfima_securityfs_init - Initialize SecurityFS interface for BPF-IMA
@@ -83,26 +82,10 @@ static int bpfima_securityfs_init(void)
         return PTR_ERR(containers_dir);
     }
 
-    ret = create_global_policy_securityfs(bpfima_dir);
+    ret = create_measure_policy_securityfs(bpfima_dir);
     if (ret)
     {
-        pr_err("bpfima: Failed to create global policy file: %d\n", ret);
-        securityfs_remove(containers_dir);
-        securityfs_remove(merkle_root_history_file);
-        securityfs_remove(status_file);
-        securityfs_remove(bpfima_dir);
-        containers_dir = NULL;
-        merkle_root_history_file = NULL;
-        status_file = NULL;
-        bpfima_dir = NULL;
-        return ret;
-    }
-
-    ret = create_global_policy_changes_securityfs(bpfima_dir);
-    if (ret)
-    {
-        pr_err("bpfima: Failed to create global policy_changes file: %d\n", ret);
-        remove_global_policy_securityfs();
+        pr_err("bpfima: Failed to create measure_policy file: %d\n", ret);
         securityfs_remove(containers_dir);
         securityfs_remove(merkle_root_history_file);
         securityfs_remove(status_file);
@@ -115,8 +98,7 @@ static int bpfima_securityfs_init(void)
     }
 
     pr_info("bpfima: SecurityFS interface created at /sys/kernel/security/%s/\n", bpfima_dir_name);
-    pr_info("bpfima: Global policy at /sys/kernel/security/%s/policy\n", bpfima_dir_name);
-    pr_info("bpfima: Global policy changes at /sys/kernel/security/%s/policy_changes\n", bpfima_dir_name);
+    pr_info("bpfima: Measure policy endpoint at /sys/kernel/security/%s/measure_policy\n", bpfima_dir_name);
     pr_info("bpfima: Namespace tracking enabled at /sys/kernel/security/%s/namespaces/\n", bpfima_dir_name);
     return 0;
 }
@@ -133,13 +115,6 @@ BTF_ID_FLAGS(func, bpfima_container_get_count)
 BTF_ID_FLAGS(func, bpfima_container_get_measurement_count)
 BTF_ID_FLAGS(func, bpfima_container_exists)
 BTF_ID_FLAGS(func, bpfima_container_get_leaf_hash)
-
-BTF_ID_FLAGS(func, bpfima_policy_update_filter_flags)
-BTF_ID_FLAGS(func, bpfima_policy_update_action_flags)
-BTF_ID_FLAGS(func, bpfima_policy_update_min_file_size)
-BTF_ID_FLAGS(func, bpfima_policy_update_log_level)
-BTF_ID_FLAGS(func, bpfima_policy_get_changes_hash)
-BTF_ID_FLAGS(func, bpfima_policy_namespace_get_config, KF_SLEEPABLE)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
@@ -167,26 +142,10 @@ static int __init bpfima_init(void)
 
     printk(KERN_INFO "BPF-IMA module initializing...\n");
 
-    ret = bpfima_policy_init();
-    if (ret)
-    {
-        pr_err("bpfima: Failed to initialize policy subsystem: %d\n", ret);
-        return ret;
-    }
-
     ret = bpfima_hash_init();
     if (ret)
     {
         pr_err("bpfima: Failed to initialize hash subsystem: %d\n", ret);
-        bpfima_policy_cleanup();
-        return ret;
-    }
-
-    ret = bpfima_policy_namespace_init();
-    if (ret)
-    {
-        pr_err("bpfima: Failed to initialize namespace policy subsystem: %d\n", ret);
-        bpfima_policy_cleanup();
         return ret;
     }
 
@@ -205,8 +164,6 @@ static int __init bpfima_init(void)
     if (ret)
     {
         pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
         return ret;
     }
 
@@ -214,8 +171,6 @@ static int __init bpfima_init(void)
     if (ret)
     {
         pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
         return ret;
     }
 
@@ -236,8 +191,6 @@ static int __init bpfima_init(void)
     if (ret)
     {
         pr_err("bpfima: Failed to initialize SecurityFS interface\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
         return ret;
     }
 
@@ -271,10 +224,6 @@ static void __exit bpfima_exit(void)
 
     /* Now clean up main securityfs interface (after containers are gone) */
     bpfima_securityfs_cleanup();
-
-    /* Clean up policy subsystem */
-    bpfima_policy_namespace_cleanup();
-    bpfima_policy_cleanup();
 
 
 

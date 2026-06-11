@@ -83,6 +83,15 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } bpfima_policy_map SEC(".maps");
 
+/* Per-namespace policy map */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, char[64]); /* cgroup_name */
+    __type(value, struct bpfima_policy_config);
+    __uint(max_entries, 256);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} bpfima_namespace_policy_map SEC(".maps");
+
 
 
 /* Cgroup ignore patterns map */
