@@ -12,6 +12,7 @@
 #include <bpf/bpf.h>
 #include <yaml.h>
 #include <fcntl.h>
+#include <openssl/sha.h>
 
 #include "include/bpfima_policy_user.h"
 #include "include/bpfima_policy_defaults.h"
@@ -36,6 +37,7 @@ static int g_link_count = 0;
 #define CGROUP_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_cgroup_patterns_map"
 #define PATH_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_path_patterns_map"
 #define HOOK_CONFIG_MAP_PATH "/sys/fs/bpf/bpfima_hook_config_map"
+#define NAMESPACE_POLICY_MAP_PATH "/sys/fs/bpf/bpfima_namespace_policy_map"
 
 
 /* PID file for daemon tracking */
@@ -327,12 +329,6 @@ static void dump_securityfs_to_files(void) {
     // Monitor global files
     struct monitored_file *mf;
 
-    mf = get_monitored_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
-    if (mf) append_new_content(mf);
-
-    mf = get_monitored_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
-    if (mf) append_new_content(mf);
-
     mf = get_monitored_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
     if (mf) append_new_content(mf);
 
@@ -353,16 +349,6 @@ static void dump_securityfs_to_files(void) {
 
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/measurements", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/measurements", dst_dir);
-                mf = get_monitored_file(src_path, dst_path);
-                if (mf) append_new_content(mf);
-
-                snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy", entry->d_name);
-                snprintf(dst_path, sizeof(dst_path), "%s/policy", dst_dir);
-                mf = get_monitored_file(src_path, dst_path);
-                if (mf) append_new_content(mf);
-
-                snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy_changes", entry->d_name);
-                snprintf(dst_path, sizeof(dst_path), "%s/policy_changes", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
                 if (mf) append_new_content(mf);
             }
@@ -682,11 +668,55 @@ static int cmd_unload(void)
     unlink(CGROUP_PATTERNS_MAP_PATH);
     unlink(PATH_PATTERNS_MAP_PATH);
     unlink(HOOK_CONFIG_MAP_PATH);
+    unlink(NAMESPACE_POLICY_MAP_PATH);
     unlink("/sys/fs/bpf/bpf_timing_stats");
 
 
     printf("  BPF IMA unloaded successfully\n");
     return 0;
+}
+
+/**
+ * @brief Write policy measurement to kernel
+ */
+static int record_policy_measurement(struct bpfima_policy_config *policy)
+{
+    char policy_string[512];
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    char hash_hex[SHA256_DIGEST_LENGTH * 2 + 1];
+    int fd, ret;
+
+    /* Format policy string the exact same way the kernel used to */
+    snprintf(policy_string, sizeof(policy_string),
+             "enabled=%u,filter_flags=0x%x,action_flags=0x%x,min_file_size=%u,max_path_depth=%u,log_level=%u",
+             policy->enabled,
+             policy->filter_flags,
+             policy->action_flags,
+             policy->min_file_size,
+             policy->max_path_depth,
+             policy->log_level);
+
+    SHA256((unsigned char*)policy_string, strlen(policy_string), hash);
+
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        sprintf(&hash_hex[i * 2], "%02x", hash[i]);
+    }
+
+    fd = open("/sys/kernel/security/bpfima/measure_policy", O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Warning: Failed to open measure_policy endpoint: %s\n", strerror(errno));
+        return -1;
+    }
+
+    ret = write(fd, hash_hex, strlen(hash_hex));
+    if (ret < 0) {
+        fprintf(stderr, "Warning: Failed to write policy measurement: %s\n", strerror(errno));
+    } else {
+        printf("  Recorded policy change in Merkle tree (hash: %s)\n", hash_hex);
+    }
+
+    close(fd);
+    return ret >= 0 ? 0 : -1;
 }
 
 /**
@@ -770,6 +800,8 @@ static int cmd_policy_init(void)
     }
     printf("  Hook configurations (%d hooks)\n", HOOK_MAX);
 
+    record_policy_measurement(&policy);
+
     printf("\n  Policy initialized successfully!\n");
     printf("\nPolicy summary:\n");
     printf("  - Enabled: Yes\n");
@@ -824,6 +856,22 @@ static int cmd_policy_update(const char *config_file)
         goto cleanup;
     }
 
+    /* Create a policy struct mimicking the new global state */
+    struct bpfima_policy_config kern_policy = {0};
+    kern_policy.enabled = policy.enabled;
+    kern_policy.filter_flags = 0; // No filter flags from yaml_parser
+    kern_policy.action_flags = 0;
+    if (policy.measure_enabled) kern_policy.action_flags |= POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS;
+    if (policy.appraise_enabled) kern_policy.action_flags |= POLICY_ACTION_ALERT_SUSPICIOUS;
+    if (policy.enforce_enabled) kern_policy.action_flags |= POLICY_ACTION_BLOCK;
+    if (policy.container_tracking) kern_policy.action_flags |= POLICY_ACTION_TRACK_CONTAINER;
+    kern_policy.action_flags |= POLICY_ACTION_BUILD_DEPS;
+    kern_policy.min_file_size = 0; // default
+    kern_policy.max_path_depth = DEFAULT_MAX_PATH_DEPTH;
+    kern_policy.log_level = policy.log_level;
+
+    record_policy_measurement(&kern_policy);
+
     printf("\n  Policy successfully updated from '%s'\n", config_file);
     ret = 0;
 
@@ -861,9 +909,10 @@ static int cmd_status(void)
         POLICY_MAP_PATH,
         CGROUP_PATTERNS_MAP_PATH,
         PATH_PATTERNS_MAP_PATH,
-        HOOK_CONFIG_MAP_PATH};
+        HOOK_CONFIG_MAP_PATH,
+        NAMESPACE_POLICY_MAP_PATH};
 
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
     {
         int fd = bpf_obj_get(maps[i]);
         if (fd >= 0)

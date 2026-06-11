@@ -203,19 +203,15 @@ int container_measurements_open(struct inode *inode, struct file *file)
  *
  * Removal order is critical:
  * 1. Remove individual files first
- * 2. Remove child directories (containers_dir recursively)
- * 3. Remove parent directory (bpfima_dir recursively)
+ * 2. Remove child directories (containers_dir)
+ * 3. Remove parent directory (bpfima_dir)
  *
- * Using securityfs_recursive_remove() ensures complete cleanup of directory trees.
  * All global pointers are reset to NULL to prevent double-cleanup attempts.
  *
  * Safe to call multiple times or with partially initialized state.
  */
 void bpfima_securityfs_cleanup(void)
 {
-    remove_global_policy_changes_securityfs();
-    remove_global_policy_securityfs();
-
     if (merkle_root_history_file)
     {
         securityfs_remove(merkle_root_history_file);
@@ -241,7 +237,7 @@ void bpfima_securityfs_cleanup(void)
         bpfima_dir = NULL;
     }
     #else
-        if (containers_dir && !IS_ERR(containers_dir))
+    if (containers_dir && !IS_ERR(containers_dir))
     {
         securityfs_recursive_remove(containers_dir);
         containers_dir = NULL;
@@ -249,7 +245,7 @@ void bpfima_securityfs_cleanup(void)
 
     if (bpfima_dir && !IS_ERR(bpfima_dir))
     {
-        securityfs_recursive_remove(bpfima_dir);
+        securityfs_remove(bpfima_dir);
         bpfima_dir = NULL;
     }
     #endif
@@ -294,24 +290,6 @@ int create_container_securityfs(struct container_node *container)
         return PTR_ERR(container->securityfs_measurements_file);
     }
 
-    container->securityfs_policy_file =
-        create_namespace_policy_securityfs(container->id, container->securityfs_dir);
-    if (IS_ERR(container->securityfs_policy_file))
-    {
-        pr_warn("bpfima: Failed to create policy file for container %s: %ld\n",
-                container->id, PTR_ERR(container->securityfs_policy_file));
-        container->securityfs_policy_file = NULL;
-    }
-
-    container->securityfs_policy_changes_file =
-        create_namespace_policy_changes_securityfs(container->id, container->securityfs_dir);
-    if (IS_ERR(container->securityfs_policy_changes_file))
-    {
-        pr_warn("bpfima: Failed to create policy_changes file for container %s: %ld\n",
-                container->id, PTR_ERR(container->securityfs_policy_changes_file));
-        container->securityfs_policy_changes_file = NULL;
-    }
-
     pr_info("bpfima: Created securityfs for container %s\n", container->id);
     return 0;
 }
@@ -325,18 +303,6 @@ int create_container_securityfs(struct container_node *container)
  */
 void remove_container_securityfs(struct container_node *container)
 {
-    if (container->securityfs_policy_changes_file && !IS_ERR(container->securityfs_policy_changes_file))
-    {
-        remove_namespace_policy_changes_securityfs(container->securityfs_policy_changes_file);
-        container->securityfs_policy_changes_file = NULL;
-    }
-
-    if (container->securityfs_policy_file && !IS_ERR(container->securityfs_policy_file))
-    {
-        remove_namespace_policy_securityfs(container->securityfs_policy_file);
-        container->securityfs_policy_file = NULL;
-    }
-
     if (container->securityfs_measurements_file && !IS_ERR(container->securityfs_measurements_file))
     {
         securityfs_remove(container->securityfs_measurements_file);
