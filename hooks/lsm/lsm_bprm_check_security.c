@@ -7,10 +7,10 @@ char LICENSE[] SEC("license") = "GPL";
 
 /*
  * LSM hook: bprm_check_security
- * 
+ *
  * Container Lifecycle Tracking with Streamlined Measurement Flow and Policy Enforcement:
  * This hook serves as the primary container event detector with the following flow:
- * 
+ *
  * 1. Policy Check: Verify if hook is enabled and should process
  * 2. Detection: Extract cgroup information to identify container context
  * 3. Policy Filter: Check if cgroup/path should be ignored based on policy
@@ -25,7 +25,7 @@ char LICENSE[] SEC("license") = "GPL";
  *      11. Extends TPM PCR with the new root value (if policy allows)
  *    - If namespace_id is NULL:
  *      Uses legacy host-level measurement system
- * 
+ *
  * All Merkle tree operations and TPM extension are handled automatically
  * by the bpfima_measurement_extend kfunc, with behavior controlled by policy.
  */
@@ -37,6 +37,12 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     if (!bpfima_should_process(HOOK_LSM_BPRM_CHECK_SECURITY))
         return 0;
+
+    u64 total_time = 0, deps_time = 0;
+    u64 get_config_time = 0, filtering_time = 0, measure_time = 0;
+    u64 hash_time = 0, extend_time = 0;
+
+    total_time = bpf_ktime_get_ns();
 
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
     char comm[16] = {0};
@@ -50,6 +56,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
 
     struct bpfima_policy_config *policy = NULL;
+    get_config_time = bpf_ktime_get_ns();
     struct bpfima_policy_config ns_policy = {0};
     if (cgroup_name[0] != '\0') {
         if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
@@ -62,6 +69,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_BPRM_CHECK_SECURITY);
 
+    get_config_time = bpf_ktime_get_ns() - get_config_time;
     int cgroup_id = bpf_get_current_cgroup_id();
     if (!policy || policy->log_level >= 2) {
         bpf_printk("LSM bprm_check_security: %s PID=%u cgroup_id=%d\n", comm, pid, cgroup_id);
@@ -72,12 +80,17 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
+        /* Check if this cgroup should be ignored based on policy */
+        filtering_time = bpf_ktime_get_ns();
         if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
             if (!policy || policy->log_level >= 3) {
                 bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }
             return 0;
         }
+        filtering_time = bpf_ktime_get_ns() - filtering_time;
+
+        /* Check if this is actually a container, not just any cgroup */
         if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
             if (bpfima_is_container_cgroup(cgroup_name)) {
                 is_container_context = true;
@@ -87,11 +100,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
             }
         }
     }
-
-    u64 start_time_total = bpf_ktime_get_ns();
-    u64 start_time_deps = 0, end_time_deps = 0;
-    u64 start_time_measure = 0, end_time_measure = 0;
-    u64 hash_time = 0, extend_time = 0, deps_time = 0;
 
     const char *fname = BPF_CORE_READ(bprm, filename);
     char event_name[32] = "bprm_check_security";
@@ -112,9 +120,9 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         .deps_duration = &deps_time,
     };
 
-    start_time_measure = bpf_ktime_get_ns();
+    measure_time = bpf_ktime_get_ns();
     int ret = measure_accessed_file(&mctx);
-    end_time_measure = bpf_ktime_get_ns();
+    measure_time = bpf_ktime_get_ns() - measure_time;
 
     if (ret < 0) {
         if (!policy || policy->log_level >= 1) {
@@ -123,30 +131,38 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
         return ret;
     }
 
-    if (deps_time > 0) {
-        start_time_deps = 1;
-        end_time_deps = 1 + deps_time;
-    }
+    total_time = bpf_ktime_get_ns() - total_time;
 
-    u64 end_time_total = bpf_ktime_get_ns();
     u32 stats_key = TIMING_BPRM;
-    struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats, &stats_key);
-    if (timing) {
-        __sync_fetch_and_add(&timing->count, 1);
-        __sync_fetch_and_add(&timing->total_time, end_time_total - start_time_total);
-        if (end_time_deps > start_time_deps)
-            __sync_fetch_and_add(&timing->deps_time, end_time_deps - start_time_deps);
-        if (end_time_measure > start_time_measure)
-            __sync_fetch_and_add(&timing->measure_time, end_time_measure - start_time_measure);
-        __sync_fetch_and_add(&timing->hash_time, hash_time);
-        __sync_fetch_and_add(&timing->extend_time, extend_time);
+    u64 *count = bpf_map_lookup_elem(&bpf_timing_stats_count, &stats_key);
+    if (count) {
+        u64 current_index =__sync_fetch_and_add(count, 1);
+        if (current_index < TIMING_MAX_ENTRIES) {
+            u32 index_key = (u32)current_index;
+            struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats_bprm, &index_key);
+            if (timing) {
+                __sync_fetch_and_add(&timing->total_time, total_time);
+                if (deps_time > 0)
+                    __sync_fetch_and_add(&timing->deps_time, deps_time);
+                if (measure_time > 0)
+                    __sync_fetch_and_add(&timing->measure_time, measure_time);
+                __sync_fetch_and_add(&timing->hash_time, hash_time);
+                __sync_fetch_and_add(&timing->extend_time, extend_time);
+                __sync_fetch_and_add(&timing->get_config_time, get_config_time);
+                __sync_fetch_and_add(&timing->filtering_time, filtering_time);
+                bpf_probe_read_kernel_str(timing->binary_name, TIMING_MAX_BUF, bprm->filename);
+                // Ensure null termination if the string was cut
+                timing->binary_name[TIMING_MAX_BUF - 1] = '\0';
+            }
+        }
     }
 
-    bpf_printk("BPRM: total=%llu deps=%llu measure=%llu hash=%llu extend=%llu\n", 
-               end_time_total - start_time_total,
-               (end_time_deps > start_time_deps) ? (end_time_deps - start_time_deps) : 0,
-               (end_time_measure > start_time_measure) ? (end_time_measure - start_time_measure) : 0,
-               hash_time, extend_time);
+    bpf_printk("BPRM: total=%llu deps=%llu measure=%llu hash=%llu extend=%llu get_config=%llu filtering_cgroups=%llu\n",
+               total_time,
+               (deps_time > 0) ? (deps_time) : 0,
+               (measure_time > 0) ? (measure_time) : 0,
+               hash_time, extend_time, get_config_time, filtering_time
+            );
 
     return 0;
 }
