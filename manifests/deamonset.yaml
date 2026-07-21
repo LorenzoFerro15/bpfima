@@ -15,9 +15,15 @@ spec:
       hostPID: true
       containers:
       - name: bpfima-v1
-        image: iochia02/bpfima:v2.20
+        image: iochia02/bpfima:v2.85
+        imagePullPolicy: Always
         securityContext:
           privileged: true
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          periodSeconds: 1
         env:
         - name: NODE_NAME
           valueFrom:
@@ -56,5 +62,3 @@ spec:
         hostPath:
           path: /etc/
       terminationGracePeriodSeconds: 0
-      imagePullSecrets:
-      - name: regcred
