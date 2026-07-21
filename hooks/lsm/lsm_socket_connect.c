@@ -26,12 +26,11 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     }
 
-    u64 start_time_total = 0, end_time_total = 0;
-    u64 start_time_deps = 0, end_time_deps = 0;
-    u64 start_time_measure = 0, end_time_measure = 0;
+    u64 total_time = 0, deps_time = 0;
+    u64 get_config_time = 0, filtering_time = 0, measure_time = 0;
     u64 extend_time = 0;
 
-    start_time_total = bpf_ktime_get_ns();
+    total_time = bpf_ktime_get_ns();
 
     char *deps = scratch->buf;
     char cgroup_name[64] = {0};
@@ -51,13 +50,15 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     }
 
+    get_config_time =  bpf_ktime_get_ns();
     struct bpfima_policy_config *policy = bpfima_get_policy();
     struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_SOCKET_CONNECT);
-        
+    get_config_time =  bpf_ktime_get_ns() - get_config_time;
+
     if (!policy || !hook_cfg) {
         bpf_printk("Policy not loaded, using default behavior\n");
     }
-    
+
     bpf_get_current_comm(comm, sizeof(comm));
 
     if (!policy || policy->log_level >= 2) {
@@ -178,13 +179,15 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
         /* Check if this cgroup should be ignored based on policy */
+        filtering_time = bpf_ktime_get_ns();
         if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
             if (!policy || policy->log_level >= 3) {
                 bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }
             return 0;
         }
-        
+        filtering_time = bpf_ktime_get_ns() - filtering_time;
+
         /* Check if this is actually a container, not just any cgroup */
         if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
             if (bpfima_is_container_cgroup(cgroup_name)) {
@@ -202,10 +205,10 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     /* Build dependencies if enabled in policy */
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
-        start_time_deps = bpf_ktime_get_ns();
+        deps_time = bpf_ktime_get_ns();
         deps_actual = build_dependencies(deps, deps_max, socket_path, cur);
-        end_time_deps = bpf_ktime_get_ns();
-        
+        deps_time = bpf_ktime_get_ns() - deps_time;
+
         if (!policy || policy->log_level >= 2) {
             bpf_printk(" dependencies -> %s\n", deps);
         }
@@ -213,7 +216,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     /* Measure the executable file making the connection */
     char event_name[] = "socket_connect";
-    start_time_measure = bpf_ktime_get_ns();
+    measure_time = bpf_ktime_get_ns();
     int ret = measure_socket_data(event_name,
                                  cgroup_name,
                                  is_container_context,
@@ -223,8 +226,8 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
                                  additional_data,
                                  buffer_len,
                                  &extend_time);
-    end_time_measure = bpf_ktime_get_ns();
-    
+    measure_time = bpf_ktime_get_ns() - measure_time;
+
     if (ret < 0) {
         if (!policy || policy->log_level >= 1) {
             bpf_printk("Socket connection measurement failed: %d\n", ret);
@@ -232,25 +235,43 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return ret;
     }
 
+
+    total_time = bpf_ktime_get_ns() - total_time;
+
     u32 stats_key = TIMING_SOCKET;
-    end_time_total = bpf_ktime_get_ns();
-    
-    struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats, &stats_key);
-    if (timing) {
-        __sync_fetch_and_add(&timing->count, 1);
-        __sync_fetch_and_add(&timing->total_time, end_time_total - start_time_total);
-        if (end_time_deps > start_time_deps)
-            __sync_fetch_and_add(&timing->deps_time, end_time_deps - start_time_deps);
-        if (end_time_measure > start_time_measure)
-            __sync_fetch_and_add(&timing->measure_time, end_time_measure - start_time_measure);
-        __sync_fetch_and_add(&timing->extend_time, extend_time);
+    u64 *count = bpf_map_lookup_elem(&bpf_timing_stats_count, &stats_key);
+    if (count) {
+        u64 current_index =__sync_fetch_and_add(count, 1);
+        if (current_index < TIMING_MAX_ENTRIES) {
+            u32 index_key = (u32)current_index;
+            struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats_socket, &index_key);
+            if (timing) {
+            __sync_fetch_and_add(&timing->total_time, total_time);
+            if (deps_time > 0)
+                __sync_fetch_and_add(&timing->deps_time, deps_time);
+            if (measure_time > 0)
+                __sync_fetch_and_add(&timing->measure_time, measure_time);
+            __sync_fetch_and_add(&timing->extend_time, extend_time);
+            __sync_fetch_and_add(&timing->get_config_time, get_config_time);
+            __sync_fetch_and_add(&timing->filtering_time, filtering_time);
+
+            if (address->sa_family == AF_INET) {
+                __builtin_memcpy(timing->binary_name, additional_data, TIMING_MAX_BUF);
+            } else if (address->sa_family == AF_UNIX) {
+                __builtin_memcpy(timing->binary_name, socket_path, TIMING_MAX_BUF);
+            }
+            // Ensure null termination if the string was cut
+            timing->binary_name[TIMING_MAX_BUF - 1] = '\0';
+            }
+        }
     }
-    
-    bpf_printk("SOCKET: total=%llu deps=%llu measure=%llu extend=%llu\n", 
-               end_time_total - start_time_total,
-               (end_time_deps > start_time_deps) ? (end_time_deps - start_time_deps) : 0,
-               (end_time_measure > start_time_measure) ? (end_time_measure - start_time_measure) : 0,
-               extend_time);
+
+    bpf_printk("SOCKET: total=%llu deps=%llu measure=%llu extend=%llu get_config=%llu filtering_cgroups=%llu\n",
+               total_time,
+               (deps_time > 0) ? (deps_time) : 0,
+               (measure_time > 0) ? (measure_time) : 0,
+               extend_time, get_config_time, filtering_time
+            );
 
     return 0;
 }
