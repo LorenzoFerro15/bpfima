@@ -45,7 +45,7 @@ var defaultPolicy = bpfimav1alpha1.Policy{
 			LSMMmapFile:          &bpfimav1alpha1.HookConfig{Enabled: true, TrackContainers: true, MeasureHash: true},
 			LSMSocketConnect:     &bpfimav1alpha1.HookConfig{Enabled: true, TrackContainers: true, MeasureHash: true},
 			LSMContainerEvents:   &bpfimav1alpha1.HookConfig{Enabled: true, TrackContainers: true, MeasureHash: true},
-			KprobeFileOpen:       &bpfimav1alpha1.HookConfig{Enabled: true, TrackContainers: true, MeasureHash: true},
+			KprobeFileOpen:       &bpfimav1alpha1.HookConfig{Enabled: false, TrackContainers: false, MeasureHash: false},
 		},
 	},
 }
