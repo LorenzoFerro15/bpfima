@@ -17,9 +17,11 @@ CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 BPF_TARGET := bpf
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
-KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 KERNEL_VER := $(shell uname -r)
+KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
 BPF_HEADERS := -I$(KERNEL_HEADERS)tools/lib/bpf -I$(KERNEL_HEADERS)tools/bpf/resolve_btfids/libbpf/include
+
+PWD := $(shell pwd)
 
 # Directory where vmlinux.h will be copied
 VMLINUX_DIR := include-vmlinux
@@ -45,6 +47,8 @@ BPF_OBJS := $(patsubst hooks/lsm/%.c,$(BUILD_DIR)/%.o,$(BPF_SRCS))
 BPFIMA_TOOL := $(BUILD_DIR)/bpfima-tool
 
 all: $(VMLINUX_H) $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
+
+bpf-only: $(VMLINUX_H) $(BUILD_DIR) $(BPF_OBJS) $(BPFIMA_TOOL)
 
 # Create the folder where vmlinux will be stored
 $(VMLINUX_DIR):
@@ -81,4 +85,4 @@ clean:
 	rm -f .*.cmd .*.o 2>/dev/null || true
 	rm -rf .tmp_versions 2>/dev/null || true
 
-.PHONY: all modules clean
+.PHONY: all modules clean bpf-only
