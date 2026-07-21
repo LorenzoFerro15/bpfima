@@ -150,15 +150,8 @@ func computeActionFlags(a v1alpha1.ActionConfig) uint32 {
 	return flags
 }
 
-// UpdatePolicy updates the BPF policy map with the given configuration
-func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) error {
-	if policyMap == nil {
-		return fmt.Errorf("policy map is nil")
-	}
-
-	key := uint32(0) // Global policy key
-
-	value := BpfimaPolicyConfig{
+func computeValue(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) BpfimaPolicyConfig {
+	return BpfimaPolicyConfig{
 		Enabled:      boolToUint8(policy.Enabled),
 		FilterFlags:  computeFilterFlags(filters),
 		ActionFlags:  computeActionFlags(actions),
@@ -166,6 +159,16 @@ func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1a
 		MaxPathDepth: uint32(policy.MaxPathDepth),
 		LogLevel:     uint32(policy.LogLevel),
 	}
+}
+
+// UpdatePolicy updates the BPF policy map with the given configuration
+func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) error {
+	if policyMap == nil {
+		return fmt.Errorf("policy map is nil")
+	}
+
+	key := uint32(0) // Global policy key
+	value := computeValue(policy, filters, actions)
 
 	return policyMap.Put(key, value)
 }
@@ -274,4 +277,20 @@ func UpdateHookConfig(hooksMap *ebpf.Map, hooks v1alpha1.HookConfigs) error {
 	}
 
 	return nil
+}
+
+func GetPolicyString(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) string {
+	value := computeValue(policy, filters, actions)
+
+	policyString := fmt.Sprintf(
+		"enabled=%d,filter_flags=0x%x,action_flags=0x%x,min_file_size=%d,max_path_depth=%d,log_level=%d",
+		value.Enabled,
+		value.FilterFlags,
+		value.ActionFlags,
+		value.MinFileSize,
+		value.MaxPathDepth,
+		value.LogLevel,
+	)
+
+	return policyString
 }

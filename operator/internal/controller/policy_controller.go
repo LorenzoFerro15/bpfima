@@ -18,9 +18,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/csv"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
+	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +55,16 @@ type PolicyReconciler struct {
 	Log    logr.Logger
 }
 
+// Struct to save the execution times
+type Stats struct {
+	enterController        int64
+	exitController         int64
+	startMapUpdate         int64
+	endMapUpdate           int64
+	startPolicyMeasurement int64
+	endPolicyMeasurement   int64
+}
+
 // +kubebuilder:rbac:groups=bpfima.polito.it,resources=policies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=bpfima.polito.it,resources=policies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=bpfima.polito.it,resources=policies/finalizers,verbs=update
@@ -60,6 +76,14 @@ type PolicyReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
 func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
+
+	s := &Stats{enterController: time.Now().UnixNano()}
+	defer func() {
+		s.exitController = time.Now().UnixNano()
+		if csvErr := s.saveStatistics(); csvErr != nil {
+			log.Error(csvErr, "failed to write statistics to file")
+		}
+	}()
 
 	var selectedPolicy *bpfimav1alpha1.Policy
 
@@ -102,18 +126,32 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}()
 
+	// TODO: avoid updating the maps and recording the change if selectedPolicy is the same of the previous chosen policy
+
 	// Update the maps using the selected policy
-	err = updateMaps(bpfimaMaps, selectedPolicy)
+	err = updateMaps(bpfimaMaps, selectedPolicy, s)
 	if err != nil {
 		log.Error(err, "failed to update BPF maps")
 		return ctrl.Result{}, err
 	}
 
+	// Store the change in the Merkle tree
+	err = recordPolicyMeasurement(selectedPolicy, s)
+	if err != nil {
+		log.Error(err, "failed to record policy update in the Merkle tree")
+		return ctrl.Result{}, err
+	}
+
 	log.Info("Policy updated successfully", "selected-policy", selectedPolicy.Name)
+
 	return ctrl.Result{}, nil
 }
 
-func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy) error {
+func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy, s *Stats) error {
+	// Save time used to update the maps
+	s.startMapUpdate = time.Now().UnixNano()
+	defer func() { s.endMapUpdate = time.Now().UnixNano() }()
+
 	var err error
 
 	err = mapsmanager.UpdatePolicy(bpfimaMaps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
@@ -159,6 +197,65 @@ func (r *PolicyReconciler) getNodeLabel(ctx context.Context) (map[string]string,
 	}
 
 	return node.Labels, nil
+}
+
+func recordPolicyMeasurement(policy *bpfimav1alpha1.Policy, s *Stats) error {
+	// Save time used to record policy measurements
+	s.startPolicyMeasurement = time.Now().UnixNano()
+	defer func() { s.endPolicyMeasurement = time.Now().UnixNano() }()
+
+	policyString := mapsmanager.GetPolicyString(policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
+
+	hash := sha256.Sum256([]byte(policyString))
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Write the hash in the measure_policy file to trigger the Merkle tree extension
+	path := "/sys/kernel/security/bpfima/measure_policy"
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open measure_policy endpoint: %w", err)
+	}
+	defer file.Close()
+
+	_, err = file.WriteString(hashHex)
+	if err != nil {
+		return fmt.Errorf("failed to write policy measurement: %w", err)
+	}
+	return nil
+}
+
+func (s *Stats) saveStatistics() error {
+	// Save statistics to csv file
+	dstFolder := "/tmp"
+	path := filepath.Join(dstFolder, "controller_times.csv")
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file to store statistics: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	info, err := file.Stat()
+	if err == nil && info.Size() == 0 {
+		writer.Write([]string{"enter_controller", "exit_controller", "start_map_update", "end_map_update", "start_policy_measurement", "end_policy_measurement"})
+	}
+
+	row := []string{
+		strconv.FormatInt(s.enterController, 10),
+		strconv.FormatInt(s.exitController, 10),
+		strconv.FormatInt(s.startMapUpdate, 10),
+		strconv.FormatInt(s.endMapUpdate, 10),
+		strconv.FormatInt(s.startPolicyMeasurement, 10),
+		strconv.FormatInt(s.endPolicyMeasurement, 10),
+	}
+
+	if err := writer.Write(row); err != nil {
+		return fmt.Errorf("failed to write statistics to file: %w", err)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
