@@ -1,0 +1,132 @@
+
+apiVersion: bpfima.polito.it/v1alpha1
+kind: Policy
+metadata:
+  name: policy-v1
+spec:
+  policy:
+    enabled: true
+    log_level: 2  # WARN only
+    min_file_size: 0
+    max_path_depth: 32
+
+  filters:
+    system_cgroups: true       # Skip system internals
+    proc_sys: true             # Skip /proc and /sys
+    dev: true                  # Skip /dev
+    readonly_files: true       # Skip readonly opens
+    small_files: true          # Skip small files
+    non_executable: true       # Only track executables
+    libraries: true           # Track libraries (important for integrity)
+    tmp_files: true            # Skip /tmp
+
+  actions:
+    extend_tpm: true
+    log_securityfs: true
+    log_kernel: true          # Reduce kernel log noise
+    alert_suspicious: true
+    block: true
+    track_container: true
+    build_deps: true
+
+  cgroup_patterns:
+    - pattern: "/"
+      enabled: true
+      match_type: 0
+    - pattern: "system.slice"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope1"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope2"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope3"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope4"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope5"
+      enabled: true
+      match_type: 0
+
+  path_patterns:
+    - pattern: "/proc/"
+      enabled: true
+      match_type: 1
+    - pattern: "/sys/"
+      enabled: true
+      match_type: 1
+    - pattern: "/dev/"
+      enabled: true
+      match_type: 1
+    - pattern: "/tmp/"
+      enabled: true
+      match_type: 1
+    - pattern: "/var/tmp/"
+      enabled: true
+      match_type: 1
+    - pattern: "/bin/"
+      enabled: true
+      match_type: 1
+    - pattern: "/sbin/"
+      enabled: true
+      match_type: 1
+    - pattern: "/afs/"
+      enabled: true
+      match_type: 1
+
+  hooks:
+    lsm_bprm_check_security:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_file_open:
+      enabled: true  # Disable to reduce overhead
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_file_post_open:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_mmap_file:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_socket_connect:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_container_events:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    kprobe_file_open:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
