@@ -25,6 +25,7 @@
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
 #include <linux/hashtable.h>
+#include <linux/version.h>
 
 /* Constants */
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
