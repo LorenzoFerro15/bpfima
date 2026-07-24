@@ -20,8 +20,16 @@
 
 /* Global state */
 static volatile bool g_exiting = false;
-static struct bpf_object *g_obj = NULL;
-static struct bpf_link *g_link = NULL;
+
+#define NUMBER_HOOKS 8
+#define MAX_LOADED_OBJECTS 8
+#define MAX_ATTACHED_LINKS 8
+
+static struct bpf_object *g_objs[MAX_LOADED_OBJECTS];
+static int g_obj_count = 0;
+
+static struct bpf_link *g_links[MAX_ATTACHED_LINKS];
+static int g_link_count = 0;
 
 /* Map paths */
 #define POLICY_MAP_PATH "/sys/fs/bpf/bpfima_policy_map"
@@ -92,7 +100,7 @@ static int daemonize(void)
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    
+
     // Redirect stdin/stdout/stderr to /dev/null
     open("/dev/null", O_RDWR);
     dup(0);
@@ -268,17 +276,17 @@ static struct monitored_file *get_monitored_file(const char *src_path, const cha
         }
         mf = mf->next;
     }
-    
+
     // Create new entry
     mf = malloc(sizeof(struct monitored_file));
     if (!mf) return NULL;
-    
+
     snprintf(mf->src_path, sizeof(mf->src_path), "%s", src_path);
     snprintf(mf->dst_path, sizeof(mf->dst_path), "%s", dst_path);
     mf->fd = -1;
     mf->next = g_monitored_files;
     g_monitored_files = mf;
-    
+
     return mf;
 }
 
@@ -290,10 +298,10 @@ static void append_new_content(struct monitored_file *mf) {
         mf->fd = open(mf->src_path, O_RDONLY);
         if (mf->fd < 0) return; // File might not exist yet
     }
-    
+
     char buffer[4096];
     ssize_t bytes;
-    
+
     // Read from current position
     while ((bytes = read(mf->fd, buffer, sizeof(buffer))) > 0) {
         FILE *dst = fopen(mf->dst_path, "a");
@@ -310,24 +318,24 @@ static void append_new_content(struct monitored_file *mf) {
  */
 static void dump_securityfs_to_files(void) {
     struct stat st = {0};
-    
+
     // Create root directory
     if (stat("build/namespaces/root", &st) == -1) {
         mkdir("build/namespaces/root", 0755);
     }
-    
+
     // Monitor global files
     struct monitored_file *mf;
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/policy", "build/namespaces/root/policy");
     if (mf) append_new_content(mf);
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/policy_changes", "build/namespaces/root/policy_changes");
     if (mf) append_new_content(mf);
-    
+
     mf = get_monitored_file("/sys/kernel/security/bpfima/merkle_root_history", "build/namespaces/root/merkle_root_history");
     if (mf) append_new_content(mf);
-    
+
     // Dump namespace-specific data
     DIR *dir = opendir("/sys/kernel/security/bpfima/namespaces");
     if (dir) {
@@ -337,22 +345,22 @@ static void dump_securityfs_to_files(void) {
                 char src_path[1024];
                 char dst_dir[512];
                 char dst_path[1024];
-                
+
                 snprintf(dst_dir, sizeof(dst_dir), "build/namespaces/%s", entry->d_name);
                 if (stat(dst_dir, &st) == -1) {
                     mkdir(dst_dir, 0755);
                 }
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/measurements", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/measurements", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
                 if (mf) append_new_content(mf);
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
                 if (mf) append_new_content(mf);
-                
+
                 snprintf(src_path, sizeof(src_path), "/sys/kernel/security/bpfima/namespaces/%s/policy_changes", entry->d_name);
                 snprintf(dst_path, sizeof(dst_path), "%s/policy_changes", dst_dir);
                 mf = get_monitored_file(src_path, dst_path);
@@ -364,12 +372,197 @@ static void dump_securityfs_to_files(void) {
 }
 
 /**
- * @brief Load and attach eBPF program
+ * @brief Destroy all runtime state created by this process
+ * (destroy links and close objects)
  */
-static int cmd_load(const char *filename, bool daemon_mode)
+static void destroy_runtime_state(void)
 {
+    for (int i = 0; i < g_link_count; i++) {
+        if (g_links[i]) {
+            bpf_link__destroy(g_links[i]);
+            g_links[i] = NULL;
+        }
+    }
+    g_link_count = 0;
+
+    for (int i = 0; i < g_obj_count; i++) {
+        if (g_objs[i]) {
+            bpf_object__close(g_objs[i]);
+            g_objs[i] = NULL;
+        }
+    }
+    g_obj_count = 0;
+}
+
+/**
+ * @brief Unpin maps created by the loaded objects.
+ */
+static void unpin_maps_from_loaded_objects(void)
+{
+    struct bpf_map *map;
+    for (int i = 0; i < g_obj_count; i++) {
+        if (!g_objs[i]) {
+            continue;
+        }
+        bpf_object__for_each_map(map, g_objs[i]) {
+            const char *map_name = bpf_map__name(map);
+            char pin_path[256];
+            snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
+            bpf_map__unpin(map, pin_path);
+        }
+    }
+}
+
+/**
+ * @brief Load one object file, reuse pinned maps if they already exist,
+ * then attach every program contained in that object.
+ */
+static int load_and_attach_one_object(const char *filename)
+{
+    struct bpf_object *obj = NULL;
     struct bpf_program *prog;
     struct bpf_map *map;
+    struct stat st;
+    int err = 0;
+    int attached_in_obj = 0;
+
+    if (g_obj_count >= MAX_LOADED_OBJECTS) {
+        fprintf(stderr, "Too many loaded objects (max %d)\n", MAX_LOADED_OBJECTS);
+        return 1;
+    }
+
+    if (stat(filename, &st) != 0) {
+        fprintf(stderr, "Error: File not found: %s\n", filename);
+        return 1;
+    }
+
+    printf("Loading BPF object: %s\n", filename);
+
+    // Open the object
+    obj = bpf_object__open_file(filename, NULL);
+    if (libbpf_get_error(obj)) {
+        fprintf(stderr, "Failed to open %s: %s\n", filename, strerror(errno));
+        return 1;
+    }
+
+    /// Set the path attribute that tells where the BPF map should be pinned.
+    bpf_object__for_each_map(map, obj) {
+        bpf_map__set_pin_path(map, NULL);
+    }
+
+    // LSM programs must be marked sleepable.
+    bpf_object__for_each_program(prog, obj) {
+        if (bpf_program__type(prog) == BPF_PROG_TYPE_LSM) {
+            bpf_program__set_flags(prog, BPF_F_SLEEPABLE);
+        }
+    }
+
+    // Verify if a map was already pinned
+    bpf_object__for_each_map(map, obj) {
+        // Skip maps automatically generated by libbpf
+        if (bpf_map__is_internal(map)) {
+            continue;
+        }
+
+        char path[256];
+        snprintf(path, sizeof(path), "/sys/fs/bpf/%s", bpf_map__name(map));
+
+        if (access(path, F_OK) == 0) {
+            // The map exists already: try to reuse the file descriptor
+            int fd = bpf_obj_get(path);
+            if (fd < 0) {
+                fprintf(stderr, "Warning: cannot reuse map %s, recreating\n", bpf_map__name(map));
+                unlink(path);
+                continue;
+            }
+
+            err = bpf_map__reuse_fd(map, fd);
+            if (err) {
+                fprintf(stderr, "Warning: cannot reuse map %s: %s, recreating\n",
+                        bpf_map__name(map), strerror(-err));
+                close(fd);
+                unlink(path);
+                continue;
+            }
+
+            printf("  Reused pinned map: %s\n", bpf_map__name(map));
+            // The fd will be closed by libbpf
+        }
+    }
+
+    // Load the object into the kernel before attaching any programs.
+    err = bpf_object__load(obj);
+    if (err) {
+        fprintf(stderr, "Failed to load BPF object %s: %s\n", filename, strerror(-err));
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    // Pin newly created maps so policy tools can update them later.
+    bpf_object__for_each_map(map, obj) {
+        // Skip maps automatically generated by libbpf
+        if (bpf_map__is_internal(map)) {
+            continue;
+        }
+
+        const char *map_name = bpf_map__name(map);
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
+
+        // Do not try to pin an already pinned map, reuse the old fd
+        if (access(pin_path, F_OK) == 0) {
+            continue;
+        }
+
+        err = bpf_map__pin(map, pin_path);
+        if (err && err != -EEXIST) {
+            if (strstr(map_name, ".rodata") == NULL &&
+                strstr(map_name, ".bss") == NULL &&
+                strstr(map_name, ".data") == NULL) {
+                fprintf(stderr, "Warning: failed pinning map %s: %s\n", map_name, strerror(-err));
+            }
+        } else if (err != -EEXIST) {
+            printf("  Pinned map: %s\n", map_name);
+        }
+    }
+
+    // Attach every program in this object and keep every link alive.
+    bpf_object__for_each_program(prog, obj) {
+        struct bpf_link *link = bpf_program__attach(prog);
+        if (libbpf_get_error(link)) {
+            fprintf(stderr, "Failed to attach program %s from %s: %s\n",
+                    bpf_program__name(prog), filename, strerror(errno));
+            bpf_object__close(obj);
+            return 1;
+        }
+
+        if (g_link_count >= MAX_ATTACHED_LINKS) {
+            fprintf(stderr, "Too many attached links (max %d)\n", MAX_ATTACHED_LINKS);
+            bpf_link__destroy(link);
+            bpf_object__close(obj);
+            return 1;
+        }
+
+        g_links[g_link_count++] = link;
+        attached_in_obj++;
+        printf("  Attached: %s\n", bpf_program__name(prog));
+    }
+
+    if (attached_in_obj == 0) {
+        fprintf(stderr, "Error: no programs attached from %s\n", filename);
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    g_objs[g_obj_count++] = obj;
+    return 0;
+}
+
+/**
+ * @brief Load and attach a list of eBPF programs
+ */
+static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
+{
     int err = 0;
 
     int pid = read_pid_file();
@@ -383,84 +576,11 @@ static int cmd_load(const char *filename, bool daemon_mode)
     if (set_rlimit() < 0)
         return 1;
 
-    struct stat st;
-    if (stat(filename, &st) != 0)
-    {
-        fprintf(stderr, "Error: File not found: %s\n", filename);
-        return 1;
-    }
-
-    printf("Loading BPF program: %s\n", filename);
-
-    g_obj = bpf_object__open_file(filename, NULL);
-    if (libbpf_get_error(g_obj))
-    {
-        fprintf(stderr, "Failed to open %s: %s\n", filename, strerror(errno));
-        return 1;
-    }
-
-    bpf_object__for_each_map(map, g_obj)
-    {
-        bpf_map__set_pin_path(map, NULL);
-    }
-
-    bpf_object__for_each_program(prog, g_obj)
-    {
-        if (bpf_program__type(prog) == BPF_PROG_TYPE_LSM)
-        {
-            bpf_program__set_flags(prog, BPF_F_SLEEPABLE);
-        }
-    }
-
-    err = bpf_object__load(g_obj);
-    if (err)
-    {
-        fprintf(stderr, "Failed to load BPF object: %s\n", strerror(-err));
-        goto cleanup;
-    }
-
-    bpf_object__for_each_map(map, g_obj)
-    {
-        const char *map_name = bpf_map__name(map);
-        char pin_path[256];
-        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
-
-        err = bpf_map__pin(map, pin_path);
-        if (err && err != -EEXIST)
-        {
-            if (strstr(map_name, ".rodata") == NULL &&
-                strstr(map_name, ".bss") == NULL &&
-                strstr(map_name, ".data") == NULL)
-            {
-                fprintf(stderr, "Warning: Failed to pin map %s: %s\n",
-                        map_name, strerror(-err));
-            }
-        }
-        else if (err != -EEXIST)
-        {
-            printf("  Pinned map: %s\n", map_name);
-        }
-    }
-
-    bpf_object__for_each_program(prog, g_obj)
-    {
-        g_link = bpf_program__attach(prog);
-        if (libbpf_get_error(g_link))
-        {
-            fprintf(stderr, "Failed to attach program %s: %s\n",
-                    bpf_program__name(prog), strerror(errno));
+    for (int i = 0; i < file_count; i++) {
+        if (load_and_attach_one_object(filenames[i]) != 0) {
             err = 1;
             goto cleanup;
         }
-        printf("  Attached: %s\n", bpf_program__name(prog));
-        break;
-    }
-
-    if (!g_link)
-    {
-        fprintf(stderr, "Error: No programs attached\n");
-        err = 1;
-        goto cleanup;
     }
 
     printf("\n  BPF program loaded successfully\n");
@@ -472,6 +592,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
     if (daemon_mode)
     {
         printf("\nStarting daemon...\n");
+        fflush(NULL);
         if (daemonize() < 0) {
             fprintf(stderr, "Error: Failed to daemonize\n");
             goto cleanup;
@@ -479,7 +600,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
 
         // We are now in the child process
         write_pid_file();
-        
+
         signal(SIGINT, sig_handler);
         signal(SIGTERM, sig_handler);
 
@@ -492,7 +613,7 @@ static int cmd_load(const char *filename, bool daemon_mode)
         }
 
         printf("\nShutting down...\n");
-        
+
         // Final dump before exit
         dump_securityfs_to_files();
     }
@@ -500,22 +621,8 @@ static int cmd_load(const char *filename, bool daemon_mode)
 cleanup:
     if (err || !daemon_mode)
     {
-        if (g_obj)
-        {
-            bpf_object__for_each_map(map, g_obj)
-            {
-                const char *map_name = bpf_map__name(map);
-                char pin_path[256];
-                snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
-                bpf_map__unpin(map, pin_path);
-            }
-        }
-
-        if (g_link)
-            bpf_link__destroy(g_link);
-        if (g_obj)
-            bpf_object__close(g_obj);
-
+        unpin_maps_from_loaded_objects();
+        destroy_runtime_state();
         remove_pid_file();
     }
 
@@ -816,7 +923,7 @@ static void usage(const char *prog)
     printf("=======================\n\n");
     printf("Usage: %s <command> [options]\n\n", prog);
     printf("Commands:\n");
-    printf("  load <bpf_obj> [-d]  Load and attach eBPF program\n");
+    printf("  load <bpf_obj>... [-d]  Load and attach eBPF program\n");
     printf("                       -d: Run as daemon (background)\n");
     printf("  unload               Unload currently running program\n");
     printf("  policy-init          Initialize policy maps with defaults\n");
@@ -856,8 +963,32 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 1;
         }
-        bool daemon = (argc > 3 && strcmp(argv[3], "-d") == 0);
-        return cmd_load(argv[2], daemon);
+
+        const char *files[NUMBER_HOOKS];
+        int file_count = 0;
+        bool daemon = false;
+
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-d") == 0) {
+                daemon = true;
+                continue;
+            }
+
+            if (file_count >= NUMBER_HOOKS) {
+                fprintf(stderr, "Error: the number of object files is higher than the number of hooks supported (max %d)\n", NUMBER_HOOKS);
+                return 1;
+            }
+
+            files[file_count++] = argv[i];
+        }
+
+        if (file_count == 0) {
+            fprintf(stderr, "Error: Missing BPF object file(s)\n");
+            usage(argv[0]);
+            return 1;
+        }
+
+        return cmd_load(files, file_count, daemon);
     }
     else if (strcmp(cmd, "unload") == 0)
     {
