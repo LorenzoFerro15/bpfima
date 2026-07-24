@@ -127,7 +127,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         struct file *exe_file = bpf_get_task_exe_file(task);
         if (!exe_file) return 0;
 
-        len = bpf_d_path(&exe_file->f_path, socket_path, sizeof(socket_path));
+        len = bpf_d_path((struct path *)&exe_file->f_path, socket_path, sizeof(socket_path));
         if (!policy || policy->log_level >= 2) {
             bpf_printk("INET Connect Target: %s\n", socket_path);
         }

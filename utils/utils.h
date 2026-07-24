@@ -338,7 +338,7 @@ static __always_inline void append_attr(char *buf, int buf_max,
                          buf_max - *off,
                          fmt,
                          args,   // pointer to array of __u64
-                         1);     // number of arguments
+                         sizeof(args));     // data_length
 
     if (n > 0)
         *off += n;
@@ -380,10 +380,12 @@ static __always_inline int build_attributes(char *attrs, int attrs_max, struct i
         append_attr(attrs, attrs_max, &off, "kill_sgid=1,", 0);
 
     /* Trim trailing comma */
-    if (off > 0 && attrs[off - 1] == ',')
-        attrs[off - 1] = '\0';
-    else if (off < attrs_max)
+    if (off > 0 && off < attrs_max) {
+        if (attrs[off - 1] == ',')
+            attrs[off - 1] = '\0';
+    } else if (off >= 0 && off < attrs_max) {
         attrs[off] = '\0';
+    }
 
     return off;
 }

@@ -8,7 +8,7 @@
 char LICENSE[] SEC("license") = "GPL";
 
 SEC("lsm.s/mmap_file")
-int bpf_mmap_file(struct file *file)
+int BPF_PROG(bpf_mmap_file, struct file *file)
 {
     u8 digest[32] = {0};
     u64 file_scalar;

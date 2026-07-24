@@ -48,7 +48,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
     }
 
-    long ret = bpf_d_path(&file->f_path, filepath, sizeof(filepath));
+    long ret = bpf_d_path((struct path *)&file->f_path, filepath, sizeof(filepath));
     if (ret < 0)
     {
         struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
