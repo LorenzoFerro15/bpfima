@@ -200,11 +200,11 @@ static __always_inline bool bpfima_contains(const char *str, const char *contain
         return false;
 
     int max_start = len_str - len_contained;
-    if (max_start <= 0 || max_start >= MAX_PATTERN_LEN)
+    if (max_start < 0 || max_start >= MAX_PATTERN_LEN)
         return false;
 
     bool found;
-    for (int i = 0; i < max_start; i++) {
+    for (int i = 0; i <= max_start; i++) {
         found = true;
         for (int j = 0; j < len_contained; j++) {
             int idx = j + i;
