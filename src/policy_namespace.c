@@ -170,7 +170,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 {
     struct policy_change_entry *change_entry;
     struct container_node *container;
-    unsigned long flags, container_flags;
+    unsigned long flags;
     int ret;
     char policy_string[MAX_POLICY_STRING_SIZE];
 
@@ -218,15 +218,12 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 
     pr_info("bpfima: Recorded policy change for namespace %s\n", namespace_id);
 
-    spin_lock_irqsave(&container_list_lock, container_flags);
     container = find_container_by_id(namespace_id);
     
     if (container) {
         char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
         struct measurement_entry *meas_entry;
         int i;
-        
-        spin_unlock_irqrestore(&container_list_lock, container_flags);
         
         for (i = 0; i < MERKLE_HASH_SIZE; i++) {
             snprintf(&policy_hash_hex[i * 2], 3, "%02x", change_entry->change_hash[i]);
@@ -247,6 +244,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
             
             kfree(change_entry);
+            bpfima_put_container(container);
             return ret;
         }
         
@@ -259,6 +257,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
             
             kfree(change_entry);
+            bpfima_put_container(container);
             return -ENOMEM;
         }
         
@@ -284,6 +283,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
             
             kfree(change_entry);
+            bpfima_put_container(container);
             return ret;
         }
 
@@ -313,12 +313,13 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             
             pr_warn("bpfima: Merkle root extension failed. Container %s leaf hash is now inconsistent.\n",
                     container->id);
+            bpfima_put_container(container);
             return ret;
         }
 
         pr_info("bpfima: Extended Merkle root for policy change in namespace %s\n", namespace_id);
+        bpfima_put_container(container);
     } else {
-        spin_unlock_irqrestore(&container_list_lock, container_flags);
         pr_warn("bpfima: Container not found for namespace %s, policy change recorded but not extended\n",
                 namespace_id);
     }

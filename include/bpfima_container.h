@@ -10,6 +10,9 @@ extern atomic_t container_count;
 
 /* Container management functions */
 struct container_node *find_container_by_id(const char *container_id);
+struct container_node *find_container_by_id_rcu(const char *container_id);
+struct container_node *bpfima_get_container(struct container_node *container);
+void bpfima_put_container(struct container_node *container);
 struct container_node *create_container_node(const char *container_id);
 void cleanup_container_measurements(struct container_node *container);
 void cleanup_all_containers(void);

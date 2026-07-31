@@ -57,13 +57,17 @@ struct measurement_entry
     u8 digest[MERKLE_HASH_SIZE];
 };
 
+#include <linux/refcount.h>
+#include <linux/rculist.h>
+
 /**
  * struct container_node - Represents a container/pod with its measurement list
  * @list: Linked list node for maintaining list of all containers
+ * @rcu: RCU head for asynchronous lockless destruction
+ * @refcnt: Reference counter for safe access without dangling pointers
  * @id: Unique container identifier
  * @measurement_list: List of measurements specific to this container
  * @measurement_lock: Spinlock protecting the measurement list data structure
- * @measurement_mutex: Mutex for serializing measurement additions including Merkle updates
  * @leaf_hash: Current SHA-256 hash representing this container (Merkle leaf)
  * @measurement_count: Number of measurements in this container's list
  * @securityfs_dir: SecurityFS directory for this container
@@ -74,6 +78,8 @@ struct measurement_entry
 struct container_node
 {
     struct list_head list;
+    struct rcu_head rcu;
+    refcount_t refcnt;
     char id[CONTAINER_ID_MAX_LEN];
     struct list_head measurement_list;
     spinlock_t measurement_lock;

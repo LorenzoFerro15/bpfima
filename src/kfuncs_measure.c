@@ -43,7 +43,6 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
     const char *additional_data = additional_data__nullable;
 
     struct container_node *container = NULL;
-    unsigned long flags;
     size_t total_len = 0;
     char *concat_data = NULL;
     size_t offset = 0;
@@ -128,9 +127,9 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
     printk(KERN_INFO "bpfima: Processing container measurement for namespace: %s (original_ns=%s)\n",
            effective_ns, namespace_id ? namespace_id : "(null)");
 
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(effective_ns);
-    spin_unlock_irqrestore(&container_list_lock, flags);
+    rcu_read_lock();
+    container = find_container_by_id_rcu(effective_ns);
+    rcu_read_unlock();
 
     if (!container)
     {
@@ -150,6 +149,9 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
                                     dependencies ? dependencies : "",
                                     hash_value,
                                     can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+
+    bpfima_put_container(container);
+
     if (ret < 0)
     {
         printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",

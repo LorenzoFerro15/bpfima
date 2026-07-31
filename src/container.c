@@ -1,15 +1,8 @@
-/*
- * Container Management for BPF-IMA
- *
- * This file implements container node management including:
- * - Container creation and lookup
- * - Container measurement list management
- * - Container cleanup operations
- */
-
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/rcupdate.h>
+#include <linux/refcount.h>
 
 #include "bpfima_common.h"
 #include "bpfima_policy.h"
@@ -23,30 +16,78 @@ DEFINE_SPINLOCK(container_list_lock);
 atomic_t container_count = ATOMIC_INIT(0);
 
 /**
- * find_container_by_id - Find a container node by its ID
+ * find_container_by_id_rcu - Find a container node by ID and acquire a reference
  * @container_id: Container identifier to search for
  *
- * Must be called with container_list_lock held.
- * Returns: Pointer to container_node if found, NULL otherwise
+ * Must be called under rcu_read_lock() or container_list_lock.
+ * Returns: Incremented pointer to container_node if found, NULL otherwise
  */
-struct container_node *find_container_by_id(const char *container_id)
+struct container_node *find_container_by_id_rcu(const char *container_id)
 {
     struct container_node *container;
 
-    list_for_each_entry(container, &container_list, list)
+    if (!container_id)
+        return NULL;
+
+    list_for_each_entry_rcu(container, &container_list, list)
     {
         if (strcmp(container->id, container_id) == 0)
-            return container;
+        {
+            if (refcount_inc_not_zero(&container->refcnt))
+                return container;
+        }
     }
 
     return NULL;
 }
 
+struct container_node *find_container_by_id(const char *container_id)
+{
+    struct container_node *container;
+    rcu_read_lock();
+    container = find_container_by_id_rcu(container_id);
+    rcu_read_unlock();
+    return container;
+}
+
 /**
- * create_container_node - Create and initialize a new container node
+ * bpfima_get_container - Increment reference count on a container node
+ */
+struct container_node *bpfima_get_container(struct container_node *container)
+{
+    if (container && refcount_inc_not_zero(&container->refcnt))
+        return container;
+    return NULL;
+}
+
+static void container_node_free_rcu(struct rcu_head *head)
+{
+    struct container_node *container = container_of(head, struct container_node, rcu);
+
+    cleanup_container_measurements(container);
+
+    if (container->tfm)
+        crypto_free_shash(container->tfm);
+
+    kfree(container);
+}
+
+/**
+ * bpfima_put_container - Decrement reference count on a container node
+ */
+void bpfima_put_container(struct container_node *container)
+{
+    if (container && refcount_dec_and_test(&container->refcnt))
+    {
+        call_rcu(&container->rcu, container_node_free_rcu);
+    }
+}
+
+/**
+ * create_container_node - Create and initialize a new container node safely
  * @container_id: Unique identifier for the container
  *
- * Returns: Pointer to new container_node on success, ERR_PTR on failure
+ * Returns: Reference-counted pointer to container_node on success, ERR_PTR on failure
  */
 struct container_node *create_container_node(const char *container_id)
 {
@@ -54,6 +95,9 @@ struct container_node *create_container_node(const char *container_id)
     struct container_node *existing_container;
     unsigned long flags;
     int ret;
+
+    if (!container_id || container_id[0] == '\0')
+        return ERR_PTR(-EINVAL);
 
     /* pre-allocate memory outside lock */
     container = kzalloc(sizeof(*container), GFP_KERNEL);
@@ -73,59 +117,52 @@ struct container_node *create_container_node(const char *container_id)
     spin_lock_init(&container->measurement_lock);
     memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
     atomic_set(&container->measurement_count, 0);
+    refcount_set(&container->refcnt, 1);
     container->securityfs_dir = NULL;
     container->securityfs_measurements_file = NULL;
 
+    /* 1. Fully initialize SecurityFS & Policy BEFORE publishing to public list */
+    ret = create_container_securityfs(container);
+    if (ret < 0)
+    {
+        pr_err("bpfima: Failed to create securityfs for container %s: %d\n", container_id, ret);
+        crypto_free_shash(container->tfm);
+        kfree(container);
+        return ERR_PTR(ret);
+    }
+
+    {
+        struct bpfima_policy_namespace *policy_ns;
+        policy_ns = bpfima_policy_namespace_get_or_create(container_id);
+        if (IS_ERR(policy_ns))
+        {
+            pr_warn("bpfima: Failed to create policy namespace for %s: %ld\n", container_id, PTR_ERR(policy_ns));
+        }
+    }
+
+    /* 2. Publish to RCU list atomically */
     spin_lock_irqsave(&container_list_lock, flags);
-    
-    /* Double-check if container exists after acquiring lock */
-    existing_container = find_container_by_id(container_id);
+    existing_container = find_container_by_id_rcu(container_id);
     if (existing_container)
     {
         spin_unlock_irqrestore(&container_list_lock, flags);
-        /* Lost the race: free our allocation and return the winner */
+        /* Lost the race: free local allocation and return existing with refcnt */
+        remove_container_securityfs(container);
         crypto_free_shash(container->tfm);
         kfree(container);
         pr_debug("bpfima: Container %s created concurrently, returning existing\n", container_id);
         return existing_container;
     }
 
-    list_add_tail(&container->list, &container_list);
+    list_add_tail_rcu(&container->list, &container_list);
     spin_unlock_irqrestore(&container_list_lock, flags);
 
     atomic_inc(&container_count);
 
-    ret = create_container_securityfs(container);
-    if (ret < 0)
-    {
-        pr_err("bpfima: Failed to create securityfs for container %s: %d\n",
-               container_id, ret);
-        spin_lock_irqsave(&container_list_lock, flags);
-        list_del(&container->list);
-        spin_unlock_irqrestore(&container_list_lock, flags);
-        atomic_dec(&container_count);
-        crypto_free_shash(container->tfm);
-        kfree(container);
-        return ERR_PTR(ret);
-    }
+    /* Increment reference count for the returned pointer */
+    refcount_inc(&container->refcnt);
 
     pr_info("bpfima: Created container node for %s\n", container_id);
-
-    /* 
-     * Initialize policy for this namespace by inheriting global policy.
-     * This ensures that the new namespace starts with the current global settings.
-     */
-    {
-        struct bpfima_policy_namespace *policy_ns;
-        policy_ns = bpfima_policy_namespace_get_or_create(container_id);
-        if (IS_ERR(policy_ns)) {
-            pr_warn("bpfima: Failed to create policy namespace for %s: %ld (continuing without policy inheritance)\n",
-                    container_id, PTR_ERR(policy_ns));
-        } else {
-            pr_info("bpfima: Inherited global policy for namespace %s\n", container_id);
-        }
-    }
-
     return container;
 }
 
@@ -137,11 +174,16 @@ void cleanup_container_measurements(struct container_node *container)
 {
     struct measurement_entry *entry, *tmp;
 
+    if (!container)
+        return;
+
+    spin_lock(&container->measurement_lock);
     list_for_each_entry_safe(entry, tmp, &container->measurement_list, list)
     {
         list_del(&entry->list);
         kfree(entry);
     }
+    spin_unlock(&container->measurement_lock);
 }
 
 /**
@@ -163,19 +205,13 @@ void cleanup_all_containers(void)
     /* Process cleanup without holding the lock */
     list_for_each_entry_safe(container, tmp, &temp_list, list)
     {
-        list_del(&container->list);
-        
+        list_del_rcu(&container->list);
         remove_container_securityfs(container);
-
-        cleanup_container_measurements(container);
-
-        if (container->tfm)
-            crypto_free_shash(container->tfm);
-
-        kfree(container);
+        bpfima_put_container(container);
         count++;
     }
 
+    synchronize_rcu();
     atomic_set(&container_count, 0);
     pr_info("bpfima: Cleaned up %d containers\n", count);
 }

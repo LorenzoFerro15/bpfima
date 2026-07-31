@@ -17,31 +17,29 @@ __bpf_kfunc_start_defs();
 __bpf_kfunc int bpfima_container_get_or_create(const char *container_id)
 {
     struct container_node *container;
-    unsigned long flags;
 
     if (!container_id || container_id[0] == '\0')
         return -EINVAL;
 
-    /* Check if container already exists */
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
-    spin_unlock_irqrestore(&container_list_lock, flags);
+    rcu_read_lock();
+    container = find_container_by_id_rcu(container_id);
+    rcu_read_unlock();
 
     if (container)
     {
+        bpfima_put_container(container);
         pr_debug("bpfima: Container %s already exists\n", container_id);
         return 0;
     }
 
-    /* Create new container */
     container = create_container_node(container_id);
     if (IS_ERR(container))
     {
-        pr_err("bpfima: Failed to create container %s: %ld\n",
-               container_id, PTR_ERR(container));
+        pr_err("bpfima: Failed to create container %s: %ld\n", container_id, PTR_ERR(container));
         return PTR_ERR(container);
     }
 
+    bpfima_put_container(container);
     pr_info("bpfima: Created new container: %s\n", container_id);
     return 0;
 }
@@ -85,21 +83,20 @@ __bpf_kfunc int bpfima_container_get_count(void)
 __bpf_kfunc int bpfima_container_get_measurement_count(const char *container_id)
 {
     struct container_node *container;
-    unsigned long flags;
     int count;
 
     if (!container_id || container_id[0] == '\0')
         return -EINVAL;
 
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
+    rcu_read_lock();
+    container = find_container_by_id_rcu(container_id);
+    rcu_read_unlock();
+
     if (!container)
-    {
-        spin_unlock_irqrestore(&container_list_lock, flags);
         return -ENOENT;
-    }
+
     count = atomic_read(&container->measurement_count);
-    spin_unlock_irqrestore(&container_list_lock, flags);
+    bpfima_put_container(container);
 
     return count;
 }
@@ -113,16 +110,21 @@ __bpf_kfunc int bpfima_container_get_measurement_count(const char *container_id)
 __bpf_kfunc int bpfima_container_exists(const char *container_id)
 {
     struct container_node *container;
-    unsigned long flags;
 
     if (!container_id || container_id[0] == '\0')
         return -EINVAL;
 
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
-    spin_unlock_irqrestore(&container_list_lock, flags);
+    rcu_read_lock();
+    container = find_container_by_id_rcu(container_id);
+    rcu_read_unlock();
 
-    return container ? 1 : 0;
+    if (container)
+    {
+        bpfima_put_container(container);
+        return 1;
+    }
+
+    return 0;
 }
 
 /**
@@ -139,7 +141,6 @@ __bpf_kfunc int bpfima_container_exists(const char *container_id)
 __bpf_kfunc int bpfima_container_get_leaf_hash(const char *container_id, u8 *leaf_hash, u32 hash_size)
 {
     struct container_node *container;
-    unsigned long flags;
 
     if (!container_id || !leaf_hash)
         return -EINVAL;
@@ -147,17 +148,18 @@ __bpf_kfunc int bpfima_container_get_leaf_hash(const char *container_id, u8 *lea
     if (hash_size != MERKLE_HASH_SIZE)
         return -EINVAL;
 
-    spin_lock_irqsave(&container_list_lock, flags);
-    container = find_container_by_id(container_id);
+    rcu_read_lock();
+    container = find_container_by_id_rcu(container_id);
+    rcu_read_unlock();
+
     if (!container)
-    {
-        spin_unlock_irqrestore(&container_list_lock, flags);
         return -ENOENT;
-    }
 
+    spin_lock(&container->measurement_lock);
     memcpy(leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&container_list_lock, flags);
+    spin_unlock(&container->measurement_lock);
 
+    bpfima_put_container(container);
     return 0;
 }
 
