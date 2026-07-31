@@ -1,5 +1,9 @@
 # Build directory - contains all compiled objects and executables
 build/
+# Compiled kernel modules
+*.ko
+*.mod.c
+*.mod.o
 
 # Kernel build system files (in case they end up in root)
 *.cmd
