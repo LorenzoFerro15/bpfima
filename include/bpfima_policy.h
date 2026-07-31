@@ -196,6 +196,8 @@ spinlock_t *bpfima_global_policy_get_history_lock(void);
 /* Policy kfunc registration */
 int register_policy_kfuncs(void);
 void unregister_policy_kfuncs(void);
+bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 filter_flags);
+bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 filter_flags);
 #endif
 
 #endif /* BPFIMA_POLICY_H */

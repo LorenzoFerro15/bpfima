@@ -44,8 +44,8 @@ typedef unsigned char u8;
  * verifier can reason about map value bounds when we write fixed-size slots.
  */
 struct scratch_t {
-    /* 10 slots * 17 bytes each (16 char comm + separator) = 170; round up to 192 */
-    char buf[192];
+    char buf[128];
+    char digest_hex[68];
 };
 
 struct {
@@ -171,35 +171,71 @@ static __always_inline int build_measurement_data(char *measurement_data, int ma
  * The resulting string format is: "initial_name:parent1:parent2:...:parent10"
  * If initial_name is NULL, starts with "unknown:"
  */
-static __always_inline int build_dependencies(char *deps, int deps_max,
-                                              const char *initial_name,
-                                              struct task_struct *current_task)
+static __attribute__((noinline, unused)) void fetch_cgroup_name(struct task_struct *cur, char *cgroup_name, size_t size)
 {
-    bool read_from_kernel = false;
-    int deps_actual = 0;
-    int ret;
+    if (!cgroup_name || size == 0)
+        return;
+    cgroup_name[0] = '\0';
+    if (!cur)
+        return;
 
-    /* Add initial filename */
+    struct css_set *cgroups = BPF_CORE_READ(cur, cgroups);
+    if (!cgroups)
+        return;
+
+    struct cgroup *dfl = BPF_CORE_READ(cgroups, dfl_cgrp);
+    if (!dfl)
+        return;
+
+    struct kernfs_node *kn = BPF_CORE_READ(dfl, kn);
+    if (!kn)
+        return;
+
+    bpf_probe_read_kernel_str(cgroup_name, size, BPF_CORE_READ(kn, name));
+}
+
+static __attribute__((noinline, unused)) int append_parent_comm(char *deps, int deps_actual, int deps_max,
+                                                                struct task_struct *ancestor,
+                                                                struct task_struct **next_out)
+{
+    if (!ancestor)
+        return -1;
+
+    *next_out = BPF_CORE_READ(ancestor, real_parent);
+    if (deps_actual >= deps_max - 16)
+        return deps_actual;
+
+    int ret = bpf_probe_read_kernel_str(&deps[deps_actual], 16, BPF_CORE_READ(ancestor, comm));
+    if (ret > 1) {
+        deps_actual += (ret - 1);
+        if (deps_actual < deps_max) {
+            deps[deps_actual++] = ':';
+        }
+    }
+    return deps_actual;
+}
+
+/*
+ * Build a dependency chain by walking up to 10 ancestor processes.
+ */
+static __attribute__((noinline, unused)) int build_dependencies(char *deps, int deps_max,
+                                                      const char *initial_name,
+                                                      struct task_struct *current_task)
+{
+    int deps_actual = 0;
+
     if (initial_name) {
-        ret = bpf_probe_read_kernel_str(deps, deps_max, initial_name);
-        if (ret > 1) {  // Successfully read from kernel memory (ret includes '\0' in the length)
-            deps_actual = ret - 1; // exclude null terminator
+        int ret = bpf_probe_read_kernel_str(deps, deps_max, initial_name);
+        if (ret > 1) {
+            deps_actual = ret - 1;
             if (deps_actual < deps_max) {
-                deps[deps_actual] = ':';
-                deps_actual++;
+                deps[deps_actual++] = ':';
             }
-            read_from_kernel = true;
         }
     }
 
-    if (!read_from_kernel) {
-        // Failed to read initial name or it was empty
-        bpf_printk("Using default 'unknown:' prefix\n");
-        const char unknown[] = "unknown:";
-        #pragma unroll
-        for (int i = 0; i < 8; i++) {
-            deps[i] = unknown[i];
-        }
+    if (deps_actual == 0) {
+        bpf_probe_read_kernel_str(deps, deps_max, "unknown:");
         deps_actual = 8;
     }
     
@@ -208,34 +244,20 @@ static __always_inline int build_dependencies(char *deps, int deps_max,
         ancestor = BPF_CORE_READ(current_task, real_parent);
     }
     
-    #pragma unroll
     for (int i = 0; i < 10; i++) {
         if (!ancestor)
             break;
         
-        struct task_struct *next = BPF_CORE_READ(ancestor, real_parent);
-        
-        if (deps_actual < deps_max - 16) {
-            ret = bpf_probe_read_kernel_str(&deps[deps_actual], 16, BPF_CORE_READ(ancestor, comm));
-            if (ret > 0) {
-                int consumed = ret - 1;
-                if (consumed < 0)
-                    consumed = 0;
-                deps_actual += consumed;
-                if (deps_actual < deps_max) {
-                    deps[deps_actual] = ':';
-                    deps_actual++;
-                }
-            }
-        }
-        
+        struct task_struct *next = NULL;
+        int next_deps = append_parent_comm(deps, deps_actual, deps_max, ancestor, &next);
+        if (next_deps < 0)
+            break;
+        deps_actual = next_deps;
         if (!next || next == ancestor)
             break;
-        
         ancestor = next;
     }
     
-    /* Null-terminate the dependencies string after removing the last separator */
     if (deps_actual > 0 && deps_actual <= deps_max) {
         deps[--deps_actual] = '\0';
     }
@@ -243,56 +265,42 @@ static __always_inline int build_dependencies(char *deps, int deps_max,
     return deps_actual;
 }
 
+struct socket_addr_info {
+    char *additional_data;
+    int buf_size;
+    u32 saddr;
+    u32 daddr;
+    u16 sport;
+    u16 dport;
+};
 
-/*
- * Build socket connection additional data string" 
- * Format: "192.168.1.1:8080-10.0.0.1:80"
- *         "<saddr>:<sport>-<daddr>:<dport>"
- * 
- * @param additional_data: Output buffer for the additional data string
- * @param buf_size: Size of the additional_data buffer
- * @param saddr: Source IPv4 address
- * @param sport: Source port
- * @param daddr: Destination IPv4 address
- * @param dport: Destination port
- * 
- * @returns The number of written characters.
- */
-static __always_inline long build_socket_additional_data(char *additional_data, int buf_size,
-                                                  u32 saddr, u16 sport,
-                                                  u32 daddr, u16 dport)
+static __attribute__((noinline, unused)) long build_socket_additional_data(struct socket_addr_info *info)
 {
+    if (!info || !info->additional_data || info->buf_size <= 0)
+        return -1;
+
     u64 params[10] = {
-        (u64)(saddr & 0xFF),
-        (u64)((saddr >> 8) & 0xFF), 
-        (u64)((saddr >> 16) & 0xFF),
-        (u64)((saddr >> 24) & 0xFF), 
-        (u64)sport,
-        (u64)(daddr & 0xFF),
-        (u64)((daddr >> 8) & 0xFF), 
-        (u64)((daddr >> 16) & 0xFF),
-        (u64)((daddr >> 24) & 0xFF), 
-        (u64)dport
+        (u64)(info->saddr & 0xFF),
+        (u64)((info->saddr >> 8) & 0xFF), 
+        (u64)((info->saddr >> 16) & 0xFF),
+        (u64)((info->saddr >> 24) & 0xFF), 
+        (u64)info->sport,
+        (u64)(info->daddr & 0xFF),
+        (u64)((info->daddr >> 8) & 0xFF), 
+        (u64)((info->daddr >> 16) & 0xFF),
+        (u64)((info->daddr >> 24) & 0xFF), 
+        (u64)info->dport
     };
 
-    return bpf_snprintf(additional_data, buf_size,
+    return bpf_snprintf(info->additional_data, info->buf_size,
                         "%u.%u.%u.%u:%u-%u.%u.%u.%u:%u",
                         params, sizeof(params));
 }
 
-/*
- * Convert a byte vector to a hex string (lowercase), up to 32 bytes.
- * Returns the number of characters written (excluding NUL) or -1 on error.
- * The output buffer must be at least (len*2 + 1) bytes long; a safe size is 65.
- */
-static __always_inline int bytes_to_hex_str(const u8 *bytes, int len, char *out, int out_len)
+static __attribute__((noinline, unused)) int bytes_to_hex_str(const u8 *bytes, int len, char *out, int out_len)
 {
     int pos = 0;
-    int max = len;
-    if (max > 32)
-        max = 32;
-
-    /* hex characters table */
+    int max = (len > 32) ? 32 : len;
     const char *hex = "0123456789abcdef";
 
     for (int i = 0; i < 32; i++) {
@@ -301,10 +309,8 @@ static __always_inline int bytes_to_hex_str(const u8 *bytes, int len, char *out,
         if (pos + 2 >= out_len)
             return -1;
         u8 b = bytes[i];
-        u8 hi = (b >> 4) & 0xf;
-        u8 lo = b & 0xf;
-        out[pos++] = hex[hi];
-        out[pos++] = hex[lo];
+        out[pos++] = hex[(b >> 4) & 0xf];
+        out[pos++] = hex[b & 0xf];
     }
 
     if (pos < out_len) {
@@ -314,38 +320,28 @@ static __always_inline int bytes_to_hex_str(const u8 *bytes, int len, char *out,
     return -1;
 }
 
-/* Build a small hex string and print it with bpf_printk as a C string. */
-static __always_inline void print_hex_digest(const u8 *bytes, int len)
-{
-    char buf[65] = {0};
-    int r = bytes_to_hex_str(bytes, len, buf, sizeof(buf));
-    if (r > 0) {
-        bpf_printk("%s\n", buf);
-    }
-}
 
 
-static __always_inline void append_attr(char *buf, int buf_max,
-                                        int *off, const char *fmt, __u64 val)
+static __attribute__((noinline, unused)) void append_attr(char *buf, int buf_max,
+                                                int *off, const char *fmt, __u64 val)
 {
     if (!buf || !off || *off >= buf_max)
         return;
 
     __u64 args[1];
-    args[0] = val;   // wrap the scalar in an array
+    args[0] = val;
 
     int n = bpf_snprintf(buf + *off,
                          buf_max - *off,
                          fmt,
-                         args,   // pointer to array of __u64
-                         sizeof(args));     // data_length
+                         args,
+                         sizeof(args));
 
     if (n > 0)
         *off += n;
 }
 
-
-static __always_inline int build_attributes(char *attrs, int attrs_max, struct iattr *attr)
+static __attribute__((noinline, unused)) int build_attributes(char *attrs, int attrs_max, struct iattr *attr)
 {
     int off = 0;
 
@@ -364,22 +360,15 @@ static __always_inline int build_attributes(char *attrs, int attrs_max, struct i
     if (attr->ia_valid & ATTR_SIZE)
         append_attr(attrs, 64, &off, "size=%llu,", (__u64)attr->ia_size);
 
-    // if (attr->ia_valid & ATTR_OPEN)
-    //     append_attr(attrs, 64, &off, "open=%llu,", (__u64)attr->ia_opened);
-
-    /* KILL_PRIV */
     if (attr->ia_valid & ATTR_KILL_PRIV)
         append_attr(attrs, attrs_max, &off, "kill_priv=1,", 0);
 
-    /* KILL_SUID */
     if (attr->ia_valid & ATTR_KILL_SUID)
         append_attr(attrs, attrs_max, &off, "kill_suid=1,", 0);
 
-    /* KILL_SGID */
     if (attr->ia_valid & ATTR_KILL_SGID)
         append_attr(attrs, attrs_max, &off, "kill_sgid=1,", 0);
 
-    /* Trim trailing comma */
     if (off > 0 && off < attrs_max) {
         if (attrs[off - 1] == ',')
             attrs[off - 1] = '\0';

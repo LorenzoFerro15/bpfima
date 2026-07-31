@@ -30,10 +30,18 @@
 
 __bpf_kfunc_start_defs();
 
-__bpf_kfunc int bpfima_measurement_extend(const char *event_name,
-                                           const char *namespace_id, const char *dependencies,
-                                           const char *additional_data, u32 additional_data_len)
+__bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
+                                          const char *namespace_id__nullable, 
+                                          const char *dependencies__nullable,
+                                          const char *additional_data__nullable, 
+                                          u32 additional_data_len)
 {
+    /* Alias the suffixed parameters to standard names to keep your logic clean */
+    const char *event_name = event_name__nullable;
+    const char *namespace_id = namespace_id__nullable;
+    const char *dependencies = dependencies__nullable;
+    const char *additional_data = additional_data__nullable;
+
     struct container_node *container = NULL;
     unsigned long flags;
     size_t total_len = 0;
@@ -55,6 +63,7 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name,
         printk(KERN_ERR "bpfima: All parameters are null\n");
         return -EINVAL;
     }
+    
     if (event_name && strlen(event_name) == 0)
     {
         printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
@@ -65,10 +74,12 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name,
     {
         total_len += strlen(dependencies) + 1;
     }
+    
     if (additional_data && additional_data_len > 0)
     {
         total_len += additional_data_len + 1;
     }
+    
     // separator between fields are of number n-1
     total_len -= 1;
 

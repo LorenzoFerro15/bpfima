@@ -32,169 +32,115 @@ char LICENSE[] SEC("license") = "GPL";
 SEC("lsm/bprm_check_security")
 int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 {
-    char comm[16] = {0};
-    u64 pid_tgid;
-    u32 pid;
-    int ret;
-    int cgroup_id;
-    // u32 scratch_key = 0;
-    char event_name[32] = {0}; 
-    /* removed scratch_buf_map lookup to avoid race conditions */
-
-    u64 start_time_total = 0, end_time_total = 0;
-    u64 start_time_deps = 0, end_time_deps = 0;
-
-    u64 start_time_measure = 0, end_time_measure = 0;
-    u64 hash_time = 0, extend_time = 0;
-
-    start_time_total = bpf_ktime_get_ns();
-
-    char stack_dependencies_buf[128] = {0};
-    char *deps = stack_dependencies_buf;
-    int deps_actual =  0;
-    int deps_max = sizeof(stack_dependencies_buf);
-    char cgroup_name[48] = {0};
-    
-    struct css_set *cgroups;
-    struct cgroup *dfl;
-    struct kernfs_node *kn;
-
-    if (!bprm) {
+    if (!bprm)
         return 0;
-    }
+
+    if (!bpfima_should_process(HOOK_LSM_BPRM_CHECK_SECURITY))
+        return 0;
+
+    u32 scratch_key = 0;
+    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
+    if (!scratch)
+        return 0;
 
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
-    
-
-    /* Initialize scratch buffers early for debug */
+    char comm[16] = {0};
     bpf_get_current_comm(comm, sizeof(comm));
-    u32 pid_val = bpf_get_current_pid_tgid() >> 32;
-    char filename_debug[48] = {0};
-    bpf_probe_read_kernel_str(filename_debug, sizeof(filename_debug), bprm->filename);
-    
-    /* UNCONDITIONAL DEBUG */
-    bpf_printk("Check: PID=%u comm=%s file=%s\n", pid_val, comm, filename_debug);
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
 
-    if (!bpfima_should_process(HOOK_LSM_BPRM_CHECK_SECURITY)) {
-        return 0; 
-    }
+    const char *debug_fname = BPF_CORE_READ(bprm, filename);
+    bpf_printk("Check: PID=%u comm=%s file=%s\n", pid, comm, debug_fname);
 
-
-    
-    /* Get cgroup name first to determine policy context */
-    cgroups = BPF_CORE_READ(cur, cgroups);
-    if (cgroups) {
-        dfl = BPF_CORE_READ(cgroups, dfl_cgrp);
-        if (dfl) {
-            kn = BPF_CORE_READ(dfl, kn);
-            if (kn) {
-                bpf_probe_read_kernel_str(cgroup_name, sizeof(cgroup_name), BPF_CORE_READ(kn, name));
-            }
-        }
-    }
+    char cgroup_name[32] = {0};
+    fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
 
     struct bpfima_policy_config *policy = NULL;
-    struct bpfima_policy_config ns_policy = {0}; /* Stack allocation for namespace policy */
-    
-    /* Try to get namespace-specific policy first */
+    struct bpfima_policy_config ns_policy = {0};
     if (cgroup_name[0] != '\0') {
         if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
             policy = &ns_policy;
-            /* Debug print if needed implies policy was found */
         }
     }
-
-    /* Fallback to global policy if no namespace policy found */
     if (!policy) {
         policy = bpfima_get_policy();
     }
 
     struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_BPRM_CHECK_SECURITY);
-    
-    if (!policy || !hook_cfg) {
-        bpf_printk("Policy not loaded, using default behavior\n");
-    }
 
-    /* removed scratch logic */
-
-    bpf_get_current_comm(comm, sizeof(comm));
-    pid_tgid = bpf_get_current_pid_tgid();
-    pid = pid_tgid >> 32;
-
-    cgroup_id = bpf_get_current_cgroup_id();
-    
+    int cgroup_id = bpf_get_current_cgroup_id();
     if (!policy || policy->log_level >= 2) {
-        bpf_printk("LSM bprm_check_security: %s PID=%u  cgroup_id=%d\n", comm, pid, cgroup_id);
+        bpf_printk("LSM bprm_check_security: %s PID=%u cgroup_id=%d\n", comm, pid, cgroup_id);
         if (cgroup_name[0] != '\0') {
             bpf_printk(" cgroup_name: %s\n", cgroup_name);
         }
     }
-    
+
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        /* Check if this cgroup should be ignored based on policy */
         if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
             if (!policy || policy->log_level >= 3) {
                 bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }
             return 0;
         }
-        
-        /* Check if this is actually a container, not just any cgroup */
         if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
             if (bpfima_is_container_cgroup(cgroup_name)) {
                 is_container_context = true;
                 if (!policy || policy->log_level >= 2) {
                     bpf_printk("Container context detected: %s\n", cgroup_name);
                 }
-            } else {
-                if (!policy || policy->log_level >= 3) {
-                    bpf_printk("Non-container cgroup (using host measurement): %s\n", cgroup_name);
-                }
             }
         }
     }
 
+    char *deps = scratch->buf;
+    int deps_actual = 0;
+    int deps_max = sizeof(scratch->buf);
+
+    u64 start_time_total = bpf_ktime_get_ns();
+    u64 start_time_deps = 0, end_time_deps = 0;
+    u64 start_time_measure = 0, end_time_measure = 0;
+    u64 hash_time = 0, extend_time = 0;
+
     const char *fname = BPF_CORE_READ(bprm, filename);
-    
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
         start_time_deps = bpf_ktime_get_ns();
         deps_actual = build_dependencies(deps, deps_max, fname, cur);
         end_time_deps = bpf_ktime_get_ns();
-        
         if (!policy || policy->log_level >= 2) {
             bpf_printk(" dependencies: %s\n", deps);
         }
     }
-    
-    __builtin_memcpy(event_name, "bprm_check_security", 20);
 
+    char event_name[32] = "bprm_check_security";
     struct file *file = BPF_CORE_READ(bprm, file);
     u8 hash[32] = {0};
-    
+
+    struct file_measure_ctx mctx = {
+        .file = file,
+        .event_name = event_name,
+        .cgroup_name = cgroup_name,
+        .is_container_context = is_container_context,
+        .deps = deps,
+        .deps_actual = deps_actual,
+        .deps_max = deps_max,
+        .out_hash = hash,
+        .hash_duration = &hash_time,
+        .extend_duration = &extend_time,
+    };
+
     start_time_measure = bpf_ktime_get_ns();
-    ret = measure_accessed_file(file, 
-                                  event_name, 
-                                  cgroup_name, 
-                                  is_container_context,
-                                  deps,
-                                  deps_actual,
-                                  deps_max,
-                                  hash,
-                                  &hash_time,
-                                  &extend_time);
+    int ret = measure_accessed_file(&mctx);
     end_time_measure = bpf_ktime_get_ns();
+
     if (ret < 0) {
         if (!policy || policy->log_level >= 1) {
             bpf_printk("The file measurement failed: %d\n", ret);
         }
         return ret;
     }
-    
 
-
-    end_time_total = bpf_ktime_get_ns();
-
+    u64 end_time_total = bpf_ktime_get_ns();
     u32 stats_key = TIMING_BPRM;
     struct hook_timing *timing = bpf_map_lookup_elem(&bpf_timing_stats, &stats_key);
     if (timing) {

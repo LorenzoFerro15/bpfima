@@ -100,3 +100,86 @@ __bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *has
 
     return bpfima_policy_namespace_get_changes_hash(namespace_id, hash_out, hash_size);
 }
+
+/**
+ * bpfima_policy_should_ignore_cgroup - Check if a cgroup should be ignored based on policy
+ */
+__bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 filter_flags)
+{
+    if (!cgroup_name__nullable || cgroup_name__nullable[0] == '\0')
+        return false;
+
+    if (cgroup_name__nullable[0] == '/' && cgroup_name__nullable[1] == '\0')
+        return true;
+    if (strncmp(cgroup_name__nullable, "init.scope", 10) == 0)
+        return true;
+
+    if (!(filter_flags & POLICY_FILTER_SYSTEM_CGROUPS))
+        return false;
+
+    struct bpfima_pattern_entry *p = bpfima_policy_get_cgroup_patterns();
+    if (!p)
+        return false;
+
+    for (int i = 0; i < MAX_IGNORE_PATTERNS; i++) {
+        if (!p[i].enabled)
+            continue;
+        if (p[i].match_type == 0 && strcmp(cgroup_name__nullable, p[i].pattern) == 0)
+            return true;
+        if (p[i].match_type == 1 && strncmp(cgroup_name__nullable, p[i].pattern, strlen(p[i].pattern)) == 0)
+            return true;
+        if (p[i].match_type == 2) {
+            size_t len_name = strlen(cgroup_name__nullable);
+            size_t len_p = strlen(p[i].pattern);
+            if (len_name >= len_p && strcmp(cgroup_name__nullable + len_name - len_p, p[i].pattern) == 0)
+                return true;
+        }
+        if (p[i].match_type == 3 && strstr(cgroup_name__nullable, p[i].pattern) != NULL)
+            return true;
+    }
+    return false;
+}
+
+/**
+ * bpfima_policy_should_ignore_path - Check if a file path should be ignored based on policy
+ */
+__bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 filter_flags)
+{
+    if (!path__nullable || path__nullable[0] == '\0')
+        return false;
+
+    if ((filter_flags & POLICY_FILTER_PROC_SYS)) {
+        if (strncmp(path__nullable, "/proc/", 6) == 0 || strncmp(path__nullable, "/sys/", 5) == 0)
+            return true;
+    }
+    if ((filter_flags & POLICY_FILTER_DEV)) {
+        if (strncmp(path__nullable, "/dev/", 5) == 0)
+            return true;
+    }
+    if ((filter_flags & POLICY_FILTER_TMP_FILES)) {
+        if (strncmp(path__nullable, "/tmp/", 5) == 0)
+            return true;
+    }
+
+    struct bpfima_pattern_entry *p = bpfima_policy_get_path_patterns();
+    if (!p)
+        return false;
+
+    for (int i = 0; i < MAX_PATH_FILTERS; i++) {
+        if (!p[i].enabled)
+            continue;
+        if (p[i].match_type == 0 && strcmp(path__nullable, p[i].pattern) == 0)
+            return true;
+        if (p[i].match_type == 1 && strncmp(path__nullable, p[i].pattern, strlen(p[i].pattern)) == 0)
+            return true;
+        if (p[i].match_type == 2) {
+            size_t len_name = strlen(path__nullable);
+            size_t len_p = strlen(p[i].pattern);
+            if (len_name >= len_p && strcmp(path__nullable + len_name - len_p, p[i].pattern) == 0)
+                return true;
+        }
+        if (p[i].match_type == 3 && strstr(path__nullable, p[i].pattern) != NULL)
+            return true;
+    }
+    return false;
+}
