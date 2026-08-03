@@ -1,11 +1,12 @@
 package measurement
 
 import (
-	"bpfima/pkg/attestation"
-	"bpfima/pkg/reader"
 	"crypto"
 	"errors"
 	"fmt"
+
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/attestation"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/reader"
 )
 
 // List holds a measurement list reader, the current parsed entry, and a PCR that

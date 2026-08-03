@@ -1,4 +1,4 @@
-module bpfima
+module github.com/LorenzoFerro15/bpfima
 
 go 1.26.5
 

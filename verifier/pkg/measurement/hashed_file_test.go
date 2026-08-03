@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"bpfima/pkg/measurement"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/measurement"
 )
 
 func TestHashedFile_IsValid(t *testing.T) {
