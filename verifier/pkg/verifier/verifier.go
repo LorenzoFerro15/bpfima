@@ -1,12 +1,13 @@
 package verifier
 
 import (
-	"bpfima/pkg/attestation"
-	"bpfima/pkg/measurement"
-	"bpfima/pkg/reader"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/attestation"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/measurement"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/reader"
 )
 
 var (

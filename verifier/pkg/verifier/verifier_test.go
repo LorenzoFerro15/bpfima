@@ -1,15 +1,15 @@
 package verifier_test
 
 import (
-	"bpfima/pkg/measurement"
-	"bpfima/pkg/reader"
 	"crypto"
 	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	"bpfima/pkg/verifier"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/measurement"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/reader"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/verifier"
 )
 
 func TestVerifier_Verify_container_root_success(t *testing.T) {
