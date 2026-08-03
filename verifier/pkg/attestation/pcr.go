@@ -22,7 +22,7 @@ type PCR struct {
 // NewPCR creates a new PCR instance with the specified hash algorithm.
 // It returns an error if the provided hash algorithm is not supported by TPM PCRs.
 func NewPCR(hashAlgo crypto.Hash) (*PCR, error) {
-	if !isValidPCRAlgo(hashAlgo) {
+	if !IsValidPCRAlgo(hashAlgo) {
 		return nil, fmt.Errorf("invalid PCR hash algorithm: %s", hashAlgo.String())
 	}
 
@@ -58,8 +58,8 @@ func (p *PCR) Reset() {
 	}
 }
 
-// isValidPCRAlgo checks if the provided hash algorithm is supported by TPM PCRs.
-func isValidPCRAlgo(hashAlgo crypto.Hash) bool {
+// IsValidPCRAlgo checks if the provided hash algorithm is supported by TPM PCRs.
+func IsValidPCRAlgo(hashAlgo crypto.Hash) bool {
 	//nolint:exhaustive // TPM PCRs support a subset of hash algorithms
 	switch hashAlgo {
 	case crypto.SHA1, crypto.SHA256, crypto.SHA384, crypto.SHA512:
