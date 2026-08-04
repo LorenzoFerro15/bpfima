@@ -223,6 +223,8 @@ void bpfima_securityfs_cleanup(void)
         status_file = NULL;
     }
 
+    remove_measure_policy_securityfs();
+
     // After kernel version 6.16, the behavior of securityfs_remove was fixed and securityfs_recursive_remove removed
     #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
     if (containers_dir && !IS_ERR(containers_dir))
