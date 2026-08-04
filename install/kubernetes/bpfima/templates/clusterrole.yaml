@@ -1,0 +1,42 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: {{ include "bpfima.name" . }}
+    app.kubernetes.io/component: cluster-role
+  name: {{ include "bpfima.fullname" . }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies/status
+  verbs:
+  - get
+  - patch
+  - update

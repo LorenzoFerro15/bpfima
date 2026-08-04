@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "bpfima.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: bpfima
+  template:
+    metadata:
+      labels:
+        app: bpfima
+    spec:
+      serviceAccountName: {{ include "bpfima.fullname" . }}
+      hostPID: true
+      initContainers:
+        - name: bpfima-build-kernel-module
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-modules
+              mountPath: /host/lib/modules
+            - name: host-src
+              mountPath: /host/usr/src
+            - name: host-lib
+              mountPath: /host/usr/lib
+              readOnly: true
+            - name: etc
+              mountPath: /host/etc
+          command: ["/opt/bpfima/scripts/init/build_kernel_module.sh"]
+          args:
+            - "{{ .Values.initKernelModule.tpm_pcr_index }}"
+        - name: bpfima-build-ebpf-programs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          volumeMounts:
+            - name: compiled-bpf-artifacts
+              mountPath: /output
+          command: ["/bin/sh", "-c"]
+          args:
+            - "cd /opt/bpfima && make bpf-only && cp -a build/* /output/"
+      containers:
+      - name: bpfima-tool
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: compiled-bpf-artifacts
+            mountPath: /bpf-programs
+            readOnly: true
+          - name: host-securityfs
+            mountPath: /sys/kernel/security
+          - name: host-policy-maps
+            mountPath: /sys/fs/bpf
+        command: ["/bin/sh", "-c"]
+        args:
+            - |
+              cd /bpf-programs/ && \
+              ./bpfima-tool load lsm_bprm_check_security.o lsm_socket_connect.o lsm_file_post_open.o lsm_inode_setattr.o lsm_mmap_file.o -d && \
+              sleep infinity
+        {{- with .Values.agent.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+      - name: bpfima-controller
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          privileged: true
+        volumeMounts:
+            - name: host-securityfs
+              mountPath: /sys/kernel/security
+            - name: host-policy-maps
+              mountPath: /sys/fs/bpf
+        command: ["/opt/bpfima-manager"]
+        args:
+        - --metrics-bind-address=:8080
+        - --metrics-secure=false
+        {{- with .Values.controller.readinessProbe }}
+        readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: compiled-bpf-artifacts
+        emptyDir: {}
+      - name: host-modules
+        hostPath:
+          path: /lib/modules
+      - name: host-src
+        hostPath:
+          path: /usr/src
+      - name: host-lib
+        hostPath:
+          path: /usr/lib/
+      - name: host-securityfs
+        hostPath:
+          path: /sys/kernel/security
+      - name: host-policy-maps
+        hostPath:
+          path: /sys/fs/bpf
+      - name: etc
+        hostPath:
+          path: /etc/
+      terminationGracePeriodSeconds: 0

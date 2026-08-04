@@ -1,0 +1,129 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "bpfima.fullname" . }}-cleanup-sa
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bpfima.fullname" . }}-cleanup-role
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "-2"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+# Permissions to manage the temporary DaemonSet
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["create", "delete", "get", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+# Permissions to delete the CRD
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "bpfima.fullname" . }}-cleanup-binding
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+subjects:
+- kind: ServiceAccount
+  name: {{ include "bpfima.fullname" . }}-cleanup-sa
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "bpfima.fullname" . }}-cleanup-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Run a Job that creates a Daemonset to remove the kernel module and eBPF maps on each node, than delete the cleaning Daemonset itself
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bpfima.fullname" . }}-cleanup-job
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    spec:
+      serviceAccountName: {{ include "bpfima.fullname" . }}-cleanup-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: orchestrator
+        image: bitnami/kubectl:latest
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: bpfima-temp-cleaner
+            namespace: {{ .Release.Namespace }}
+          spec:
+            selector:
+              matchLabels:
+                name: bpfima-temp-cleaner
+            template:
+              metadata:
+                labels:
+                  name: bpfima-temp-cleaner
+              spec:
+                hostPID: true
+                containers:
+                - name: cleaner
+                  image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+                  securityContext:
+                    privileged: true
+                  volumeMounts:
+                    - name: host-policy-maps
+                      mountPath: /sys/fs/bpf
+                  command: ["/bin/sh", "-c"]
+                  args:
+                  - |
+                    rmmod bpfima || echo "Module already removed"
+                    if [ -d "/sys/fs/bpf" ]; then
+                      find /sys/fs/bpf -name "*bpfima*" -type f -exec unlink {} \; || true
+                      find /sys/fs/bpf -name "*bpfima*" -type d -exec rm -rf {} \; || true
+                      find /sys/fs/bpf -name "bpf_timing_stats_*" -type f -exec unlink {} \; || true
+                      find /sys/fs/bpf -name "bpf_timing_stats_*" -type d -exec rm -rf {} \; || true
+                    fi
+                    touch /tmp/clean_done
+                    sleep infinity
+                  readinessProbe:
+                    exec:
+                      command:
+                      - cat
+                      - /tmp/clean_done
+                    initialDelaySeconds: 2
+                    periodSeconds: 1
+                volumes:
+                  - name: host-policy-maps
+                    hostPath:
+                      path: /sys/fs/bpf
+          EOF
+
+          # Wait for all Pods to complete the cleanup and delte the DaemonSet
+          kubectl wait --namespace {{ .Release.Namespace }} \
+                       --for=condition=Ready pod \
+                       -l name=bpfima-temp-cleaner \
+                       --timeout=60s
+
+          kubectl delete daemonset bpfima-temp-cleaner -n {{ .Release.Namespace }}
+
+          # Remove CRD (not automatically deleted with helm-uninstall)
+          kubectl delete crd policies.bpfima.polito.it --ignore-not-found=true
