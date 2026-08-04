@@ -28,7 +28,7 @@ if [[ "$REBUILD_MODULE" == true ]]; then
     # Verify whether headers are already present (check if the symbolic link is present)
     # If missing, install the headers using nsenter
     if [ ! -d "/host/lib/modules/$KERNEL_VER/build/include" ]; then
-        if ! nsenter --target 1 --mount -- sh -s < /opt/bpfima/scripts/install_kernel_devel.sh; then
+        if ! nsenter --target 1 --mount -- sh -s < /opt/bpfima/scripts/init/install_kernel_devel.sh; then
             echo "Error: something went wrong during the headers installations"
             exit 1
         fi
@@ -49,7 +49,7 @@ if [[ "$REBUILD_MODULE" == true ]]; then
 
     # If missing, install the debug info and create the necessary symlink
     if [ ! -f "/host/usr/lib/debug/boot/vmlinux-$KERNEL_VER" ] || [ -f "/host/usr/lib/debug/lib/modules/$KERNEL_VER/vmlinux" ]; then
-        if ! nsenter --target 1 --mount -- sh -s < /opt/bpfima/scripts/install_debug_info.sh; then
+        if ! nsenter --target 1 --mount -- sh -s < /opt/bpfima/scripts/init/install_debug_info.sh; then
             echo "Error: something went wrong during the debug info installations"
             exit 1
         fi

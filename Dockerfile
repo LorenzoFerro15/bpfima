@@ -31,4 +31,4 @@ RUN --mount=type=cache,target=/var/cache/dnf \
 
 COPY ./ /opt/bpfima
 COPY --from=builder /workspace/manager /opt/bpfima-manager
-ENTRYPOINT ["/opt/bpfima/scripts/init_module.sh"]
+ENTRYPOINT ["/opt/bpfima/scripts/init/init_module.sh"]
