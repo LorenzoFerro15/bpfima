@@ -524,3 +524,32 @@ int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_
 
     return 0;
 }
+
+/**
+ * bpfima_policy_namespace_remove - Remove and free policy configuration for a namespace
+ * @namespace_id: Namespace identifier to remove
+ */
+void bpfima_policy_namespace_remove(const char *namespace_id)
+{
+    struct bpfima_policy_namespace *policy_ns;
+    struct policy_change_entry *change, *tmp_change;
+
+    if (!namespace_id)
+        return;
+
+    mutex_lock(&bpfima_policy_namespace_mutex);
+    policy_ns = find_policy_namespace(namespace_id);
+    if (policy_ns) {
+        spin_lock(&policy_ns->change_history_lock);
+        list_for_each_entry_safe(change, tmp_change, &policy_ns->change_history, list) {
+            list_del(&change->list);
+            kfree(change);
+        }
+        spin_unlock(&policy_ns->change_history_lock);
+
+        list_del(&policy_ns->list);
+        kfree(policy_ns);
+        pr_info("bpfima: Removed policy namespace for %s\n", namespace_id);
+    }
+    mutex_unlock(&bpfima_policy_namespace_mutex);
+}

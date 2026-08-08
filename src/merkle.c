@@ -81,12 +81,7 @@ int extend_container_leaf_hash(struct container_node *container, const u8 *new_d
         return -EINVAL;
     }
 
-    if (!new_digest) {
-        pr_err("bpfima: extend_container_leaf_hash: NULL digest\n");
-        return -EINVAL;
-    }
-
-    /* desc allocation removed - bpfima_extend_hash handles it */
+    memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
 
     ret = bpfima_extend_hash(container->tfm, old_leaf, new_digest, new_leaf);
     if (ret < 0) {
@@ -528,7 +523,9 @@ int trim_merkle_root_history(u32 max_size)
         to_delete = 1; 
     }
 
-    aggregate_entry = kzalloc(sizeof(*aggregate_entry), GFP_KERNEL);
+    bool can_sleep = !in_atomic() && !irqs_disabled();
+
+    aggregate_entry = kzalloc(sizeof(*aggregate_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
     if (!aggregate_entry) {
         pr_err("bpfima: Failed to allocate aggregate entry, aborting trim\n");
         return -ENOMEM;

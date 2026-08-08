@@ -79,10 +79,12 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
         total_len += additional_data_len + 1;
     }
     
-    // separator between fields are of number n-1
-    total_len -= 1;
-
-    if (total_len == 0)
+    if (total_len > 0)
+    {
+        // separator between fields are of number n-1
+        total_len -= 1;
+    }
+    else
     {
         printk(KERN_ERR "bpfima: No valid data to concatenate\n");
         return -EINVAL;

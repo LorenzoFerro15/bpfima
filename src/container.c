@@ -65,6 +65,7 @@ static void container_node_free_rcu(struct rcu_head *head)
     struct container_node *container = container_of(head, struct container_node, rcu);
 
     cleanup_container_measurements(container);
+    bpfima_policy_namespace_remove(container->id);
 
     if (container->tfm)
         crypto_free_shash(container->tfm);

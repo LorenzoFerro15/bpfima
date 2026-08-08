@@ -179,6 +179,7 @@ struct bpfima_hook_config *bpfima_policy_get_hook_config(enum bpfima_hook_id hoo
 int bpfima_policy_namespace_init(void);
 void bpfima_policy_namespace_cleanup(void);
 struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char *namespace_id);
+void bpfima_policy_namespace_remove(const char *namespace_id);
 int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 new_flags);
 int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 new_flags);
 int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
