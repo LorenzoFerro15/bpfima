@@ -356,7 +356,7 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     log_info "  filter_flags updated"
     
     # Verify the change was applied
-    if grep -q "filter_flags: 0x00000007" /sys/kernel/security/bpfima/policy; then
+    if grep -q "filter_flags=0x7" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: filter_flags is now 0x7"
     else
         log_warn "     Failed to verify filter_flags update"
@@ -368,7 +368,7 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     log_info "  action_flags updated"
     
     # Verify the change was applied
-    if grep -q "action_flags: 0x0000007f" /sys/kernel/security/bpfima/policy; then
+    if grep -q -i "action_flags=0x7f" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: action_flags is now 0x7F"
     else
         log_warn "     Failed to verify action_flags update"
@@ -380,7 +380,7 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     log_info "  min_file_size updated"
     
     # Verify the change was applied
-    if grep -q "min_file_size: 4096" /sys/kernel/security/bpfima/policy; then
+    if grep -q "min_file_size=4096" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: min_file_size is now 4096"
     else
         log_warn "     Failed to verify min_file_size update"
@@ -392,7 +392,7 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     log_info "  log_level updated"
     
     # Verify the change was applied
-    if grep -q "log_level: 3" /sys/kernel/security/bpfima/policy; then
+    if grep -q "log_level=3" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: log_level is now 3"
     else
         log_warn "     Failed to verify log_level update"
@@ -599,7 +599,7 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             log_info "  Namespace filter_flags updated"
             
             # Verify the change
-            if grep -q "filter_flags: 0x00000003" "$POLICY_FILE"; then
+            if grep -q "filter_flags=0x3" "$POLICY_FILE"; then
                 log_info "     Verified: namespace filter_flags is now 0x3"
             else
                 log_warn "     Failed to verify namespace filter_flags update"
@@ -611,7 +611,7 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             log_info "  Namespace action_flags updated"
             
             # Verify the change
-            if grep -q "action_flags: 0x0000007e" "$POLICY_FILE"; then
+            if grep -q -i "action_flags=0x7e" "$POLICY_FILE"; then
                 log_info "     Verified: namespace action_flags is now 0x7E"
             else
                 log_warn "     Failed to verify namespace action_flags update"
@@ -623,7 +623,7 @@ if [ -d "/sys/kernel/security/bpfima/namespaces" ]; then
             log_info "  Namespace min_file_size updated"
             
             # Verify the change
-            if grep -q "min_file_size: 8192" "$POLICY_FILE"; then
+            if grep -q "min_file_size=8192" "$POLICY_FILE"; then
                 log_info "     Verified: namespace min_file_size is now 8192"
             else
                 log_warn "     Failed to verify namespace min_file_size update"
