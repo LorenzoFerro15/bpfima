@@ -261,21 +261,19 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             return -ENOMEM;
         }
         
+        u8 local_leaf_hash[MERKLE_HASH_SIZE];
+
         spin_lock_irqsave(&container->measurement_lock, flags);
         list_add_tail(&meas_entry->list, &container->measurement_list);
-        spin_unlock_irqrestore(&container->measurement_lock, flags);
-        
         atomic_inc(&container->measurement_count);
         
         ret = extend_container_leaf_hash(container, measurement_digest);
         if (ret < 0) {
-            pr_err("bpfima: Failed to extend container leaf hash: %d\n", ret);
-            
-            spin_lock_irqsave(&container->measurement_lock, flags);
             list_del(&meas_entry->list);
+            atomic_dec(&container->measurement_count);
             spin_unlock_irqrestore(&container->measurement_lock, flags);
             
-            atomic_dec(&container->measurement_count);
+            pr_err("bpfima: Failed to extend container leaf hash: %d\n", ret);
             kfree(meas_entry);
             
             spin_lock_irqsave(&policy_ns->change_history_lock, flags);
@@ -287,14 +285,17 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
             return ret;
         }
 
+        memcpy(local_leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
+        spin_unlock_irqrestore(&container->measurement_lock, flags);
+
         pr_info("bpfima: Extended leaf hash for namespace %s\n", namespace_id);
 
-        ret = add_merkle_root_history_entry(container->leaf_hash, container->id);
+        ret = add_merkle_root_history_entry(local_leaf_hash, container->id);
         if (ret < 0) {
             pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
         }
         
-        ret = extend_merkle_root(container->leaf_hash);
+        ret = extend_merkle_root(local_leaf_hash);
         if (ret < 0) {
             pr_err("bpfima: Failed to extend Merkle root: %d\n", ret);
             

@@ -192,7 +192,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
 {
     struct tpm_chip *chip;
     struct tpm_digest digest[1];
-    int ret;
+    int ret = 0;
     bool can_sleep = !in_atomic() && !irqs_disabled();
 
     if (!pcr_buf)
@@ -231,7 +231,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
     memset(digest, 0, sizeof(digest));
     digest[0].alg_id = TPM_ALG_SHA256;
 
-    tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
+    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
     put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);

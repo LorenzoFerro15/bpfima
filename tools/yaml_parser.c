@@ -24,7 +24,7 @@ struct parse_handler {
 
 static int parse_bool(const char *value, void *ctx)
 {
-    int *res = (int *)ctx;
+    uint8_t *res = (uint8_t *)ctx;
     if (strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0 ||
         strcmp(value, "1") == 0)
         *res = 1;

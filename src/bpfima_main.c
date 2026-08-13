@@ -180,16 +180,14 @@ static int __init bpfima_init(void)
     if (ret)
     {
         pr_err("bpfima: Failed to initialize hash subsystem: %d\n", ret);
-        bpfima_policy_cleanup();
-        return ret;
+        goto err_policy;
     }
 
     ret = bpfima_policy_namespace_init();
     if (ret)
     {
         pr_err("bpfima: Failed to initialize namespace policy subsystem: %d\n", ret);
-        bpfima_policy_cleanup();
-        return ret;
+        goto err_hash;
     }
 
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
@@ -198,27 +196,25 @@ static int __init bpfima_init(void)
     system_merkle_root.tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(system_merkle_root.tfm))
     {
-        pr_err("bpfima: Failed to allocate tfm for system merkle root\n");
-        return PTR_ERR(system_merkle_root.tfm);
+        ret = PTR_ERR(system_merkle_root.tfm);
+        system_merkle_root.tfm = NULL;
+        pr_err("bpfima: Failed to allocate tfm for system merkle root: %d\n", ret);
+        goto err_policy_ns;
     }
     pr_info("bpfima: Merkle tree root initialized\n");
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
     if (ret)
     {
-        pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
-        return ret;
+        pr_err("bpfima: Failed to register BTF kfunc ID set for kprobe: %d\n", ret);
+        goto err_merkle_tfm;
     }
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
     if (ret)
     {
-        pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
-        return ret;
+        pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint: %d\n", ret);
+        goto err_merkle_tfm;
     }
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_LSM, &bpf_kfunc_example_set);
@@ -237,14 +233,26 @@ static int __init bpfima_init(void)
     ret = bpfima_securityfs_init();
     if (ret)
     {
-        pr_err("bpfima: Failed to initialize SecurityFS interface\n");
-        bpfima_policy_namespace_cleanup();
-        bpfima_policy_cleanup();
-        return ret;
+        pr_err("bpfima: Failed to initialize SecurityFS interface: %d\n", ret);
+        goto err_merkle_tfm;
     }
 
     printk(KERN_INFO "bpfima: Module loaded successfully\n");
     return 0;
+
+err_merkle_tfm:
+    if (system_merkle_root.tfm)
+    {
+        crypto_free_shash(system_merkle_root.tfm);
+        system_merkle_root.tfm = NULL;
+    }
+err_policy_ns:
+    bpfima_policy_namespace_cleanup();
+err_hash:
+    bpfima_hash_cleanup();
+err_policy:
+    bpfima_policy_cleanup();
+    return ret;
 }
 
 /*

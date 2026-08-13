@@ -11,6 +11,7 @@
 #include "bpfima_common.h"
 #include <linux/percpu.h>
 #include <crypto/hash.h>
+#include <linux/unaligned.h>
 
 #define HASH_TABLE_BITS 8
 
@@ -127,7 +128,7 @@ bool hash_exists(const u8 *hash_value, const char *namespace_id)
     bool found = false;
     const char *ns_to_check = namespace_id ? namespace_id : "";
     
-    hash_key = *(u32*)hash_value;
+    hash_key = get_unaligned_le32(hash_value);
 
     spin_lock_irqsave(&hash_table_lock, flags);
     
@@ -175,7 +176,7 @@ int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_s
     strscpy(new_entry->namespace_id, ns_to_store, CONTAINER_ID_MAX_LEN);
     
     /* Use first 4 bytes of SHA256 as hash key */
-    hash_key = *(u32*)hash_value;
+    hash_key = get_unaligned_le32(hash_value);
     
     spin_lock_irqsave(&hash_table_lock, flags);
     hash_add(sha256_hash_table, &new_entry->hash_node, hash_key);
@@ -228,16 +229,11 @@ void cleanup_hash_table(void)
  */
 int bpfima_extend_hash(struct crypto_shash *tfm, const u8 *old_hash, const u8 *new_data, u8 *out_hash)
 {
-    struct shash_desc *desc;
+    SHASH_DESC_ON_STACK(desc, tfm);
     int ret;
     
     if (!tfm || !old_hash || !new_data || !out_hash)
         return -EINVAL;
-
-    /* Always use GFP_ATOMIC to be safe in spinlock contexts (common for extend ops) */
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_ATOMIC);
-    if (!desc)
-        return -ENOMEM;
 
     desc->tfm = tfm;
     ret = crypto_shash_init(desc);
@@ -255,9 +251,6 @@ int bpfima_extend_hash(struct crypto_shash *tfm, const u8 *old_hash, const u8 *n
     ret = crypto_shash_final(desc, out_hash);
 
 out:
-    if (desc) {
-        memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(tfm));
-        kfree(desc);
-    }
+    shash_desc_zero(desc);
     return ret;
 }

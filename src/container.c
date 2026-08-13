@@ -97,10 +97,12 @@ struct container_node *create_container_node(const char *container_id)
     unsigned long flags;
     int ret;
 
-    if (!container_id || container_id[0] == '\0')
-        return ERR_PTR(-EINVAL);
+    /* 0. Fast check: return existing container if already published */
+    existing_container = find_container_by_id(container_id);
+    if (existing_container)
+        return existing_container;
 
-    /* pre-allocate memory outside lock */
+    /* Pre-allocate memory outside lock */
     container = kzalloc(sizeof(*container), GFP_KERNEL);
     if (!container)
         return ERR_PTR(-ENOMEM);
@@ -126,6 +128,17 @@ struct container_node *create_container_node(const char *container_id)
     ret = create_container_securityfs(container);
     if (ret < 0)
     {
+        /* If another thread created the SecurityFS dir concurrently, check if container node exists */
+        if (ret == -EEXIST)
+        {
+            existing_container = find_container_by_id(container_id);
+            if (existing_container)
+            {
+                crypto_free_shash(container->tfm);
+                kfree(container);
+                return existing_container;
+            }
+        }
         pr_err("bpfima: Failed to create securityfs for container %s: %d\n", container_id, ret);
         crypto_free_shash(container->tfm);
         kfree(container);

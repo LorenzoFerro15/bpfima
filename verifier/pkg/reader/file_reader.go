@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // FileReader is a concrete implementation of the ListReader
@@ -70,17 +71,16 @@ func (r *FileReader) Close() error {
 	return nil
 }
 
-// ReadLine reads the next line from the measurement list file,
-// updates the read offset, and returns the line as a string.
-// It returns an error if reading the line fails.
 func (r *FileReader) ReadLine() (string, error) {
 	line, err := r.reader.ReadString('\n')
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("failed to read line: %w", err)
 	}
-	lineLen := len(line)
-	r.ptr += int64(lineLen)
-	return line[:lineLen-1], nil
+	if len(line) == 0 {
+		return "", err
+	}
+	r.ptr += int64(len(line))
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // Available returns the number of bytes available to read from the measurement list file.

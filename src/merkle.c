@@ -127,11 +127,6 @@ int extend_merkle_root(const u8 *container_leaf_hash)
         return -EINVAL;
     }
 
-    if (!system_merkle_root.tfm) {
-        pr_err("bpfima: extend_merkle_root: System tfm not allocated\n");
-        return -EINVAL;
-    }
-
     /* desc allocation removed - bpfima_extend_hash handles it */
 
     spin_lock_irqsave(&system_merkle_root.lock, flags);
@@ -347,6 +342,8 @@ int add_container_measurement(struct container_node *container,
     if (!entry)
         return -ENOMEM;
 
+    u8 local_leaf_hash[MERKLE_HASH_SIZE];
+
     /* Critical section: lock container, add entry, extend leaf */
     spin_lock_irqsave(&container->measurement_lock, irq_flags);
     
@@ -364,15 +361,16 @@ int add_container_measurement(struct container_node *container,
         return ret;
     }
 
+    memcpy(local_leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
     spin_unlock_irqrestore(&container->measurement_lock, irq_flags);
 
-    ret = add_merkle_root_history_entry(container->leaf_hash, container->id);
+    ret = add_merkle_root_history_entry(local_leaf_hash, container->id);
     if (ret < 0)
     {
         pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
     }
 
-    ret = extend_merkle_root(container->leaf_hash);
+    ret = extend_merkle_root(local_leaf_hash);
     if (ret < 0)
     {
         /* Rollback is hard because we already released lock, but typical usage allows log warning */

@@ -36,7 +36,7 @@ const struct file_operations container_measurements_fops = {
     .open = container_measurements_open,
     .read = seq_read,
     .llseek = seq_lseek,
-    .release = seq_release,
+    .release = container_measurements_release,
 };
 
 struct dentry *bpfima_dir = NULL;
@@ -186,13 +186,30 @@ void container_measurements_seq_stop(struct seq_file *s, void *v)
 int container_measurements_open(struct inode *inode, struct file *file)
 {
     struct container_node *container = inode->i_private;
+    if (!container || !bpfima_get_container(container))
+        return -ENOENT;
+
     int ret = seq_open(file, &container_measurements_seq_ops);
     if (ret == 0)
     {
         struct seq_file *sf = file->private_data;
         sf->private = container;
     }
+    else
+    {
+        bpfima_put_container(container);
+    }
     return ret;
+}
+
+int container_measurements_release(struct inode *inode, struct file *file)
+{
+    struct seq_file *sf = file->private_data;
+    if (sf && sf->private)
+    {
+        bpfima_put_container(sf->private);
+    }
+    return seq_release(inode, file);
 }
 
 /*
@@ -226,8 +243,6 @@ void bpfima_securityfs_cleanup(void)
         securityfs_remove(status_file);
         status_file = NULL;
     }
-
-    remove_measure_policy_securityfs();
 
     // After kernel version 6.16, the behavior of securityfs_remove was fixed and securityfs_recursive_remove removed
     #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)

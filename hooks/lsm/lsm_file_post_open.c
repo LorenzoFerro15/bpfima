@@ -1,4 +1,4 @@
-#include "../../utils/headers_bpf.h"
+#include "../hook_utils.h"
 #include "../../utils/bpf_kfunc_defs.h"
 
 #ifndef S_ISREG
@@ -85,10 +85,17 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
     }
 
-    bpf_printk("  Hash computation SUCCESS! SHA256: %*ph\n", 32, digest);
+    u32 scratch_key = 0;
+    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
+    if (!scratch)
+        return 0;
+
+    char *digest_hex = scratch->digest_hex;
+    if (bytes_to_hex_str(digest, 32, digest_hex, sizeof(scratch->digest_hex)) < 0)
+        return 0;
 
     char event_name[] = "file_post_open";
-    int extend_ret = bpfima_measurement_extend(event_name, NULL, NULL, (const char *)digest, sizeof(digest));
+    int extend_ret = bpfima_measurement_extend(event_name, NULL, NULL, digest_hex, 64);
     if (extend_ret >= 0) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
     } else {

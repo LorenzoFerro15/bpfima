@@ -2,9 +2,6 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-extern int bpf_ima_extend_measurement(const char *event_name, const char *namespace_id, const char *dependencies, const char *additional_data, u32 additional_data_len) __ksym;
-extern int bpf_ima_get_measurement_count(void) __ksym;
-
 SEC("lsm/inode_setattr")
 int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *attr)
 {
@@ -23,7 +20,10 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
     bpf_core_read_str(entry_name, sizeof(entry_name), dentry->d_name.name);
 
     char attrs[64] = {0};
-    build_attributes(attrs, 64, attr);
+    int attr_len = build_attributes(attrs, sizeof(attrs), attr);
+    if (attr_len <= 0)
+        return 0;
 
-    return 0;
+    char event_name[] = "inode_setattr";
+    return bpfima_measurement_extend(event_name, cgroup_name[0] ? cgroup_name : NULL, NULL, attrs, 64);
 }

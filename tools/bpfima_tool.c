@@ -260,6 +260,7 @@ struct monitored_file {
     char src_path[512];
     char dst_path[512];
     int fd;
+    bool active;
     struct monitored_file *next;
 };
 
@@ -272,6 +273,7 @@ static struct monitored_file *get_monitored_file(const char *src_path, const cha
     struct monitored_file *mf = g_monitored_files;
     while (mf) {
         if (strcmp(mf->src_path, src_path) == 0) {
+            mf->active = true;
             return mf;
         }
         mf = mf->next;
@@ -284,6 +286,7 @@ static struct monitored_file *get_monitored_file(const char *src_path, const cha
     snprintf(mf->src_path, sizeof(mf->src_path), "%s", src_path);
     snprintf(mf->dst_path, sizeof(mf->dst_path), "%s", dst_path);
     mf->fd = -1;
+    mf->active = true;
     mf->next = g_monitored_files;
     g_monitored_files = mf;
 
@@ -318,6 +321,13 @@ static void append_new_content(struct monitored_file *mf) {
  */
 static void dump_securityfs_to_files(void) {
     struct stat st = {0};
+
+    // Mark all existing entries as inactive for garbage collection
+    struct monitored_file *cur = g_monitored_files;
+    while (cur) {
+        cur->active = false;
+        cur = cur->next;
+    }
 
     // Create root directory
     if (stat("build/namespaces/root", &st) == -1) {
@@ -368,6 +378,21 @@ static void dump_securityfs_to_files(void) {
             }
         }
         closedir(dir);
+    }
+
+    // Sweep phase: Prune files that no longer exist (e.g. terminated containers)
+    struct monitored_file **pp = &g_monitored_files;
+    while (*pp) {
+        struct monitored_file *entry = *pp;
+        if (!entry->active) {
+            if (entry->fd >= 0) {
+                close(entry->fd);
+            }
+            *pp = entry->next;
+            free(entry);
+        } else {
+            pp = &entry->next;
+        }
     }
 }
 
@@ -558,6 +583,48 @@ static int load_and_attach_one_object(const char *filename)
     return 0;
 }
 
+static int ensure_single_instance(void) {
+    int pid = read_pid_file();
+    if (pid > 0 && is_process_running(pid)) {
+        fprintf(stderr, "Error: BPF IMA is already running (PID: %d)\n", pid);
+        fprintf(stderr, "Run 'bpfima-tool unload' first\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int load_all_bpf_objects(const char **filenames, int file_count) {
+    for (int i = 0; i < file_count; i++) {
+        if (load_and_attach_one_object(filenames[i]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int run_daemon_loop(void) {
+    printf("\nStarting daemon...\n");
+    fflush(NULL);
+    if (daemonize() < 0) {
+        fprintf(stderr, "Error: Failed to daemonize\n");
+        return -1;
+    }
+
+    write_pid_file();
+
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+
+    while (!g_exiting) {
+        sleep(1);
+        dump_securityfs_to_files();
+    }
+
+    printf("\nShutting down...\n");
+    dump_securityfs_to_files();
+    return 0;
+}
+
 /**
  * @brief Load and attach a list of eBPF programs
  */
@@ -565,22 +632,15 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
 {
     int err = 0;
 
-    int pid = read_pid_file();
-    if (pid > 0 && is_process_running(pid))
-    {
-        fprintf(stderr, "Error: BPF IMA is already running (PID: %d)\n", pid);
-        fprintf(stderr, "Run 'bpfima-tool unload' first\n");
+    if (ensure_single_instance() < 0)
         return 1;
-    }
 
     if (set_rlimit() < 0)
         return 1;
 
-    for (int i = 0; i < file_count; i++) {
-        if (load_and_attach_one_object(filenames[i]) != 0) {
-            err = 1;
-            goto cleanup;
-        }
+    if (load_all_bpf_objects(filenames, file_count) < 0) {
+        err = 1;
+        goto cleanup;
     }
 
     printf("\n  BPF program loaded successfully\n");
@@ -589,38 +649,15 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
     printf("  2. View status: sudo bpfima-tool status\n");
     printf("  3. Check measurements: sudo cat /sys/kernel/security/bpfima/status\n");
 
-    if (daemon_mode)
-    {
-        printf("\nStarting daemon...\n");
-        fflush(NULL);
-        if (daemonize() < 0) {
-            fprintf(stderr, "Error: Failed to daemonize\n");
+    if (daemon_mode) {
+        if (run_daemon_loop() < 0) {
+            err = 1;
             goto cleanup;
         }
-
-        // We are now in the child process
-        write_pid_file();
-
-        signal(SIGINT, sig_handler);
-        signal(SIGTERM, sig_handler);
-
-
-        while (!g_exiting)
-        {
-            sleep(1);
-            // Dump every sleep cycle
-            dump_securityfs_to_files();
-        }
-
-        printf("\nShutting down...\n");
-
-        // Final dump before exit
-        dump_securityfs_to_files();
     }
 
 cleanup:
-    if (err || !daemon_mode)
-    {
+    if (err || !daemon_mode) {
         unpin_maps_from_loaded_objects();
         destroy_runtime_state();
         remove_pid_file();

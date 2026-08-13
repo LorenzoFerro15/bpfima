@@ -29,6 +29,7 @@ void *container_measurements_seq_start(struct seq_file *s, loff_t *pos);
 void *container_measurements_seq_next(struct seq_file *s, void *v, loff_t *pos);
 void container_measurements_seq_stop(struct seq_file *s, void *v);
 int container_measurements_open(struct inode *inode, struct file *file);
+int container_measurements_release(struct inode *inode, struct file *file);
 
 void bpfima_securityfs_cleanup(void);
 
