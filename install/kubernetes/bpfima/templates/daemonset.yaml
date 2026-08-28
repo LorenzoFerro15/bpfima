@@ -28,8 +28,6 @@ spec:
             - name: host-lib
               mountPath: /host/usr/lib
               readOnly: true
-            - name: etc
-              mountPath: /host/etc
           command: ["/opt/bpfima/scripts/init/build_kernel_module.sh"]
           args:
             - "{{ .Values.initKernelModule.tpm_pcr_index }}"
@@ -107,7 +105,4 @@ spec:
       - name: host-policy-maps
         hostPath:
           path: /sys/fs/bpf
-      - name: etc
-        hostPath:
-          path: /etc/
       terminationGracePeriodSeconds: 0

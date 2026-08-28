@@ -19,24 +19,6 @@ rules:
   resources:
   - policies
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
-- apiGroups:
-  - bpfima.polito.it
-  resources:
-  - policies/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - bpfima.polito.it
-  resources:
-  - policies/status
-  verbs:
-  - get
-  - patch
-  - update
