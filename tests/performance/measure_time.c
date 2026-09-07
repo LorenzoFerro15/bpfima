@@ -17,7 +17,7 @@ int main(int argc, char *argv[]) {
     int status;
 
     // Capture start time
-    clock_gettime(CLOCK_REALTIME, &start);
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     // Fork and execute the target program
     pid = fork();
@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Capture precise end time
-    clock_gettime(CLOCK_REALTIME, &end);
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
     // Convert to nanoseconds since epoch
     unsigned long long start_ns = (unsigned long long)start.tv_sec * 1000000000ULL + start.tv_nsec;
