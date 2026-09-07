@@ -400,8 +400,29 @@ static void unpin_maps_from_loaded_objects(void)
 }
 
 /**
+ * @brief Unpin links created by the loaded objects.
+ */
+static void unpin_links_from_loaded_objects(void)
+{
+    struct bpf_program *prog;
+    for (int i = 0; i < g_obj_count; i++) {
+        if (!g_objs[i]) {
+            continue;
+        }
+        bpf_object__for_each_program(prog, g_objs[i]) {
+            const char *prog_name = bpf_program__name(prog);
+            char pin_path[256];
+            snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/bpfima/%s", prog_name);
+            if (access(pin_path, F_OK) == 0) {
+                unlink(pin_path);
+            }
+        }
+    }
+}
+
+/**
  * @brief Load one object file, reuse pinned maps if they already exist,
- * then attach every program contained in that object.
+ * then attach and pin every program contained in that object.
  */
 static int load_and_attach_one_object(const char *filename)
 {
@@ -426,10 +447,14 @@ static int load_and_attach_one_object(const char *filename)
 
     // Open the object
     obj = bpf_object__open_file(filename, NULL);
-    if (libbpf_get_error(obj)) {
+    if (!obj) {
         fprintf(stderr, "Failed to open %s: %s\n", filename, strerror(errno));
         return 1;
     }
+
+    // Add immediately the new object
+    // In case of errors, it will be closed by the cleanup function
+    g_objs[g_obj_count++] = obj;
 
     /// Set the path attribute that tells where the BPF map should be pinned.
     bpf_object__for_each_map(map, obj) {
@@ -472,7 +497,7 @@ static int load_and_attach_one_object(const char *filename)
             }
 
             printf("  Reused pinned map: %s\n", bpf_map__name(map));
-            // The fd will be closed by libbpf
+            close(fd);
         }
     }
 
@@ -480,7 +505,6 @@ static int load_and_attach_one_object(const char *filename)
     err = bpf_object__load(obj);
     if (err) {
         fprintf(stderr, "Failed to load BPF object %s: %s\n", filename, strerror(-err));
-        bpf_object__close(obj);
         return 1;
     }
 
@@ -514,19 +538,53 @@ static int load_and_attach_one_object(const char *filename)
 
     // Attach every program in this object and keep every link alive.
     bpf_object__for_each_program(prog, obj) {
+        const char *prog_name = bpf_program__name(prog);
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/bpfima/%s", prog_name);
+
+        // If the program was already pinned try to atomically substitute it with the new version
+        if (access(pin_path, F_OK) == 0) {
+            int existing_link_fd = bpf_obj_get(pin_path);
+            if (existing_link_fd >= 0) {
+                int new_prog_fd = bpf_program__fd(prog);
+
+                // Atomically swap the program
+                err = bpf_link_update(existing_link_fd, new_prog_fd, NULL);
+                close(existing_link_fd);
+                if (err == 0) {
+                    printf("  Atomically updated: %s\n", prog_name);
+                    attached_in_obj++;
+                    continue;
+                }
+                // Something went wrong, unlink, reattach and link the program
+                fprintf(stderr, "Atomic update failed for %s (%s). Falling back to fresh attach. \n",
+                        prog_name, strerror(-err));
+            } else {
+                fprintf(stderr, "Failed to retrieve FD for pinned link %s. Falling back to fresh attach...\n",
+                        prog_name);
+            }
+            unlink(pin_path);
+        }
+
         struct bpf_link *link = bpf_program__attach(prog);
-        if (libbpf_get_error(link)) {
+        if (!link) {
             fprintf(stderr, "Failed to attach program %s from %s: %s\n",
                     bpf_program__name(prog), filename, strerror(errno));
-            bpf_object__close(obj);
             return 1;
         }
 
         if (g_link_count >= MAX_ATTACHED_LINKS) {
             fprintf(stderr, "Too many attached links (max %d)\n", MAX_ATTACHED_LINKS);
             bpf_link__destroy(link);
-            bpf_object__close(obj);
             return 1;
+        }
+
+        // Pin the link so it persists after this process exits
+        int err = bpf_link__pin(link, pin_path);
+        if (err) {
+            fprintf(stderr, "Warning: failed pinning link %s: %s\n", prog_name, strerror(-err));
+        } else {
+            printf("  Pinned link: %s\n", prog_name);
         }
 
         g_links[g_link_count++] = link;
@@ -536,11 +594,9 @@ static int load_and_attach_one_object(const char *filename)
 
     if (attached_in_obj == 0) {
         fprintf(stderr, "Error: no programs attached from %s\n", filename);
-        bpf_object__close(obj);
         return 1;
     }
 
-    g_objs[g_obj_count++] = obj;
     return 0;
 }
 
@@ -561,6 +617,12 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
 
     if (set_rlimit() < 0)
         return 1;
+
+    // Directory to which pin the eBPF programs
+    if (mkdir("/sys/fs/bpf/bpfima", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "Warning: Failed to create /sys/fs/bpf/bpfima: %s\n", strerror(errno));
+        return 1;
+    }
 
     for (int i = 0; i < file_count; i++) {
         if (load_and_attach_one_object(filenames[i]) != 0) {
@@ -607,8 +669,29 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
 cleanup:
     if (err || !daemon_mode)
     {
-        unpin_maps_from_loaded_objects();
-        destroy_runtime_state();
+        // The env variable is set in the manifest of the bpfima_tool container
+        // to indicate that we are in a k8s environment
+        bool persist_state = (getenv("BPFIMA_PERSIST_STATE") != NULL);
+
+        if (persist_state && !err) {
+            printf("Persisting pinned BPF links for atomic reload...\n");
+
+            // In k8s, BPFIMA objects must stay pinned to have continous attesation
+            // So close the user-space objects to prevent memory leaks in case of restart.
+            for (int i = 0; i < g_obj_count; i++) {
+                if (g_objs[i]) {
+                    bpf_object__close(g_objs[i]);
+                    g_objs[i] = NULL;
+                }
+            }
+            g_obj_count = 0;
+            g_link_count = 0;
+        }
+        else {
+            unpin_maps_from_loaded_objects();
+            unpin_links_from_loaded_objects();
+            destroy_runtime_state();
+        }
         remove_pid_file();
     }
 
@@ -663,7 +746,7 @@ static int cmd_unload(void)
     dump_securityfs_to_files();
 
 
-    printf("Cleaning up pinned maps...\n");
+    printf("Cleaning up pinned maps and links...\n");
     unlink(POLICY_MAP_PATH);
     unlink(CGROUP_PATTERNS_MAP_PATH);
     unlink(PATH_PATTERNS_MAP_PATH);
@@ -671,6 +754,7 @@ static int cmd_unload(void)
     unlink(NAMESPACE_POLICY_MAP_PATH);
     unlink("/sys/fs/bpf/bpf_timing_stats");
 
+    system("rm -rf /sys/fs/bpf/bpfima");
 
     printf("  BPF IMA unloaded successfully\n");
     return 0;

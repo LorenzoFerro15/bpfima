@@ -84,6 +84,7 @@ spec:
                   name: bpfima-temp-cleaner
               spec:
                 hostPID: true
+                terminationGracePeriodSeconds: 0
                 containers:
                 - name: cleaner
                   image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -95,13 +96,35 @@ spec:
                   command: ["/bin/sh", "-c"]
                   args:
                   - |
-                    rmmod bpfima || echo "Module already removed"
                     if [ -d "/sys/fs/bpf" ]; then
+                      rm -rf /sys/fs/bpf/bpfima
                       find /sys/fs/bpf -name "*bpfima*" -type f -exec unlink {} \; || true
                       find /sys/fs/bpf -name "*bpfima*" -type d -exec rm -rf {} \; || true
                       find /sys/fs/bpf -name "bpf_timing_stats_*" -type f -exec unlink {} \; || true
                       find /sys/fs/bpf -name "bpf_timing_stats_*" -type d -exec rm -rf {} \; || true
                     fi
+                    sleep 2
+
+                    MAX_RETRIES=10
+                    RETRY_COUNT=0
+
+                    while ! rmmod bpfima 2>/dev/null; do
+                      # Check if the module is actually gone (rmmod returns error if already removed)
+                      if ! lsmod | grep -q "^bpfima "; then
+                          echo "Module already removed"
+                          break
+                      fi
+
+                      RETRY_COUNT=$((RETRY_COUNT+1))
+                      if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                          echo "Failed to remove bpfima module after $MAX_RETRIES attempts"
+                          break
+                      fi
+
+                      echo "Module busy, retrying in 1s..."
+                      sleep 1
+                    done
+
                     touch /tmp/clean_done
                     sleep infinity
                   readinessProbe:
