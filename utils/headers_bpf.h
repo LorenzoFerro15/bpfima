@@ -200,32 +200,55 @@ static __always_inline bool bpfima_ends_with(const char *str, const char *suffix
 }
 
 /* Verify if str constains the given substring */
-static __always_inline bool bpfima_contains(const char *str, const char *contained, int len_str, int len_contained)
+__noinline bool __bpfima_contains(const struct string_ctx *str_struct, const struct string_ctx *contained_struct, __u8 len_str, __u8 len_contained)
 {
+    if (!str_struct || !contained_struct)
+        return false;
+
+    const char *str = str_struct->data;
+    const char *contained = contained_struct->data;
+
     if (!str || !contained)
         return false;
 
-    if (len_str < len_contained || len_contained == 0 || len_contained >= MAX_PATTERN_LEN || len_str == 0 || len_str >= MAX_PATTERN_LEN)
+    if (len_str == 0 || len_str >= MAX_PATTERN_LEN)
         return false;
 
-    int max_start = len_str - len_contained;
-    if (max_start < 0 || max_start >= MAX_PATTERN_LEN)
+    if (len_contained == 0 || len_contained >= MAX_PATTERN_LEN)
+        return false;
+
+    if (len_str < len_contained)
+        return false;
+
+    __u8 max_start = len_str - len_contained;
+    if (max_start >= MAX_PATTERN_LEN)
         return false;
 
     bool found;
-    for (int i = 0; i <= max_start; i++) {
+    for (__u8 i = 0; i <= max_start; i++) {
         found = true;
-        for (int j = 0; j < len_contained; j++) {
-            int idx = j + i;
+        for (__u8 j = 0; j < len_contained && found; j++) {
+            __u8 idx = j + i;
+            if (idx >= MAX_PATTERN_LEN)
+                // It can never happen, but makes verifier happy.
+                return false;
+
             if (str[idx] != contained[j]) {
                 found = false;
-                break;
             }
         }
         if (found)
             return true;
     }
     return false;
+}
+
+static __always_inline bool bpfima_contains(const char* str, const char *contained, int len_str, int len_contained)
+{
+    if (len_str < 0 || len_contained < 0)
+        return false;
+
+    return __bpfima_contains((struct string_ctx*)str, (struct string_ctx*)contained, (__u8)len_str, (__u8)len_contained);
 }
 
 /* This function calls the specific helper functions to verify the match according to the match type specified
