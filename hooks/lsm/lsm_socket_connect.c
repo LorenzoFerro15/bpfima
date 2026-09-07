@@ -19,12 +19,30 @@ SEC("lsm/socket_connect")
 int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
     char comm[16] = {0};
-    u32 scratch_key = 0;
-    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
-    if (!scratch) {
-        bpf_printk("bpf_socket_connect: Failed to get scratch buffer.\n");
+
+    /* Get the current task context */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    if (!task) {
+        bpf_printk("bpf_socket_connect: Failed to get current task.\n");
         return 0;
     }
+
+    /* Retrieve or create the task-local storage for this thread */
+    struct scratch_t *scratch = bpf_task_storage_get(&scratch_buf_map,
+                                                     task,
+                                                     0,
+                                                     BPF_LOCAL_STORAGE_GET_F_CREATE);
+    if (!scratch) {
+        bpf_printk("bpf_socket_connect: Failed to get task storage buffer.\n");
+        return 0;
+    }
+
+    /*
+     * Task storage persists across system calls for the same thread.
+     * A shorter dependency string may leave garbage characters
+     * from a previous connection at the end of the buddwe
+     */
+    __builtin_memset(scratch->buf, 0, sizeof(scratch->buf));
 
     u64 total_time = 0, deps_time = 0;
     u64 get_config_time = 0, filtering_time = 0, measure_time = 0;
@@ -118,13 +136,6 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     char socket_path[MAX_PATH_LEN] = {0};    // For UNIX socket path the max is 108 chars
 
     if (address->sa_family == AF_INET) {
-        struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
-        if (!task) {
-            bpf_printk("bpf_socket_connect: Failed to get current task.\n");
-            return 0;
-        }
-
-        // 
         struct file *exe_file = bpf_get_task_exe_file(task);
         if (!exe_file) return 0;
 
