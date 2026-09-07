@@ -25,10 +25,29 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     if (!bpfima_should_process(HOOK_LSM_SOCKET_CONNECT))
         return 0;
 
-    u32 scratch_key = 0;
-    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
-    if (!scratch)
+    /* Get the current task context */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    if (!task) {
+        bpf_printk("bpf_socket_connect: Failed to get current task.\n");
         return 0;
+    }
+
+    /* Retrieve or create the task-local storage for this thread */
+    struct scratch_t *scratch = bpf_task_storage_get(&scratch_buf_map,
+                                                     task,
+                                                     0,
+                                                     BPF_LOCAL_STORAGE_GET_F_CREATE);
+    if (!scratch) {
+        bpf_printk("bpf_socket_connect: Failed to get task storage buffer.\n");
+        return 0;
+    }
+
+    /*
+     * Task storage persists across system calls for the same thread.
+     * A shorter dependency string may leave garbage characters
+     * from a previous connection at the end of the buddwe
+     */
+    __builtin_memset(scratch->buf, 0, sizeof(scratch->buf));
 
     struct sock *sk = BPF_CORE_READ(sock, sk);
     if (!sk)
