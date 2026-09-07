@@ -6,24 +6,24 @@ metadata:
 spec:
   policy:
     enabled: true
-    log_level: 1  # WARN only
+    log_level: 1
     min_file_size: 0
     max_path_depth: 16
 
   filters:
-    system_cgroups: false       # Skip system internals
-    proc_sys: false             # Skip /proc and /sys
-    dev: false                  # Skip /dev
-    readonly_files: false       # Skip readonly opens
-    small_files: false          # Skip small files
-    non_executable: false       # Only track executables
-    libraries: false           # Track libraries (important for integrity)
-    tmp_files: false            # Skip /tmp
+    system_cgroups: false
+    proc_sys: false
+    dev: false
+    readonly_files: false
+    small_files: false
+    non_executable: false
+    libraries: false
+    tmp_files: false
 
   actions:
     extend_tpm: false
     log_securityfs: false
-    log_kernel: false          # Reduce kernel log noise
+    log_kernel: false
     alert_suspicious: false
     block: false
     track_container: false
@@ -48,7 +48,7 @@ spec:
       action_override: 0
 
     lsm_file_open:
-      enabled: false  # Disable to reduce overhead
+      enabled: false
       track_containers: false
       measure_hash: false
       filter_override: 0
