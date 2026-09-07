@@ -61,7 +61,7 @@ spec:
         args:
             - |
               cd /bpf-programs/ && \
-              ./bpfima-tool load lsm_bprm_check_security.o lsm_socket_connect.o lsm_file_post_open.o lsm_inode_setattr.o lsm_mmap_file.o -d && \
+              ./bpfima-tool load {{ join " " .Values.agent.bpfPrograms }} -d && \
               sleep infinity
         {{- with .Values.agent.readinessProbe }}
         readinessProbe:

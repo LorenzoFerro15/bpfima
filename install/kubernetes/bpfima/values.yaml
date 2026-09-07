@@ -75,6 +75,12 @@ controller:
     periodSeconds: 1
 
 agent:
+  bpfPrograms:
+    - lsm_bprm_check_security.o
+    - lsm_socket_connect.o
+    - lsm_file_post_open.o
+    - lsm_inode_setattr.o
+    - lsm_mmap_file.o
   livenessProbe:
     httpGet:
       path: /
