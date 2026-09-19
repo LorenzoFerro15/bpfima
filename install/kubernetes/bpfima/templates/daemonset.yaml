@@ -12,6 +12,10 @@ spec:
       labels:
         app: bpfima
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "bpfima.fullname" . }}
       hostPID: true
       initContainers:
@@ -31,6 +35,10 @@ spec:
           command: ["/opt/bpfima/scripts/init/build_kernel_module.sh"]
           args:
             - "{{ .Values.initKernelModule.tpm_pcr_index }}"
+          {{- with .Values.initKernelModule.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
         - name: bpfima-build-ebpf-programs
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -40,6 +48,10 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - "cd /opt/bpfima && make bpf-only && cp -a build/* /output/"
+          {{- with .Values.initEbpfPrograms.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       containers:
       - name: bpfima-tool
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -67,6 +79,10 @@ spec:
         readinessProbe:
           {{- toYaml . | nindent 12 }}
         {{- end }}
+        {{- with .Values.agent.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       - name: bpfima-controller
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -90,6 +106,18 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        {{- with .Values.controller.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
       - name: compiled-bpf-artifacts
         emptyDir: {}

@@ -80,9 +80,9 @@ spec:
                       description: Enabled whether this pattern is active
                       type: boolean
                     match_type:
-                      description: MatchType 0=exact, 1=prefix
+                      description: MatchType 0=exact, 1=prefix, 2=suffix, 3=contains
                       format: int32
-                      maximum: 1
+                      maximum: 3
                       minimum: 0
                       type: integer
                     pattern:
@@ -350,9 +350,9 @@ spec:
                       description: Enabled whether this pattern is active
                       type: boolean
                     match_type:
-                      description: MatchType 0=exact, 1=prefix
+                      description: MatchType 0=exact, 1=prefix, 2=suffix, 3=contains
                       format: int32
-                      maximum: 1
+                      maximum: 3
                       minimum: 0
                       type: integer
                     pattern:
