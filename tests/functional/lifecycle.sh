@@ -53,7 +53,7 @@ verify_ebpf_state() {
 
 # 1. Installation & Initialization
 echo "Installing BPFIMA via Helm..."
-helm install bpfima ./bpfima
+helm install bpfima oci://registry-1.docker.io/iochia02/bpfima --version 0.1.0
 test_result "Helm install successful"
 
 echo ""

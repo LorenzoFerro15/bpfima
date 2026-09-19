@@ -16,7 +16,7 @@ if [ ! -f "$FILE_CSV" ]; then
 fi
 
 # Get the env ready
-helm install bpfima ./bpfima
+helm install bpfima oci://registry-1.docker.io/iochia02/bpfima --version 0.1.0
 kubectl rollout status daemonset/bpfima
 
 # Warm start: test time to run the container if the module was already inserted
@@ -36,7 +36,7 @@ sleep 20
 # Cold start: test time to run container if the image is already available recompiling the module each time
 for i in {1..100}; do
     START_EPOCH=$(date +%s%N)
-    helm install bpfima ./bpfima
+    helm install bpfima oci://registry-1.docker.io/iochia02/bpfima --version 0.1.0
     kubectl rollout status daemonset/bpfima
     END_EPOCH=$(date +%s%N)
     echo "${START_EPOCH},${END_EPOCH}" >> "$FILE_CSV_RMMOD"
@@ -45,19 +45,19 @@ for i in {1..100}; do
     sleep 20
 done
 
-crictl rmi iochia02/bpfima:v2.92 || true
+crictl rmi iochia02/bpfima:v0.1 || true
 sleep 5
 
 # Cold start + pull image: test time to download and run container
 for i in {1..100}; do
     START_EPOCH=$(date +%s%N)
-    helm install bpfima ./bpfima
+    helm install bpfima oci://registry-1.docker.io/iochia02/bpfima --version 0.1.0
     kubectl rollout status daemonset/bpfima
     END_EPOCH=$(date +%s%N)
     echo "${START_EPOCH},${END_EPOCH}" >> "$FILE_CSV_DWN"
     helm uninstall bpfima
     kubectl wait --for=delete pod -l app=bpfima --timeout=60s
     sleep 20
-    crictl rmi iochia02/bpfima:v2.92
+    crictl rmi iochia02/bpfima:v0.1
     sleep 5
 done
