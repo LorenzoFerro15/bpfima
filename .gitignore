@@ -28,6 +28,9 @@ Dockerfile.cross
 out.txt
 *.out
 
+# Compressed folders
+*.tgz
+
 # Test binary, built with `go test -c`
 *.test
 

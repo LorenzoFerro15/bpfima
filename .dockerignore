@@ -14,3 +14,6 @@ Dockerfile
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Compressed folders
+*.tgz
