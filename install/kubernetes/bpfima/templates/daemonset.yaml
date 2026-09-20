@@ -19,17 +19,17 @@ spec:
       serviceAccountName: {{ include "bpfima.fullname" . }}
       hostPID: true
       initContainers:
-        - name: bpfima-build-kernel-module
+        - name: bpfima-build-kernel-module # compiles and inserts the kernel module
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             privileged: true
           volumeMounts:
-            - name: host-modules
+            - name: host-modules  # to insert the BPFIMA module and to resolve kernel dependencies
               mountPath: /host/lib/modules
-            - name: host-src
+            - name: host-src      # contains the kernel headers necessary for compiling kernel module
               mountPath: /host/usr/src
-            - name: host-lib
+            - name: host-lib      # contains system-wide shared libraries, architecture-dependent data, and internal binaries.
               mountPath: /host/usr/lib
               readOnly: true
           command: ["/opt/bpfima/scripts/init/build_kernel_module.sh"]
@@ -39,11 +39,11 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        - name: bpfima-build-ebpf-programs
+        - name: bpfima-build-ebpf-programs  # compiles the eBPF programs and bpfima-tool
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           volumeMounts:
-            - name: compiled-bpf-artifacts
+            - name: compiled-bpf-artifacts  # to share the compiled objects with the first core container
               mountPath: /output
           command: ["/bin/sh", "-c"]
           args:
@@ -53,22 +53,22 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       containers:
-      - name: bpfima-tool
+      - name: bpfima-tool # runs bpfima-tool, loads and pins the eBPF programs and maps
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         env:
-        - name: BPFIMA_PERSIST_STATE
+        - name: BPFIMA_PERSIST_STATE  # prevent unpinning of eBPF programs in case of restart
           value: "1"
         securityContext:
           privileged: true
         volumeMounts:
-          - name: compiled-bpf-artifacts
+          - name: compiled-bpf-artifacts  # to retrieved the compiled eBPF programs and bpfima-tool
             mountPath: /bpf-programs
             readOnly: true
-          - name: host-securityfs
+          - name: host-securityfs         # mount point for securityfs
             mountPath: /sys/kernel/security
           - name: host-policy-maps
-            mountPath: /sys/fs/bpf
+            mountPath: /sys/fs/bpf        # mount point for the eBPF virtual filesystem
         command: ["/bin/sh", "-c"]
         args:
             - |
@@ -83,15 +83,15 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      - name: bpfima-controller
+      - name: bpfima-controller     # runs the Policy custom controller
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext:
           privileged: true
         volumeMounts:
-            - name: host-securityfs
+            - name: host-securityfs       # mount point for securityfs
               mountPath: /sys/kernel/security
-            - name: host-policy-maps
+            - name: host-policy-maps      # mount point for the eBPF virtual filesystem
               mountPath: /sys/fs/bpf
         command: ["/opt/bpfima-manager"]
         args:

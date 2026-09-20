@@ -1,3 +1,4 @@
+# Sequence to ensure complete uninstallation
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -47,7 +48,8 @@ roleRef:
   name: {{ include "bpfima.fullname" . }}-cleanup-role
   apiGroup: rbac.authorization.k8s.io
 ---
-# Run a Job that creates a Daemonset to remove the kernel module and eBPF maps on each node, than delete the cleaning Daemonset itself
+# Run a Job that creates a Daemonset to remove the kernel module and eBPF maps on each node,
+# then delete the cleaning Daemonset itself
 apiVersion: batch/v1
 kind: Job
 metadata:
