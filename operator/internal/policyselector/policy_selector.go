@@ -1,3 +1,4 @@
+// Package containing the helper functions to identify the best Policy to apply
 package policyselector
 
 import (

@@ -1,3 +1,4 @@
+// Package containing the helper functions to interact with the eBPF maps
 package mapsmanager
 
 import (
