@@ -1,6 +1,7 @@
 # Main module (now using shared components)
 obj-m += bpfima.o
-bpfima-y := src/bpfima_main.o src/hash_utils.o src/tpm_ops.o src/measurements.o src/kfuncs_container.o src/container.o src/kfuncs_measure.o src/merkle.o src/securityfs_utils.o src/policy_manager.o src/policy_namespace.o src/kfuncs_policy.o src/policy_securityfs.o
+# List src/ object files
+bpfima-y := $(patsubst $(src)/%.c, %.o, $(wildcard $(src)/src/*.c))
 
 # Add include directory for modular headers
 ccflags-y += -I$(src)/include
@@ -16,9 +17,12 @@ export PAHOLE_FLAGS=--btf_gen_floats
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 BPF_TARGET := bpf
-KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
+KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 KERNEL_VER := $(shell uname -r)
-BPF_HEADERS := -I/usr/src/kernels/$(KERNEL_VER)/tools/lib/bpf -I/usr/src/kernels/$(KERNEL_VER)/tools/bpf/resolve_btfids/libbpf/include
+KERNEL_HEADERS := /usr/src/kernels/$(KERNEL_VER)
+BPF_HEADERS := -I$(KERNEL_HEADERS)tools/lib/bpf -I$(KERNEL_HEADERS)tools/bpf/resolve_btfids/libbpf/include
+
+PWD := $(shell pwd)
 
 # Directory where vmlinux.h will be copied
 VMLINUX_DIR := include-vmlinux
@@ -31,7 +35,7 @@ CFLAGS := -O2 -g -target $(BPF_TARGET) -isystem $(VMLINUX_DIR) -Wall -Werror -D_
 
 CC ?= gcc
 USER_CFLAGS := -O2 -g -Wall
-LIBS := -lbpf -lelf -lz -lyaml
+LIBS := -lbpf -lelf -lz -lyaml -lcrypto
 
 # Build directory for all output files
 BUILD_DIR := build
@@ -45,6 +49,8 @@ BPFIMA_TOOL := $(BUILD_DIR)/bpfima-tool
 
 all: $(VMLINUX_H) $(BUILD_DIR) modules $(BPF_OBJS) $(BPFIMA_TOOL)
 
+bpf-only: $(VMLINUX_H) $(BUILD_DIR) $(BPF_OBJS) $(BPFIMA_TOOL)
+
 # Create the folder where vmlinux will be stored
 $(VMLINUX_DIR):
 	mkdir -p $(VMLINUX_DIR)
@@ -57,7 +63,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 modules:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	make -C $(KERNEL_SRC) M=$(PWD) CC=gcc LD=ld OBJCOPY=objcopy modules
 	@mkdir -p $(BUILD_DIR)
 	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
@@ -75,9 +81,9 @@ $(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
 	@echo "Built eBPF object: $@"
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	make -C $(KERNEL_SRC) M=$(PWD) clean
 	rm -rf $(BUILD_DIR)
 	rm -f .*.cmd .*.o 2>/dev/null || true
 	rm -rf .tmp_versions 2>/dev/null || true
 
-.PHONY: all modules clean
+.PHONY: all modules clean bpf-only
