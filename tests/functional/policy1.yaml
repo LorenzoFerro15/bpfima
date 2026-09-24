@@ -1,0 +1,99 @@
+
+apiVersion: bpfima.polito.it/v1alpha1
+kind: Policy
+metadata:
+  name: policy-1
+spec:
+  policy:
+    enabled: true
+    log_level: 2
+    min_file_size: 100
+    max_path_depth: 32
+
+  filters:
+    system_cgroups: true
+    proc_sys: true
+    dev: true
+    readonly_files: true
+    small_files: true
+    non_executable: true
+    libraries: true
+    tmp_files: true
+
+  actions:
+    extend_tpm: true
+    log_securityfs: true
+    log_kernel: true
+    alert_suspicious: true
+    block: true
+    track_container: true
+    build_deps: true
+
+  cgroup_patterns:
+    - pattern: "/"
+      enabled: true
+      match_type: 0
+    - pattern: "init.scope"
+      enabled: true
+      match_type: 0
+
+  path_patterns:
+    - pattern: "/proc/"
+      enabled: true
+      match_type: 1
+    - pattern: "/sbin/"
+      enabled: true
+      match_type: 1
+    - pattern: "/afs/"
+      enabled: true
+      match_type: 1
+
+  hooks:
+    lsm_bprm_check_security:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_file_open:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_file_post_open:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_mmap_file:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_socket_connect:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    lsm_container_events:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
+
+    kprobe_file_open:
+      enabled: true
+      track_containers: true
+      measure_hash: true
+      filter_override: 1
+      action_override: 1
