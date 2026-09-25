@@ -46,7 +46,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     const char *debug_fname = BPF_CORE_READ(bprm, filename);
     bpf_printk("Check: PID=%u comm=%s file=%s\n", pid, comm, debug_fname);
 
-    char cgroup_name[32] = {0};
+    char cgroup_name[64] = {0};
     fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
 
     struct bpfima_policy_config *policy = NULL;
