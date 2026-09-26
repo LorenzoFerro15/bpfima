@@ -1,0 +1,25 @@
+# ClusterRole for the custom controller
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: {{ include "bpfima.name" . }}
+    app.kubernetes.io/component: cluster-role
+  name: {{ include "bpfima.fullname" . }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - bpfima.polito.it
+  resources:
+  - policies
+  verbs:
+  - get
+  - list
+  - watch
