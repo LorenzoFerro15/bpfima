@@ -31,8 +31,18 @@ int BPF_PROG(bpf_mmap_file, struct file *file)
         return 0;
     }
 
-    u32 scratch_key = 0;
-    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
+    /* Get the current task context */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    if (!task) {
+        bpf_printk("lsm_mmap_file: Failed to get current task.\n");
+        return 0;
+    }
+
+    /* Retrieve or create the task-local storage for this thread */
+    struct scratch_t *scratch = bpf_task_storage_get(&scratch_buf_map,
+                                                     task,
+                                                     0,
+                                                     BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (!scratch)
         return 0;
 

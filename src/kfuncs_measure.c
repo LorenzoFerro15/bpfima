@@ -50,6 +50,7 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
     int ret = -1;
     char separator = ' ';
     bool can_sleep = !in_atomic() && !irqs_disabled();
+    u32 dependencies_len = dependencies ? strlen(dependencies) : 0;
 
     printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u\n",
            event_name ? event_name : "(null)",
@@ -69,9 +70,10 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
         return -EINVAL;
     }
 
+
     if (dependencies)
     {
-        total_len += strlen(dependencies) + 1;
+        total_len += dependencies_len + 1;
     }
     
     if (additional_data && additional_data_len > 0)
@@ -108,9 +110,8 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
 
     if (dependencies)
     {
-        size_t len = strlen(dependencies);
-        memcpy(concat_data + offset, dependencies, len);
-        offset += len;
+        memcpy(concat_data + offset, dependencies, dependencies_len);
+        offset += dependencies_len;
     }
 
     ret = calculate_sha256_hash(concat_data, offset, hash_value);
