@@ -12,17 +12,28 @@ This system monitors file operations and container events using eBPF LSM and kpr
 
 ```
 bpfima/
-├── build/              # Build output (auto-generated)
-├── config/             # Policy configuration files
-├── hooks/              # eBPF hook implementations
-│   └── lsm/            # LSM hooks
-├── include/            # Header files
-├── src/                # Kernel module source (modular)
-├── scripts/            # Test scripts
-├── tools/              # Userspace management tool (bpfima-tool)
-├── config/             # YAML policy configuration files
-├── utils/              # Utility headers
-└── Makefile            # Build system
+├── build/                 # Build output (auto-generated)
+├── config/                # Policy configuration files
+├── hooks/                 # eBPF hook implementations
+│   └── lsm/               # LSM hooks
+├── include/               # Header files
+├── install/               # Kubernetes deployment manifests
+│   └── kubernetes/bpfima/ # The official Helm Chart
+├── operator/              # The Go-based Kubernetes Custom Controller
+│   └── api/               # Go structs defining the Policy CRD schema
+│   └── cmd/               # Entrypoint for the controller manager
+│   └── config/crd/basis   # CRD schema
+│   └── internal/          # Core reconciliation loop and eBPF map translation
+├── src/                   # Kernel module source (modular)
+├── scripts/               # Test, automation and initialisation scripts
+│   └── init/              # Node bootstrapping and on-the-fly module compilation
+├── test/                  # Validation tests
+│   └── functional/        # Bash scripts validating the framework module compilation
+│   └── performance/       # C binaries and scripts for latency profiling
+├── tools/                 # Userspace management tool (bpfima-tool)
+├── utils/                 # Utility headers
+├── Makefile               # Build system
+└── Dockerfile             # Multi-stage build manifest for the container image
 ```
 
 ## Components
@@ -117,7 +128,9 @@ sudo ./build/bpfima-tool unload
 sudo rmmod bpfima
 ```
 
-**Note:** The unified `bpfima-tool` replaces the old separate `loader` and `policy_init` utilities.
+**Note 1:** The unified `bpfima-tool` replaces the old separate `loader` and `policy_init` utilities.
+
+**Note 2:** To install the framework on a Kubernetes cluster in an automated way please refer to [docs/KUBERNETES.md](docs/KUBERNETES.md).
 
 ## Module Parameters
 
@@ -138,8 +151,8 @@ cat /sys/module/bpfima/parameters/tpm_pcr_index
 echo 15 | sudo tee /sys/module/bpfima/parameters/tpm_pcr_index
 ```
 
-**Default:** PCR 23 (commonly used for custom measurements)  
-**Valid range:** 0-23 (most TPMs)  
+**Default:** PCR 23 (commonly used for custom measurements)
+**Valid range:** 0-23 (most TPMs)
 **Note:** PCR 0-15 are typically reserved for BIOS/bootloader. PCR 16-23 are available for OS and application use.
 
 ## SecurityFS Interface
@@ -220,7 +233,7 @@ The policy system supports:
    POLICY_FILTER_LIBRARIES        // Skip .so files (disabled by default)
    POLICY_FILTER_TMP_FILES        // Skip /tmp/ files (disabled by default)
    ```
-   
+
    **Default: ALL filters disabled (0x0) - tracks everything except / and init.scope**
 
 2. **Action Flags** - Control what actions to take:
@@ -283,8 +296,6 @@ Load the policy:
 ```bash
 sudo ./build/bpfima-tool policy-update config/policy.yaml
 ```
-
-#### 2. Use SecurityFS Interface (Runtime)
 
 #### 2. Use SecurityFS Interface (Runtime)
 
