@@ -1,2 +1,3 @@
-// Package measurement provides functionality for managing and verifying measurement lists in the bpfima project.
+// Package measurement provides the bpfima measurement entry types and the [List]
+// that parses, validates and aggregates them.
 package measurement

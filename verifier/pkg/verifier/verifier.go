@@ -4,187 +4,165 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 
-	"github.com/LorenzoFerro15/bpfima/verifier/pkg/attestation"
 	"github.com/LorenzoFerro15/bpfima/verifier/pkg/measurement"
-	"github.com/LorenzoFerro15/bpfima/verifier/pkg/reader"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/pcr"
 )
 
 var (
-	// ErrInvalidRoot is returned when the Root list does not contain the expected digest.
-	// This can occur if the Root list is truncated, corrupted, or otherwise invalid.
-	// It can also occur if the Target list contains entries that are not present in the Root list.
-	ErrInvalidRoot = errors.New("invalid root list")
-	// ErrInvalidTarget is returned when the Target list contains entries that are not present in the Root list.
-	// This can occur if the Target list is truncated, corrupted, or otherwise invalid.
-	// It can also occur if the Root list does not contain the expected digest.
+	// ErrInvalidLeaves is returned when replaying the leaf list never reproduces the expected PCR digest.
+	// This can occur if the leaf list is truncated, corrupted, or otherwise invalid.
+	ErrInvalidLeaves = errors.New("invalid leaf list")
+	// ErrInvalidTarget is returned when a target list entry is invalid, or when its leaf digest is not
+	// found in the portion of the leaf list covered by the expected PCR digest.
 	ErrInvalidTarget = errors.New("invalid target list")
 )
 
-// ValidateLeafFunc checks whether the current Target aggregate matches the current Root list entry.
-type ValidateLeafFunc func() bool
-
-// Verifier holds the state for attesting a target measurement list against a root list
+// Verifier holds the state for attesting a target measurement list against the Merkle leaf list
 // and a known-good expected TPM PCR digest.
+//
+// Each time a namespace event is recorded by bpfima:
+//  1. The event's template hash extends the target list aggregate: list_agg = H(list_agg || templateHash).
+//  2. The new list_agg becomes a leaf of the Merkle tree and is appended to the leaf list.
+//  3. The leaf extends the Merkle root: merkle_root = H(merkle_root || leaf).
+//  4. The Merkle root extends the physical PCR: pcr = H(pcr || merkle_root).
+//
+// Steps 1 and 3 are replayed by [measurement.List]; step 4 is replayed by the Verifier.
 type Verifier struct {
-	// TargetList is the measurement list to be attested (e.g. container/namespace list).
-	TargetList *measurement.List
-	// RootList is the Merkle root history list.
-	RootList *measurement.List
+	// target is the measurement list to be attested (e.g. container/namespace list).
+	target *measurement.List
+	// leaves is the Merkle leaf list; its aggregate is the Merkle root.
+	leaves *measurement.List
 	// expected is the PCR digest stored in the TPM at the time attestation is requested.
 	expected []byte
 	// pcr is a software-emulated TPM PCR that replays the extend sequence for verification.
-	pcr attestation.PCR
-	// validRoot indicates whether the Root list has been successfully validated against the expected digest.
-	validRoot bool
+	pcr *pcr.PCR
+	// pcrMatched reports whether the replayed PCR has reached the expected digest.
+	// Leaves past that point are not covered by the expected digest.
+	pcrMatched bool
 }
 
 // New initializes a ready-to-attest Verifier.
-//   - targetList: measurement list to be attested (e.g. container/namespace list)
-//   - rootList: Merkle root history list
+//   - target: measurement list to be attested (e.g. container/namespace list)
+//   - leaves: Merkle leaf list
 //   - expected: PCR digest stored in the TPM at the time attestation is requested
-func New(targetList *measurement.List, rootList *measurement.List, expected []byte) (*Verifier, error) {
-	if targetList.PCR.GetHashAlgo() != rootList.PCR.GetHashAlgo() {
-		return nil, fmt.Errorf("hash algorithm mismatch: target uses %s, root uses %s",
-			targetList.PCR.GetHashAlgo(), rootList.PCR.GetHashAlgo())
+func New(target, leaves *measurement.List, expected []byte) (*Verifier, error) {
+	if target.HashAlgo() != leaves.HashAlgo() {
+		return nil, fmt.Errorf("hash algorithm mismatch: target uses %s, leaves use %s",
+			target.HashAlgo(), leaves.HashAlgo())
 	}
 
-	wantSize := rootList.PCR.GetHashAlgo().Size()
-	if len(expected) != wantSize {
-		return nil, fmt.Errorf("invalid expected digest size: want %d bytes, got %d", wantSize, len(expected))
-	}
-
-	if !targetList.Reader.IsReady() {
-		return nil, errors.New("target list not open")
-	}
-	if !rootList.Reader.IsReady() {
-		return nil, errors.New("root list not open")
-	}
-
-	pcr, err := attestation.NewPCR(rootList.PCR.GetHashAlgo())
+	emulated, err := pcr.New(leaves.HashAlgo())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PCR: %w", err)
 	}
 
-	return &Verifier{
-		TargetList: targetList,
-		RootList:   rootList,
-		pcr:        *pcr,
-		expected:   expected,
-	}, nil
+	v := &Verifier{target: target, leaves: leaves, pcr: emulated}
+	if err = v.setExpected(expected); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
-// Reset restores the Verifier to its initial state so that attestation can be re-run.
-// This resets both list readers to the start and zeroes all PCR aggregates.
-// The expected digest must be updated to a new value to continue attestation.
+// Reset restores the Verifier to its initial state so that attestation can be re-run
+// against a new expected digest. Both lists are rewound and all aggregates are zeroed.
 func (v *Verifier) Reset(expected []byte) error {
-	if len(expected) != v.RootList.PCR.GetHashAlgo().Size() {
-		return fmt.Errorf("invalid expected digest size: want %d bytes, got %d",
-			v.RootList.PCR.GetHashAlgo().Size(), len(expected))
+	if err := v.setExpected(expected); err != nil {
+		return err
 	}
-	for _, lr := range []reader.ListReader{v.TargetList.Reader, v.RootList.Reader} {
-		if err := lr.SetPosition(0); err != nil {
+	for _, list := range []*measurement.List{v.target, v.leaves} {
+		if err := list.Reset(); err != nil {
 			return fmt.Errorf("reset list: %w", err)
 		}
 	}
-	// Reset virtual PCR to all-zeros per TCG spec:
-	// https://trustedcomputinggroup.org/wp-content/uploads/TPM-2.0-1.83-Part-1-Architecture.pdf Sec. 17.1
 	v.pcr.Reset()
-	v.TargetList.ResetAggregate()
-	v.RootList.ResetAggregate()
-	v.validRoot = false
-	v.expected = expected
+	v.pcrMatched = false
 	return nil
 }
 
-// isLeafValid reports whether the current Target aggregate matches the current Root list entry.
-func (v *Verifier) isLeafValid() bool {
-	return subtle.ConstantTimeCompare(v.TargetList.PCR.Read(), v.RootList.Entry.GetTemplateHash()) == 1
-}
-
-// isRootValid reports whether the virtual PCR matches the expected digest.
-func (v *Verifier) isRootValid() bool {
-	return subtle.ConstantTimeCompare(v.pcr.Read(), v.expected) == 1
-}
-
-// AttestTarget validates each entry in the Target list and confirms that each
-// computed leaf digest is present in the Root list.
-//
-//  1. Each entry's TemplateHash is recomputed and validated.
-//  2. The valid TemplateHash is extended into the Target aggregate (leaf digest).
-//  3. The leaf digest is looked up in the Root list via AttestRoot.
-//
-// Returns ErrInvalidTarget if any entry is invalid or absent from the Root list.
-func (v *Verifier) AttestTarget() error {
-	for v.TargetList.Reader.Available() > 0 {
-		if err := v.TargetList.ParseEntry(); err != nil {
-			return fmt.Errorf("target parse error: %w", err)
-		}
-		v.TargetList.PCR.Extend(v.TargetList.Entry.GetTemplateHash())
-		if err := v.AttestRoot(v.isLeafValid); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalidTarget, err)
-		}
-	}
-	return nil
-}
-
-// AttestRoot scans the Root list, extending the virtual PCR for each entry.
-//
-// If isLeafValid is non-nil, scanning stops as soon as the current Target aggregate
-// is found in the Root list (early-exit path during target attestation).
-//
-// If isLeafValid is nil, scanning continues to EOF and the final virtual PCR is
-// compared against Expected to confirm overall Root list integrity.
-//
-// Returns ErrInvalidRoot if no match is found or the final virtual PCR does not equal Expected.
-func (v *Verifier) AttestRoot(isLeafValid ValidateLeafFunc) error {
-	for v.RootList.Reader.Available() > 0 {
-		if err := v.RootList.ParseEntry(); err != nil {
-			return fmt.Errorf("root parse error: %w", err)
-		}
-		v.RootList.PCR.Extend(v.RootList.Entry.GetTemplateHash())
-		// Each time a namespace event is detected:
-		//  1. The event's TemplateHash extends the target list aggregate: list_agg = hash(list_agg || templateHash)
-		//  2. The new list_agg becomes a leaf in the Root Merkle tree and is appended to the root list.
-		//  3. The leaf extends the root aggregate: root_agg = hash(root_agg || leaf)
-		//  4. The root aggregate extends the physical PCR: pcr_new = hash(pcr_old || root_agg)
-		//
-		// This method performs step 4 using the current root aggregate.
-		v.pcr.Extend(v.RootList.PCR.Read())
-
-		switch {
-		case isLeafValid != nil && isLeafValid():
-			return nil
-		case v.isRootValid():
-			v.validRoot = true
-			if isLeafValid == nil {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("%w: computed digest %x does not match expected %x",
-		ErrInvalidRoot, v.RootList.PCR.Read(), v.expected)
-}
-
-// Attest performs full attestation of both the Target and Root measurement lists.
+// Attest performs full attestation of both the target and leaf lists.
 //
 // Target evaluation:
-//  1. Each entry's TemplateHash is validated and extended into a leaf digest.
-//  2. Each leaf digest must be present in the Root list.
+//  1. Each entry's template hash is validated and extended into a leaf digest.
+//  2. Each leaf digest must be present in the leaf list, before the expected digest is reached.
 //
-// Root evaluation (continued after Target, or from scratch if Target is empty):
-//  1. The Root list is scanned to EOF, extending the virtual PCR for each entry.
-//  2. The final virtual PCR must equal Expected (the TPM PCR value at attestation time).
+// Leaf evaluation (continued after target, or from scratch if the target is empty):
+//  1. The leaf list is replayed, extending the virtual PCR with the Merkle root after each leaf.
+//  2. The virtual PCR must reach the expected digest (the TPM PCR value at attestation time).
 //
-// Returns an error wrapping [ErrInvalidTarget] or [ErrInvalidRoot] on failure.
+// Returns an error wrapping [ErrInvalidTarget] or [ErrInvalidLeaves] on failure.
 func (v *Verifier) Attest() error {
 	if err := v.AttestTarget(); err != nil {
 		return fmt.Errorf("failed to verify target: %w", err)
 	}
-	if !v.validRoot {
-		if err := v.AttestRoot(nil); err != nil {
-			return fmt.Errorf("failed to verify root: %w", err)
+	if err := v.AttestLeaves(); err != nil {
+		return fmt.Errorf("failed to verify leaves: %w", err)
+	}
+	return nil
+}
+
+// AttestTarget validates each entry in the target list and confirms that each
+// resulting leaf digest is present, in order, in the leaf list.
+//
+// Returns an error wrapping [ErrInvalidTarget] if any entry is invalid or its leaf is not found.
+func (v *Verifier) AttestTarget() error {
+	for {
+		err := v.target.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidTarget, err)
+		}
+		if err = v.replayLeaves(v.isLeafFound); err != nil {
+			return fmt.Errorf("%w: leaf digest %x not found: %w", ErrInvalidTarget, v.target.Aggregate(), err)
 		}
 	}
+}
+
+// AttestLeaves replays the remaining leaves until the virtual PCR reaches the expected digest.
+// Leaves after that point are ignored, since they were appended after the TPM value was read.
+//
+// Returns an error wrapping [ErrInvalidLeaves] if the expected digest is never reached.
+func (v *Verifier) AttestLeaves() error {
+	return v.replayLeaves(func() bool { return v.pcrMatched })
+}
+
+// replayLeaves extends the virtual PCR with the Merkle root after each leaf until done reports true.
+// It never reads past the leaf at which the virtual PCR reaches the expected digest.
+func (v *Verifier) replayLeaves(done func() bool) error {
+	for !done() {
+		if v.pcrMatched {
+			return fmt.Errorf("%w: expected digest %x already reached", ErrInvalidLeaves, v.expected)
+		}
+
+		err := v.leaves.Next()
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("%w: computed digest %x does not match expected %x",
+				ErrInvalidLeaves, v.pcr.Read(), v.expected)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidLeaves, err)
+		}
+
+		v.pcr.Extend(v.leaves.Aggregate())
+		v.pcrMatched = subtle.ConstantTimeCompare(v.pcr.Read(), v.expected) == 1
+	}
+	return nil
+}
+
+// isLeafFound reports whether the current target aggregate matches the current leaf.
+func (v *Verifier) isLeafFound() bool {
+	leaf := v.leaves.Current()
+	return leaf != nil && subtle.ConstantTimeCompare(v.target.Aggregate(), leaf.TemplateHash()) == 1
+}
+
+// setExpected validates and stores the expected PCR digest.
+func (v *Verifier) setExpected(expected []byte) error {
+	if want := v.leaves.HashAlgo().Size(); len(expected) != want {
+		return fmt.Errorf("invalid expected digest size: want %d bytes, got %d", want, len(expected))
+	}
+	v.expected = expected
 	return nil
 }
