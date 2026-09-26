@@ -4,68 +4,93 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"io"
 
-	"github.com/LorenzoFerro15/bpfima/verifier/pkg/attestation"
-	"github.com/LorenzoFerro15/bpfima/verifier/pkg/reader"
+	"github.com/LorenzoFerro15/bpfima/verifier/pkg/pcr"
 )
 
-// List holds a measurement list reader, the current parsed entry, and a PCR that
-// accumulates the aggregate as entries are processed.
+// LineReader is the source of a measurement [List] (e.g. a reader.Reader).
+type LineReader interface {
+	// ReadLine returns the next line without its trailing newline, or [io.EOF] at the end.
+	ReadLine() (string, error)
+	// Rewind moves the read position back to the start of the list.
+	Rewind() error
+}
+
+// List iterates over a measurement list, validating each entry and extending
+// its template hash into a PCR that holds the list aggregate.
 type List struct {
-	Entry  Measurement
-	Reader reader.ListReader
-	PCR    attestation.PCR
+	src       LineReader
+	parse     Parser
+	aggregate *pcr.PCR
+	current   Measurement
 }
 
-// newList is the shared constructor used by all public List factory functions.
-func newList(entry Measurement, listReader reader.ListReader, hashAlgo crypto.Hash) (*List, error) {
-	pcr, err := attestation.NewPCR(hashAlgo)
+// NewList creates a List reading entries from src and decoding them with parse.
+func NewList(src LineReader, parse Parser, hashAlgo crypto.Hash) (*List, error) {
+	aggregate, err := pcr.New(hashAlgo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create PCR: %w", err)
+		return nil, fmt.Errorf("failed to create list aggregate: %w", err)
 	}
-	return &List{
-		Entry:  entry,
-		Reader: listReader,
-		PCR:    *pcr,
-	}, nil
+	return &List{src: src, parse: parse, aggregate: aggregate}, nil
 }
 
-// NewHashedFileMeasurementList creates a List for HashedFile entries
+// NewHashedFileList creates a List of [HashedFile] entries
 // (e.g. container or namespace measurement lists).
-func NewHashedFileMeasurementList(listReader reader.ListReader, hashAlgo crypto.Hash) (*List, error) {
-	return newList(&HashedFile{}, listReader, hashAlgo)
+func NewHashedFileList(src LineReader, hashAlgo crypto.Hash) (*List, error) {
+	return NewList(src, func(line string) (Measurement, error) { return ParseHashedFile(line) }, hashAlgo)
 }
 
-// NewRootMeasurementList creates a List for Root entries
-// (i.e. the Merkle root history / leaf-digest list).
-func NewRootMeasurementList(listReader reader.ListReader, hashAlgo crypto.Hash) (*List, error) {
-	return newList(&Root{}, listReader, hashAlgo)
+// NewLeafList creates a List of [Leaf] entries (i.e. the Merkle leaf list).
+func NewLeafList(src LineReader, hashAlgo crypto.Hash) (*List, error) {
+	return NewList(src, func(line string) (Measurement, error) { return ParseLeaf(line) }, hashAlgo)
 }
 
-// NewMeasurementList creates a List with a caller-provided Measurement type.
-func NewMeasurementList(measurement Measurement, listReader reader.ListReader, hashAlgo crypto.Hash) (*List, error) {
-	return newList(measurement, listReader, hashAlgo)
-}
-
-// ResetAggregate resets the PCR aggregate to its initial all-zero state.
-func (ml *List) ResetAggregate() {
-	ml.PCR.Reset()
-}
-
-// ParseEntry reads the next line from the reader, parses it into the current Entry,
-// and validates it. Returns an error if any step fails.
-func (ml *List) ParseEntry() error {
-	line, err := ml.Reader.ReadLine()
+// Next reads, parses and validates the next entry, then extends its template hash
+// into the list aggregate. It returns [io.EOF] when the list is exhausted.
+func (l *List) Next() error {
+	line, err := l.src.ReadLine()
+	if errors.Is(err, io.EOF) {
+		return io.EOF
+	}
 	if err != nil {
 		return fmt.Errorf("measurement list read error: %w", err)
 	}
 
-	if err = ml.Entry.Parse(line); err != nil {
+	entry, err := l.parse(line)
+	if err != nil {
 		return fmt.Errorf("measurement list parse error: %w", err)
 	}
-
-	if !ml.Entry.IsValid(ml.PCR.GetHashAlgo()) {
-		return errors.New("measurement list entry validation error")
+	if err = entry.Validate(l.HashAlgo()); err != nil {
+		return fmt.Errorf("measurement list validation error: %w", err)
 	}
+
+	l.current = entry
+	l.aggregate.Extend(entry.TemplateHash())
+	return nil
+}
+
+// Current returns the entry read by the last successful call to [List.Next], or nil.
+func (l *List) Current() Measurement {
+	return l.current
+}
+
+// Aggregate returns the current list aggregate.
+func (l *List) Aggregate() []byte {
+	return l.aggregate.Read()
+}
+
+// HashAlgo returns the hash algorithm used by the list.
+func (l *List) HashAlgo() crypto.Hash {
+	return l.aggregate.HashAlgo()
+}
+
+// Reset rewinds the list to its first entry and zeroes the aggregate.
+func (l *List) Reset() error {
+	if err := l.src.Rewind(); err != nil {
+		return fmt.Errorf("failed to reset measurement list: %w", err)
+	}
+	l.aggregate.Reset()
+	l.current = nil
 	return nil
 }
