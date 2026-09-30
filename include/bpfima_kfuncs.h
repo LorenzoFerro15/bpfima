@@ -13,7 +13,6 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name,
                                           u32 additional_data_len);
 __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size);
 __bpf_kfunc int bpfima_tpm_is_available(void);
-__bpf_kfunc int bpfima_file_hash(u64 file_scalar, u8 *digest, u32 digest_size);
 
 /* Container kfuncs */
 __bpf_kfunc int bpfima_container_get_or_create(const char *container_id);

@@ -59,7 +59,7 @@ $(BUILD_DIR):
 modules:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 	@mkdir -p $(BUILD_DIR)
-	@mv -f *.ko *.mod *.mod.c *.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
+	@mv -f bpfima.ko bpfima.mod bpfima.mod.c bpfima.o Module.symvers modules.order $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f src/*.o $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f .*.cmd .*.o $(BUILD_DIR)/ 2>/dev/null || true
 	@mv -f src/.*.cmd $(BUILD_DIR)/ 2>/dev/null || true

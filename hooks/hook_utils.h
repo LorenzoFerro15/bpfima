@@ -21,15 +21,13 @@
     * - 0 on success, -1 on failure
 */
 struct file_measure_ctx {
-    struct file *file;
+    const u8 *digest;
     const char *event_name;
     const char *cgroup_name;
     bool is_container_context;
     const char *fname;
     struct task_struct *cur;
     struct bpfima_policy_config *policy;
-    u8 *out_hash;
-    u64 *hash_duration;
     u64 *extend_duration;
     u64 *deps_duration;
 };
@@ -48,36 +46,12 @@ struct socket_measure_ctx {
 
 static __attribute__((noinline, unused)) int measure_accessed_file(struct file_measure_ctx *ctx)
 {
-    if (!ctx || !ctx->file || !ctx->event_name) {
-        bpf_printk("No file or event_name provided for hashing.\n");
+    if (!ctx || !ctx->digest || !ctx->event_name) {
+        bpf_printk("No digest or event_name provided for measurement.\n");
         return -1;
     }
 
-    u8 digest[32] = {0};
-    u64 file_scalar = 0;
-    struct file *file = ctx->file;
-
-    if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0 || file_scalar == 0) {
-        return -1;
-    }
-
-    /* Perform sleepable file hashing FIRST before accessing per-CPU scratch buffer */
-    u64 start = bpf_ktime_get_ns();
-    int ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
-    u64 end = bpf_ktime_get_ns();
-    if (ctx->hash_duration)
-        *ctx->hash_duration = end - start;
-
-    if (ret != 0) {
-        bpf_printk(" failed hashing failed extending found data about it\n");
-        return -1;
-    }
-
-    if (ctx->out_hash) {
-        __builtin_memcpy(ctx->out_hash, digest, 32);
-    }
-
-    /* Safely access per-CPU scratch buffer AFTER sleep point */
+    /* Access per-CPU scratch only after the caller has finished the sleepable hash. */
     u32 scratch_key = 0;
     struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
     if (!scratch)
@@ -101,19 +75,19 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
     }
 
     char *digest_hex = scratch->digest_hex;
-    int written = bytes_to_hex_str(digest, 32, digest_hex, sizeof(scratch->digest_hex));
+    int written = bytes_to_hex_str(ctx->digest, 32, digest_hex, sizeof(scratch->digest_hex));
     if (written < 0) {
         bpf_printk(" failed converting digest to hex string\n");
         return -1;
     }
 
-    start = bpf_ktime_get_ns();
-    ret = bpfima_measurement_extend(ctx->event_name, 
-                                    (const char *)(ctx->is_container_context ? ctx->cgroup_name : NULL), 
-                                    deps, 
-                                    digest_hex, 
+    u64 start = bpf_ktime_get_ns();
+    int ret = bpfima_measurement_extend(ctx->event_name,
+                                    (const char *)(ctx->is_container_context ? ctx->cgroup_name : NULL),
+                                    deps,
+                                    digest_hex,
                                     64);
-    end = bpf_ktime_get_ns();
+    u64 end = bpf_ktime_get_ns();
     if (ctx->extend_duration)
         *ctx->extend_duration = end - start;
 

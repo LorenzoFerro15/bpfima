@@ -48,3 +48,6 @@ core.*
 # Temporary files
 *.tmp
 *tmp
+
+*.md
+scripts/*.py

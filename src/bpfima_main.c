@@ -125,7 +125,6 @@ BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
 BTF_ID_FLAGS(func, bpfima_measurement_extend)
 BTF_ID_FLAGS(func, bpfima_tpm_get_pcr_value)
 BTF_ID_FLAGS(func, bpfima_tpm_is_available)
-BTF_ID_FLAGS(func, bpfima_file_hash, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_container_get_or_create)
 BTF_ID_FLAGS(func, bpfima_merkle_get_root)
 

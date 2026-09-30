@@ -38,16 +38,6 @@ extern int bpfima_tpm_is_available(void) __ksym;
 /* ===== File Hashing kfuncs ===== */
 
 /**
- * bpfima_file_hash - Compute SHA-256 hash of a file
- * @file_scalar: Scalar value representing file pointer
- * @digest: Buffer to store the hash (must be at least 32 bytes)
- * @digest_size: Size of digest buffer
- *
- * Returns: 0 on success, negative error code on failure
- */
-extern int bpfima_file_hash(u64 file_scalar, u8 *digest, u32 digest_size) __ksym;
-
-/**
  * bpf_ima_custom_file_hash_scalar - Alternative file hash function
  * @file: File structure pointer
  * @digest: Buffer to store the hash

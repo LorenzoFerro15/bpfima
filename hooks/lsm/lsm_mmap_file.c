@@ -13,10 +13,6 @@ int BPF_PROG(bpf_mmap_file, struct file *file)
     if (!file)
         return 0;
 
-    u64 file_scalar = 0;
-    if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0 || file_scalar == 0)
-        return 0;
-
     struct inode *inode = BPF_CORE_READ(file, f_inode);
     if (inode) {
         umode_t i_mode = BPF_CORE_READ(inode, i_mode);
@@ -25,9 +21,9 @@ int BPF_PROG(bpf_mmap_file, struct file *file)
     }
 
     u8 digest[32] = {0};
-    int hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
-    if (hash_ret != 0) {
-        bpf_printk("FAILED! Hash computation failed: %d\n", hash_ret);
+    long hash_algo = bpf_ima_file_hash(file, digest, sizeof(digest));
+    if (hash_algo != HASH_ALGO_SHA256) {
+        bpf_printk("IMA hash failed or is not SHA-256: %ld\n", hash_algo);
         return 0;
     }
 
