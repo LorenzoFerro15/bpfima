@@ -22,8 +22,11 @@ char LICENSE[] SEC("license") = "GPL";
  *   - MAY_APPEND (0x00000008)
  */
 SEC("lsm.s/file_post_open")
-int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
+int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
 {
+    if (previous_ret != 0)
+        return previous_ret;
+
     if (!(mask & 0x00000004))
         return 0;
     if (!file)
@@ -89,7 +92,12 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
 
     char event_name[] = "file_post_open";
-    int extend_ret = bpfima_measurement_extend(event_name, NULL, NULL, digest_hex, 64);
+    struct measurement_ctx measurement = {
+        .event_name = event_name,
+        .additional_data = digest_hex,
+        .additional_data_len = 64,
+    };
+    int extend_ret = bpfima_submit_measurement(&measurement);
     if (extend_ret >= 0) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
     } else {

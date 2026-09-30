@@ -2,185 +2,59 @@
 #include "bpfima_kfuncs.h"
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
+#include "bpfima_kfunc_buffer.h"
 
 /*
- * bpfima_measurement_extend - BPF kfunc to add measurement and extend TPM PCR
- * @event_name: Name/identifier of the event being measured
- * @namespace_id: Container/namespace identifier (uses "default" if NULL or empty)
- * @dependencies: Dependency chain information (e.g., parent process names)
- * @additional_data: Additional event data (hash, metadata, etc.)
- * @additional_data_len: Length of additional_data in bytes
+ * bpfima_measurement_extend - Record a bounded measurement request
+ * @data: Pointer-free request buffer
+ * @data__sz: Verifier-checked buffer size (must match the request structure)
  *
- * This is the main entry point for BPF programs to record integrity measurements.
- *
- * Flow:
- * 1. Calculate hash from concatenated data (dependencies | additional_data)
- * 2. Find or create container node for the given namespace_id
- * 3. Add measurement to container's measurement list
- * 4. Extend container's leaf hash with the new measurement
- * 5. Add leaf hash to Merkle root history
- * 6. Extend global Merkle root with updated container leaf hash
- * 7. Extend TPM PCR with new Merkle root (if not in atomic context)
- *
- * Can be called from both atomic and non-atomic contexts. TPM operations will be
- * deferred if called from atomic context to prevent scheduling while atomic bugs.
- *
- * Returns: 0 on success, negative error code on failure
+ * Snapshot and validate every field before logging, hashing, or sleeping.
+ * Returns: 0 on success, negative error code on failure.
  */
 
 __bpf_kfunc_start_defs();
 
-__bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
-                                          const char *namespace_id__nullable, 
-                                          const char *dependencies__nullable,
-                                          const char *additional_data__nullable, 
-                                          u32 additional_data_len)
+__bpf_kfunc int bpfima_measurement_extend(const void *data, u32 data__sz)
 {
-    /* Alias the suffixed parameters to standard names to keep your logic clean */
-    const char *event_name = event_name__nullable;
-    const char *namespace_id = namespace_id__nullable;
-    const char *dependencies = dependencies__nullable;
-    const char *additional_data = additional_data__nullable;
-
-    struct container_node *container = NULL;
-    size_t total_len = 0;
-    char *concat_data = NULL;
-    size_t offset = 0;
+    struct bpfima_measurement_request request;
+    struct container_node *container;
+    char concat_data[BPFIMA_EVENT_DATA_SIZE + BPFIMA_DEPENDENCIES_SIZE];
+    const char *effective_ns;
+    size_t total_len;
     u8 hash_value[SHA256_DIGEST_SIZE];
-    int ret = -1;
-    char separator = ' ';
-    bool can_sleep = !in_atomic() && !irqs_disabled();
+    int ret;
 
-    printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u\n",
-           event_name ? event_name : "(null)",
-           namespace_id ? namespace_id : "(null)",
-           dependencies ? dependencies : "(null)",
-           additional_data_len);
-
-    if (!event_name && !namespace_id && !dependencies && !additional_data)
-    {
-        printk(KERN_ERR "bpfima: All parameters are null\n");
-        return -EINVAL;
-    }
-    
-    if (event_name && strlen(event_name) == 0)
-    {
-        printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
-        return -EINVAL;
-    }
-
-    if (dependencies)
-    {
-        total_len += strlen(dependencies) + 1;
-    }
-    
-    if (additional_data && additional_data_len > 0)
-    {
-        total_len += additional_data_len + 1;
-    }
-    
-    if (total_len > 0)
-    {
-        // separator between fields are of number n-1
-        total_len -= 1;
-    }
-    else
-    {
-        printk(KERN_ERR "bpfima: No valid data to concatenate\n");
-        return -EINVAL;
-    }
-
-    concat_data = kmalloc(total_len, can_sleep ? GFP_KERNEL : GFP_ATOMIC);
-    if (!concat_data)
-    {
-        printk(KERN_ERR "bpfima: kmalloc failed\n");
-        return -ENOMEM;
-    }
-
-    if (additional_data && additional_data_len > 0)
-    {
-        memcpy(concat_data + offset, additional_data, additional_data_len);
-        offset += additional_data_len;
-
-        if (dependencies)
-            concat_data[offset++] = separator;
-    }
-
-    if (dependencies)
-    {
-        size_t len = strlen(dependencies);
-        memcpy(concat_data + offset, dependencies, len);
-        offset += len;
-    }
-
-    ret = calculate_sha256_hash(concat_data, offset, hash_value);
+    ret = bpfima_prepare_measurement(data, data__sz, &request,
+                                     concat_data, sizeof(concat_data), &total_len);
     if (ret)
-    {
-        printk(KERN_ERR "bpfima: Failed to calculate SHA256 hash: %d\n", ret);
-        kfree(concat_data);
         return ret;
-    }
 
-    printk(KERN_DEBUG "bpfima: Computed template hash over all fields: %*ph\n",
-           SHA256_DIGEST_SIZE, hash_value);
+    ret = calculate_sha256_hash(concat_data, total_len, hash_value);
+    if (ret)
+        return ret;
 
-    const char *effective_ns = (namespace_id && namespace_id[0] != '\0') ? namespace_id : "default";
-
-    printk(KERN_INFO "bpfima: Processing container measurement for namespace: %s (original_ns=%s)\n",
-           effective_ns, namespace_id ? namespace_id : "(null)");
-
-    rcu_read_lock();
-    container = find_container_by_id_rcu(effective_ns);
-    rcu_read_unlock();
-
+    effective_ns = request.namespace_id[0] != '\0' ? request.namespace_id : "default";
+    container = find_container_by_id(effective_ns);
     if (!container)
     {
-        printk(KERN_INFO "bpfima: Container %s not found, creating new one\n", effective_ns);
         container = create_container_node(effective_ns);
         if (IS_ERR(container))
-        {
-            printk(KERN_ERR "bpfima: Failed to create container %s: %ld\n",
-                   effective_ns, PTR_ERR(container));
-            kfree(concat_data);
             return PTR_ERR(container);
-        }
     }
 
-    ret = add_container_measurement(container, event_name,
-                                    additional_data && additional_data_len > 0 ? (const char *)additional_data : "",
-                                    dependencies ? dependencies : "",
-                                    hash_value,
-                                    can_sleep ? GFP_KERNEL : GFP_ATOMIC);
-
+    ret = add_container_measurement(container, request.event_name,
+                                    request.additional_data, request.dependencies,
+                                    hash_value, GFP_KERNEL);
     bpfima_put_container(container);
 
-    if (ret < 0)
-    {
-        printk(KERN_ERR "bpfima: Failed to add measurement to container %s: %d\n",
-               effective_ns, ret);
-        kfree(concat_data);
-        return ret;
-    }
-    else if (ret == 1)
-    {
-        printk(KERN_INFO "bpfima:  File already accessed by namespace %s, skipped\n", effective_ns);
-        kfree(concat_data);
-        return 0;
-    }
-
-    printk(KERN_INFO "bpfima:  Successfully added measurement to container %s\n",
-           effective_ns);
-    printk(KERN_INFO "bpfima:  Leaf hash updated and added to history\n");
-    printk(KERN_INFO "bpfima:  Merkle root recalculated and TPM extended\n");
-
-    kfree(concat_data);
-    return 0;
+    return ret == 1 ? 0 : ret;
 }
 
 /*
  * bpfima_tpm_get_pcr_value - BPF kfunc to retrieve TPM PCR value or simulation
  * @pcr_buf: Output buffer to store PCR value string (minimum 80 bytes)
- * @buf_size: Size of output buffer in bytes
+ * @pcr_buf__sz: Size of output buffer in bytes
  * Output format:
  * - Real TPM: "PCR23_REAL:abc123def456..."
  * - Simulation: "PCR23_MEASUREMENTS_N_HASH_SIMULATION"
@@ -188,7 +62,7 @@ __bpf_kfunc int bpfima_measurement_extend(const char *event_name__nullable,
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
+__bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
 {
     struct tpm_chip *chip;
     struct tpm_digest digest[1];
@@ -201,16 +75,16 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
         return -EINVAL;
     }
 
-    if (buf_size < 80)
+    if (pcr_buf__sz < BPFIMA_PCR_BUFFER_SIZE)
     {
-        printk(KERN_ERR "bpfima: buf_size too small: %u (minimum 80)\n",
-               buf_size);
+        printk(KERN_ERR "bpfima: pcr_buf__sz too small: %u (minimum 80)\n",
+               pcr_buf__sz);
         return -EINVAL;
     }
 
     if (!can_sleep)
     {
-        snprintf(pcr_buf, buf_size, "PCR%d_ATOMIC_CONTEXT",
+        snprintf(pcr_buf, pcr_buf__sz, "PCR%d_ATOMIC_CONTEXT",
                  TPM_PCR_INDEX);
         printk(KERN_INFO "Called from atomic context, using simulation\n");
         return 0;
@@ -222,7 +96,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
     if (!chip)
     {
         mutex_unlock(&bpfima_tpm_mutex);
-        snprintf(pcr_buf, buf_size, "PCR%d_HASH_SIMULATION",
+        snprintf(pcr_buf, pcr_buf__sz, "PCR%d_HASH_SIMULATION",
                  TPM_PCR_INDEX);
         printk(KERN_INFO "TPM not available, using simulation\n");
         return 0;
@@ -236,18 +110,18 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 buf_size)
 
     mutex_unlock(&bpfima_tpm_mutex);
 
-    if (ret < 0)
+    if (ret != 0)
     {
-        snprintf(pcr_buf, buf_size, "PCR%d_HASH_SIMULATION",
+        snprintf(pcr_buf, pcr_buf__sz, "PCR%d_HASH_SIMULATION",
                  TPM_PCR_INDEX);
         printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
-        return ret;
+        return ret > 0 ? -EIO : ret;
     }
 
-    snprintf(pcr_buf, buf_size, "PCR%d_REAL:", TPM_PCR_INDEX);
-    for (int i = 0; i < SHA256_DIGEST_SIZE && strlen(pcr_buf) < buf_size - 3; i++)
+    snprintf(pcr_buf, pcr_buf__sz, "PCR%d_REAL:", TPM_PCR_INDEX);
+    for (int i = 0; i < SHA256_DIGEST_SIZE && strlen(pcr_buf) < pcr_buf__sz - 3; i++)
     {
-        snprintf(pcr_buf + strlen(pcr_buf), buf_size - strlen(pcr_buf),
+        snprintf(pcr_buf + strlen(pcr_buf), pcr_buf__sz - strlen(pcr_buf),
                  "%02x", digest[0].digest[i]);
     }
 

@@ -30,8 +30,11 @@ char LICENSE[] SEC("license") = "GPL";
  * by the bpfima_measurement_extend kfunc, with behavior controlled by policy.
  */
 SEC("lsm.s/bprm_check_security")
-int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
+int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int previous_ret)
 {
+    if (previous_ret != 0)
+        return previous_ret;
+
     if (!bprm)
         return 0;
 
@@ -52,7 +55,8 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     struct bpfima_policy_config *policy = NULL;
     struct bpfima_policy_config ns_policy = {0};
     if (cgroup_name[0] != '\0') {
-        if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
+        if (bpfima_policy_namespace_get_config(cgroup_name, sizeof(cgroup_name),
+                                                &ns_policy, sizeof(ns_policy)) == 0) {
             policy = &ns_policy;
         }
     }
@@ -72,7 +76,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
+        if (bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy)) {
             if (!policy || policy->log_level >= 3) {
                 bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }

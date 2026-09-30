@@ -5,6 +5,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "../include/bpfima_kfunc_types.h"
 /* Policy configuration structures (userspace-compatible definitions) */
 #define MAX_IGNORE_PATTERNS 8  
 #define MAX_PATTERN_LEN 64
@@ -46,16 +47,7 @@ enum bpfima_hook_id {
     HOOK_MAX
 };
 
-/* Policy configuration structure (BPF-compatible) */
-struct bpfima_policy_config {
-    __u8 enabled;
-    __u32 filter_flags;
-    __u32 action_flags;
-    __u32 min_file_size;
-    __u32 max_path_depth;
-    __u32 log_level;
-    __u32 reserved[2];
-};
+/* Policy configuration uses the shared definition in bpfima_kfunc_types.h. */
 
 /* Pattern entry for matching */
 struct bpfima_pattern_entry {
@@ -118,16 +110,16 @@ struct string_ctx {
 
 /* Policy helper functions for BPF hooks */
 
-static __attribute__((noinline, unused)) bool bpfima_should_ignore_cgroup(const char *cgroup_name, struct bpfima_policy_config *policy)
+static __attribute__((noinline, unused)) bool bpfima_should_ignore_cgroup(const char *cgroup_name, u32 cgroup_name_size, struct bpfima_policy_config *policy)
 {
     u32 filter_flags = policy ? policy->filter_flags : POLICY_FILTER_SYSTEM_CGROUPS;
-    return bpfima_policy_should_ignore_cgroup(cgroup_name, filter_flags);
+    return bpfima_policy_should_ignore_cgroup(cgroup_name, cgroup_name_size, filter_flags);
 }
 
-static __attribute__((noinline, unused)) bool bpfima_should_ignore_path(const char *path, struct bpfima_policy_config *policy)
+static __attribute__((noinline, unused)) bool bpfima_should_ignore_path(const char *path, u32 path_size, struct bpfima_policy_config *policy)
 {
     u32 filter_flags = policy ? policy->filter_flags : POLICY_FILTER_PROC_SYS;
-    return bpfima_policy_should_ignore_path(path, filter_flags);
+    return bpfima_policy_should_ignore_path(path, path_size, filter_flags);
 }
 
 static __attribute__((noinline, unused)) bool bpfima_is_container_cgroup(const char *cgroup_name)

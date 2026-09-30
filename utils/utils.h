@@ -5,6 +5,7 @@
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
+#include "../include/bpfima_kfunc_types.h"
 
 typedef unsigned int u32;
 typedef unsigned long long u64;
@@ -46,6 +47,7 @@ typedef unsigned char u8;
 struct scratch_t {
     char buf[128];
     char digest_hex[68];
+    struct bpfima_measurement_request measurement;
 };
 
 struct {

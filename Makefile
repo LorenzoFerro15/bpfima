@@ -66,11 +66,11 @@ modules:
 	@rm -rf .tmp_versions 2>/dev/null || true
 
 # Unified management tool (replaces old loader + policy_init)
-$(BPFIMA_TOOL): tools/bpfima_tool.c tools/yaml_parser.c | $(BUILD_DIR)
+$(BPFIMA_TOOL): tools/bpfima_tool.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h include/bpfima_policy_defaults.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -I. -o $@ tools/bpfima_tool.c tools/yaml_parser.c $(LIBS)
 
 # Generic rule for compiling eBPF programs from hooks/lsm/
-$(BUILD_DIR)/%.o: hooks/lsm/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: hooks/lsm/%.c hooks/hook_utils.h utils/utils.h utils/headers_bpf.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 	@echo "Built eBPF object: $@"
 
@@ -80,4 +80,18 @@ clean:
 	rm -f .*.cmd .*.o 2>/dev/null || true
 	rm -rf .tmp_versions 2>/dev/null || true
 
-.PHONY: all modules clean
+$(BUILD_DIR)/kfunc-buffer-test: tests/security/kfunc_buffer_test.c include/bpfima_kfunc_buffer.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
+	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude $< -o $@
+
+test-security: $(BUILD_DIR)/kfunc-buffer-test
+	./$(BUILD_DIR)/kfunc-buffer-test
+
+$(BUILD_DIR)/security-regression.bpf.o: tests/security/security_regression.bpf.c utils/headers_bpf.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/security-regression: tests/security/security_regression.c include/bpfima_kfunc_types.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Wextra -Werror -Iinclude $< -o $@ $(LIBS)
+
+security-regression: $(BUILD_DIR)/security-regression $(BUILD_DIR)/security-regression.bpf.o $(BPF_OBJS)
+
+.PHONY: all modules clean test-security security-regression

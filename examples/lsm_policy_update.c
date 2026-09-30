@@ -11,14 +11,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-extern int bpfima_policy_update_filter_flags(const char *namespace_id, u32 new_flags) __ksym;
-extern int bpfima_policy_update_action_flags(const char *namespace_id, u32 new_flags) __ksym;
-extern int bpfima_policy_update_min_file_size(const char *namespace_id, u32 new_size) __ksym;
-extern int bpfima_policy_update_log_level(const char *namespace_id, u32 new_level) __ksym;
-extern int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size) __ksym;
-
-extern int bpfima_container_get_or_create(const char *container_id) __ksym;
-extern int bpfima_container_exists(const char *container_id) __ksym;
+#include "../utils/bpf_kfunc_defs.h"
 
 #define POLICY_FILTER_SYSTEM_CGROUPS (1 << 0)
 #define POLICY_FILTER_PROC_SYS (1 << 1)
@@ -44,9 +37,12 @@ char LICENSE[] SEC("license") = "GPL";
 /**
  * Example 1: Update policy when a specific container starts
  */
-SEC("lsm/bprm_check_security")
+SEC("lsm.s/bprm_check_security")
 int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
 {
+    if (ret != 0)
+        return ret;
+
     char container_id[128] = {0};
     u32 new_filter_flags;
     u32 new_action_flags;
@@ -58,7 +54,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
 
     __builtin_memcpy(container_id, "prod-container-123", 18);
 
-    result = bpfima_container_get_or_create(container_id);
+    result = bpfima_container_get_or_create(container_id, sizeof(container_id));
     if (result < 0)
     {
         bpf_printk("Failed to create/get container: %d\n", result);
@@ -69,7 +65,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
                        POLICY_FILTER_PROC_SYS |
                        POLICY_FILTER_DEV;
 
-    result = bpfima_policy_update_filter_flags(container_id, new_filter_flags);
+    result = bpfima_policy_update_filter_flags(container_id, sizeof(container_id), new_filter_flags);
     if (result < 0)
     {
         bpf_printk("Failed to update filter flags: %d\n", result);
@@ -82,7 +78,7 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
                        POLICY_ACTION_TRACK_CONTAINER |
                        POLICY_ACTION_BUILD_DEPS;
 
-    result = bpfima_policy_update_action_flags(container_id, new_action_flags);
+    result = bpfima_policy_update_action_flags(container_id, sizeof(container_id), new_action_flags);
     if (result < 0)
     {
         bpf_printk("Failed to update action flags: %d\n", result);
@@ -97,9 +93,12 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
 /**
  * Example 2: Adjust policy based on file characteristics
  */
-SEC("lsm/file_open")
+SEC("lsm.s/file_open")
 int BPF_PROG(policy_adjust_on_file_open, struct file *file, int ret)
 {
+    if (ret != 0)
+        return ret;
+
     char namespace_id[128] = {0};
     u32 min_file_size;
     int result;
@@ -120,7 +119,7 @@ int BPF_PROG(policy_adjust_on_file_open, struct file *file, int ret)
     {                                  
         min_file_size = 5 * 1024 * 1024;
 
-        result = bpfima_policy_update_min_file_size(namespace_id, min_file_size);
+        result = bpfima_policy_update_min_file_size(namespace_id, sizeof(namespace_id), min_file_size);
         if (result < 0)
         {
             bpf_printk("Failed to update min_file_size: %d\n", result);
@@ -137,20 +136,24 @@ int BPF_PROG(policy_adjust_on_file_open, struct file *file, int ret)
 /**
  * Example 3: Get hash of all policy changes for a namespace
  */
-SEC("lsm/mmap_file")
+SEC("lsm.s/mmap_file")
 int BPF_PROG(policy_get_changes_hash, struct file *file, unsigned long reqprot,
              unsigned long prot, unsigned long flags, int ret)
 {
+    if (ret != 0)
+        return ret;
+
     char namespace_id[128] = {0};
     u8 policy_hash[MERKLE_HASH_SIZE] = {0};
     int result;
 
     __builtin_memcpy(namespace_id, "monitoring-ns", 13);
 
-    if (bpfima_container_exists(namespace_id) <= 0)
+    if (bpfima_container_exists(namespace_id, sizeof(namespace_id)) <= 0)
         return 0;
 
-    result = bpfima_policy_get_changes_hash(namespace_id, policy_hash, MERKLE_HASH_SIZE);
+    result = bpfima_policy_get_changes_hash(namespace_id, sizeof(namespace_id),
+                                             policy_hash, sizeof(policy_hash));
     if (result < 0)
     {
         bpf_printk("Failed to get policy changes hash: %d\n", result);
@@ -168,23 +171,26 @@ int BPF_PROG(policy_get_changes_hash, struct file *file, unsigned long reqprot,
 /**
  * Example 4: Dynamically adjust log level based on activity
  */
-SEC("lsm/socket_connect")
+SEC("lsm.s/socket_connect")
 int BPF_PROG(policy_adjust_log_level, struct socket *sock,
              struct sockaddr *address, int addrlen, int ret)
 {
+    if (ret != 0)
+        return ret;
+
     char namespace_id[128] = {0};
     u32 new_log_level;
     int result;
 
     __builtin_memcpy(namespace_id, "backend-service", 15);
 
-    result = bpfima_container_get_or_create(namespace_id);
+    result = bpfima_container_get_or_create(namespace_id, sizeof(namespace_id));
     if (result < 0)
         return 0;
 
     new_log_level = 3;
 
-    result = bpfima_policy_update_log_level(namespace_id, new_log_level);
+    result = bpfima_policy_update_log_level(namespace_id, sizeof(namespace_id), new_log_level);
     if (result < 0)
     {
         bpf_printk("Failed to update log level: %d\n", result);
