@@ -8,13 +8,13 @@
 char LICENSE[] SEC("license") = "GPL";
 
 SEC("lsm.s/mmap_file")
-int BPF_PROG(bpf_mmap_file, struct file *file)
+int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
+             unsigned long prot, unsigned long flags, int previous_ret)
 {
-    if (!file)
-        return 0;
+    if (previous_ret != 0)
+        return previous_ret;
 
-    u64 file_scalar = 0;
-    if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0 || file_scalar == 0)
+    if (!file)
         return 0;
 
     struct inode *inode = BPF_CORE_READ(file, f_inode);
@@ -25,9 +25,9 @@ int BPF_PROG(bpf_mmap_file, struct file *file)
     }
 
     u8 digest[32] = {0};
-    int hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
-    if (hash_ret != 0) {
-        bpf_printk("FAILED! Hash computation failed: %d\n", hash_ret);
+    long hash_algo = bpf_ima_file_hash(file, digest, sizeof(digest));
+    if (hash_algo != HASH_ALGO_SHA256) {
+        bpf_printk("IMA hash failed or is not SHA-256: %ld\n", hash_algo);
         return 0;
     }
 
@@ -51,7 +51,12 @@ int BPF_PROG(bpf_mmap_file, struct file *file)
         return 0;
 
     char event_name[] = "mmap_file";
-    int ret_extension = bpfima_measurement_extend(event_name, NULL, NULL, digest_hex, 64);
+    struct measurement_ctx measurement = {
+        .event_name = event_name,
+        .additional_data = digest_hex,
+        .additional_data_len = 64,
+    };
+    int ret_extension = bpfima_submit_measurement(&measurement);
     if (ret_extension >= 0) {
         bpf_printk("  IMA measurement extended\n");
     } else {

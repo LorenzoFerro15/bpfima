@@ -11,6 +11,7 @@
 #define BPFIMA_POLICY_USER_H
 
 #include <stdint.h>
+#include "bpfima_kfunc_types.h"
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -45,21 +46,6 @@ typedef uint64_t u64;
 #define HOOK_FLAG_ENABLED (1 << 0)          /* Hook is enabled */
 #define HOOK_FLAG_TRACK_CONTAINERS (1 << 1) /* Track containers in this hook */
 #define HOOK_FLAG_MEASURE_HASH (1 << 2)     /* Calculate file hashes */
-
-/**
- * struct bpfima_policy_config - Main policy configuration
- * Must match kernel-side struct bpfima_policy_config
- */
-struct bpfima_policy_config
-{
-    u8 enabled;
-    u32 filter_flags;
-    u32 action_flags;
-    u32 min_file_size;
-    u32 max_path_depth;
-    u32 log_level;
-    u32 reserved[2];
-};
 
 /**
  * struct bpfima_pattern_entry - Pattern for matching

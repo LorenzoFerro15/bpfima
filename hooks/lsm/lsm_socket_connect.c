@@ -15,9 +15,12 @@ char LICENSE[] SEC("license") = "GPL";
  * @param address: Pointer to the sockaddr structure containing remote address
  * @param addrlen: Length of the address structure
  */
-SEC("lsm/socket_connect")
-int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
+SEC("lsm.s/socket_connect")
+int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen, int previous_ret)
 {
+    if (previous_ret != 0)
+        return previous_ret;
+
     if (!address)
         return 0;
     if (address->sa_family != AF_INET && address->sa_family != AF_UNIX)
@@ -105,7 +108,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        if (bpfima_should_ignore_cgroup(cgroup_name, policy))
+        if (bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy))
             return 0;
         if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
             if (bpfima_is_container_cgroup(cgroup_name)) {
@@ -115,6 +118,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     }
 
     char *deps = scratch->buf;
+    deps[0] = '\0';
     int deps_max = sizeof(scratch->buf);
     int deps_actual = 0;
 

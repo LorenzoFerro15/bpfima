@@ -21,9 +21,12 @@ char LICENSE[] SEC("license") = "GPL";
  *   - MAY_EXEC (0x00000004)
  *   - MAY_APPEND (0x00000008)
  */
-SEC("lsm/file_post_open")
-int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
+SEC("lsm.s/file_post_open")
+int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
 {
+    if (previous_ret != 0)
+        return previous_ret;
+
     if (!(mask & 0x00000004))
         return 0;
     if (!file)
@@ -59,10 +62,6 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
     if (i_size < 4096 || i_size > 10485)
         return 0;
 
-    u64 file_scalar = 0;
-    if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0 || file_scalar == 0)
-        return 0;
-
     u8 digest[32] = {0};
     char comm[16] = {0};
     bpf_get_current_comm(comm, sizeof(comm));
@@ -77,11 +76,9 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
     bpf_printk("File: %s\n", filepath);
     bpf_printk("File ptr: %p, inode: %lu\n", file, i_ino);
     bpf_printk("Owner UID: %u, GID: %u, Size: %lld bytes\n", i_uid_val, i_gid_val, i_size);
-    bpf_printk("File scalar value: %llu (0x%llx)\n", file_scalar, file_scalar);
-
-    int hash_ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
-    if (hash_ret != 0) {
-        bpf_printk("  Hash computation FAILED (ret=%d)\n", hash_ret);
+    long hash_algo = bpf_ima_file_hash(file, digest, sizeof(digest));
+    if (hash_algo != HASH_ALGO_SHA256) {
+        bpf_printk("  IMA hash failed or is not SHA-256: %ld\n", hash_algo);
         return 0;
     }
 
@@ -105,7 +102,12 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask)
         return 0;
 
     char event_name[] = "file_post_open";
-    int extend_ret = bpfima_measurement_extend(event_name, NULL, NULL, digest_hex, 64);
+    struct measurement_ctx measurement = {
+        .event_name = event_name,
+        .additional_data = digest_hex,
+        .additional_data_len = 64,
+    };
+    int extend_ret = bpfima_submit_measurement(&measurement);
     if (extend_ret >= 0) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
     } else {

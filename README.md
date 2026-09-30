@@ -91,6 +91,39 @@ sudo ./scripts/test.sh -v
 sudo ./scripts/test.sh lsm_bprm_check_security -v
 ```
 
+Run the bounded-input tests with AddressSanitizer and UndefinedBehaviorSanitizer:
+
+```bash
+make test-security CC=clang
+```
+
+On a host with BPF LSM and the updated bpfima module loaded with BTF, run the
+verifier rejection and LSM denial propagation tests:
+
+```bash
+sudo ./scripts/test_security.sh --kernel
+```
+
+The kernel tests attach temporary programs scoped to the test process, check all
+five production hooks, and detach their programs on exit. They use private maps
+and temporary files rather than the installed policy maps.
+
+### Kfunc interface
+
+Every kfunc memory argument now has an adjacent size argument checked by the BPF
+verifier. String inputs must be NUL-terminated within the supplied extent. The
+measurement API accepts a pointer-free `struct bpfima_measurement_request` and
+`sizeof(request)`. Its event name is required, an empty namespace selects
+`default`, payloads are limited to 255 bytes, and dependency strings require
+`BPFIMA_MEASUREMENT_HAS_DEPENDENCIES`. Invalid inputs return `-EINVAL`; filter
+functions return `false` for invalid inputs.
+
+The shared request and policy layouts are declared in
+`include/bpfima_kfunc_types.h`. Rebuild the module, BPF programs, and userspace
+tool together after this API change. Reload the hooks and recreate their pinned
+maps: the policy value is now 36 bytes and the scratch value has grown to hold
+the bounded measurement request.
+
 ### Manual
 
 ```bash

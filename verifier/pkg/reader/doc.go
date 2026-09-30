@@ -1,2 +1,2 @@
-// Package reader provides functionality for reading measurement lists in the bpfima project.
+// Package reader provides line-oriented, rewindable readers for bpfima measurement lists.
 package reader

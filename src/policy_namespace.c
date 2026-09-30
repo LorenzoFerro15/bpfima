@@ -3,6 +3,8 @@
 #include "bpfima_container.h"
 #include "bpfima_merkle.h"
 #include "bpfima_measurements.h"
+#include "bpfima_kfunc_buffer.h"
+#include "bpfima_kfuncs.h"
 
 static LIST_HEAD(policy_namespace_list);
 static DEFINE_MUTEX(bpfima_policy_namespace_mutex);
@@ -76,21 +78,28 @@ static struct bpfima_policy_namespace *find_policy_namespace(const char *namespa
  *
  * Returns: 0 on success, -ENOENT if not found, -EINVAL on bad args
  */
-int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config)
+__bpf_kfunc int bpfima_policy_namespace_get_config(const char *namespace_id, u32 namespace_id__sz,
+                                                void *config, u32 config__sz)
 {
     struct bpfima_policy_namespace *policy_ns;
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
 
-    if (!namespace_id || !config)
+    if (!config || config__sz != sizeof(struct bpfima_policy_config))
+        return -EINVAL;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
     mutex_lock(&bpfima_policy_namespace_mutex);
-    policy_ns = find_policy_namespace(namespace_id);
+    policy_ns = find_policy_namespace(id);
     if (!policy_ns) {
         mutex_unlock(&bpfima_policy_namespace_mutex);
         return -ENOENT;
     }
 
-    memcpy(config, &policy_ns->policy, sizeof(*config));
+    memcpy(config, &policy_ns->policy, sizeof(policy_ns->policy));
     mutex_unlock(&bpfima_policy_namespace_mutex);
     return 0;
 }

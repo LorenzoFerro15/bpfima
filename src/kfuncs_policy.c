@@ -8,6 +8,7 @@
 #include "bpfima_common.h"
 #include "bpfima_policy.h"
 #include "bpfima_kfuncs.h"
+#include "bpfima_kfunc_buffer.h"
 
 /**
  * bpfima_policy_update_filter_flags - Update filter flags for a namespace
@@ -19,12 +20,16 @@
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_policy_update_filter_flags(const char *namespace_id, u32 new_flags)
+__bpf_kfunc int bpfima_policy_update_filter_flags(const char *namespace_id, u32 namespace_id__sz, u32 new_flags)
 {
-    if (!namespace_id)
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
-    return bpfima_policy_namespace_update_filter_flags(namespace_id, new_flags);
+    return bpfima_policy_namespace_update_filter_flags(id, new_flags);
 }
 
 /**
@@ -37,12 +42,16 @@ __bpf_kfunc int bpfima_policy_update_filter_flags(const char *namespace_id, u32 
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_policy_update_action_flags(const char *namespace_id, u32 new_flags)
+__bpf_kfunc int bpfima_policy_update_action_flags(const char *namespace_id, u32 namespace_id__sz, u32 new_flags)
 {
-    if (!namespace_id)
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
-    return bpfima_policy_namespace_update_action_flags(namespace_id, new_flags);
+    return bpfima_policy_namespace_update_action_flags(id, new_flags);
 }
 
 /**
@@ -55,12 +64,16 @@ __bpf_kfunc int bpfima_policy_update_action_flags(const char *namespace_id, u32 
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_policy_update_min_file_size(const char *namespace_id, u32 new_size)
+__bpf_kfunc int bpfima_policy_update_min_file_size(const char *namespace_id, u32 namespace_id__sz, u32 new_size)
 {
-    if (!namespace_id)
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
-    return bpfima_policy_namespace_update_min_file_size(namespace_id, new_size);
+    return bpfima_policy_namespace_update_min_file_size(id, new_size);
 }
 
 /**
@@ -73,19 +86,23 @@ __bpf_kfunc int bpfima_policy_update_min_file_size(const char *namespace_id, u32
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_policy_update_log_level(const char *namespace_id, u32 new_level)
+__bpf_kfunc int bpfima_policy_update_log_level(const char *namespace_id, u32 namespace_id__sz, u32 new_level)
 {
-    if (!namespace_id)
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
-    return bpfima_policy_namespace_update_log_level(namespace_id, new_level);
+    return bpfima_policy_namespace_update_log_level(id, new_level);
 }
 
 /**
  * bpfima_policy_get_changes_hash - Get the hash of all policy changes for a namespace
  * @namespace_id: Namespace/container identifier
  * @hash_out: Buffer to store the hash output (must be at least MERKLE_HASH_SIZE bytes)
- * @hash_size: Size of the hash buffer
+ * @hash_out__sz: Size of the hash buffer
  *
  * This kfunc retrieves the SHA-256 hash of all concatenated policy changes
  * for a specific namespace. The hash is computed over the changes_str field
@@ -93,25 +110,37 @@ __bpf_kfunc int bpfima_policy_update_log_level(const char *namespace_id, u32 new
  *
  * Returns: 0 on success, negative error code on failure
  */
-__bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size)
+__bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u32 namespace_id__sz,
+                                                u8 *hash_out, u32 hash_out__sz)
 {
-    if (!namespace_id || !hash_out)
+    char id[BPFIMA_NAMESPACE_SIZE];
+    int ret;
+
+    ret = bpfima_copy_kfunc_string(id, sizeof(id), namespace_id, namespace_id__sz, false);
+    if (ret || bpfima_validate_namespace(id))
         return -EINVAL;
 
-    return bpfima_policy_namespace_get_changes_hash(namespace_id, hash_out, hash_size);
+    if (!hash_out || hash_out__sz != MERKLE_HASH_SIZE)
+        return -EINVAL;
+
+    return bpfima_policy_namespace_get_changes_hash(id, hash_out, hash_out__sz);
 }
 
 /**
  * bpfima_policy_should_ignore_cgroup - Check if a cgroup should be ignored based on policy
  */
-__bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 filter_flags)
+__bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable,
+                                                 u32 cgroup_name__sz, u32 filter_flags)
 {
-    if (!cgroup_name__nullable || cgroup_name__nullable[0] == '\0')
+    char cgroup_name[BPFIMA_NAMESPACE_SIZE];
+
+    if (bpfima_copy_kfunc_string(cgroup_name, sizeof(cgroup_name),
+                                 cgroup_name__nullable, cgroup_name__sz, false))
         return false;
 
-    if (cgroup_name__nullable[0] == '/' && cgroup_name__nullable[1] == '\0')
+    if (cgroup_name[0] == '/' && cgroup_name[1] == '\0')
         return true;
-    if (strncmp(cgroup_name__nullable, "init.scope", 10) == 0)
+    if (strncmp(cgroup_name, "init.scope", 10) == 0)
         return true;
 
     if (!(filter_flags & POLICY_FILTER_SYSTEM_CGROUPS))
@@ -124,17 +153,17 @@ __bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nul
     for (int i = 0; i < MAX_IGNORE_PATTERNS; i++) {
         if (!p[i].enabled)
             continue;
-        if (p[i].match_type == 0 && strcmp(cgroup_name__nullable, p[i].pattern) == 0)
+        if (p[i].match_type == 0 && strcmp(cgroup_name, p[i].pattern) == 0)
             return true;
-        if (p[i].match_type == 1 && strncmp(cgroup_name__nullable, p[i].pattern, strlen(p[i].pattern)) == 0)
+        if (p[i].match_type == 1 && strncmp(cgroup_name, p[i].pattern, strlen(p[i].pattern)) == 0)
             return true;
         if (p[i].match_type == 2) {
-            size_t len_name = strlen(cgroup_name__nullable);
+            size_t len_name = strlen(cgroup_name);
             size_t len_p = strlen(p[i].pattern);
-            if (len_name >= len_p && strcmp(cgroup_name__nullable + len_name - len_p, p[i].pattern) == 0)
+            if (len_name >= len_p && strcmp(cgroup_name + len_name - len_p, p[i].pattern) == 0)
                 return true;
         }
-        if (p[i].match_type == 3 && strstr(cgroup_name__nullable, p[i].pattern) != NULL)
+        if (p[i].match_type == 3 && strstr(cgroup_name, p[i].pattern) != NULL)
             return true;
     }
     return false;
@@ -143,21 +172,23 @@ __bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nul
 /**
  * bpfima_policy_should_ignore_path - Check if a file path should be ignored based on policy
  */
-__bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 filter_flags)
+__bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 path__sz, u32 filter_flags)
 {
-    if (!path__nullable || path__nullable[0] == '\0')
+    char path[BPFIMA_PATH_SIZE];
+
+    if (bpfima_copy_kfunc_string(path, sizeof(path), path__nullable, path__sz, false))
         return false;
 
     if ((filter_flags & POLICY_FILTER_PROC_SYS)) {
-        if (strncmp(path__nullable, "/proc/", 6) == 0 || strncmp(path__nullable, "/sys/", 5) == 0)
+        if (strncmp(path, "/proc/", 6) == 0 || strncmp(path, "/sys/", 5) == 0)
             return true;
     }
     if ((filter_flags & POLICY_FILTER_DEV)) {
-        if (strncmp(path__nullable, "/dev/", 5) == 0)
+        if (strncmp(path, "/dev/", 5) == 0)
             return true;
     }
     if ((filter_flags & POLICY_FILTER_TMP_FILES)) {
-        if (strncmp(path__nullable, "/tmp/", 5) == 0)
+        if (strncmp(path, "/tmp/", 5) == 0)
             return true;
     }
 
@@ -168,17 +199,17 @@ __bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable, u3
     for (int i = 0; i < MAX_PATH_FILTERS; i++) {
         if (!p[i].enabled)
             continue;
-        if (p[i].match_type == 0 && strcmp(path__nullable, p[i].pattern) == 0)
+        if (p[i].match_type == 0 && strcmp(path, p[i].pattern) == 0)
             return true;
-        if (p[i].match_type == 1 && strncmp(path__nullable, p[i].pattern, strlen(p[i].pattern)) == 0)
+        if (p[i].match_type == 1 && strncmp(path, p[i].pattern, strlen(p[i].pattern)) == 0)
             return true;
         if (p[i].match_type == 2) {
-            size_t len_name = strlen(path__nullable);
+            size_t len_name = strlen(path);
             size_t len_p = strlen(p[i].pattern);
-            if (len_name >= len_p && strcmp(path__nullable + len_name - len_p, p[i].pattern) == 0)
+            if (len_name >= len_p && strcmp(path + len_name - len_p, p[i].pattern) == 0)
                 return true;
         }
-        if (p[i].match_type == 3 && strstr(path__nullable, p[i].pattern) != NULL)
+        if (p[i].match_type == 3 && strstr(path, p[i].pattern) != NULL)
             return true;
     }
     return false;

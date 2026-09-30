@@ -2,6 +2,7 @@
 #define BPFIMA_POLICY_H
 
 #include <linux/types.h>
+#include "bpfima_kfunc_types.h"
 
 /* Maximum number of ignore patterns */
 #define MAX_IGNORE_PATTERNS 32
@@ -33,30 +34,6 @@
 #define HOOK_FLAG_ENABLED               (1 << 0)  /* Hook is enabled */
 #define HOOK_FLAG_TRACK_CONTAINERS      (1 << 1)  /* Track containers in this hook */
 #define HOOK_FLAG_MEASURE_HASH          (1 << 2)  /* Calculate file hashes */
-
-/**
- * struct bpfima_policy_config - Main policy configuration
- * @enabled: Global enable/disable flag
- * @filter_flags: Bitmask of POLICY_FILTER_* flags
- * @action_flags: Bitmask of POLICY_ACTION_* flags
- * @min_file_size: Minimum file size to measure (bytes)
- * @max_path_depth: Maximum path depth to track
- * @log_level: Logging verbosity (0=none, 1=errors, 2=info, 3=debug)
- * @merkle_history_max_size: Maximum entries in merkle_root_history before trimming
- * @merkle_history_scope: Scope of circular buffer (0=global, 1=root-only)
- * @reserved: Reserved for future use
- */
-struct bpfima_policy_config {
-    u8 enabled;
-    u32 filter_flags;
-    u32 action_flags;
-    u32 min_file_size;
-    u32 max_path_depth;
-    u32 log_level;
-    u32 merkle_history_max_size;
-    u8 merkle_history_scope;
-    u32 reserved[1];
-};
 
 /**
  * struct bpfima_pattern_entry - Pattern for matching (cgroups, paths, etc.)
@@ -185,7 +162,8 @@ int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 ne
 int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
 int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
 int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
-int bpfima_policy_namespace_get_config(const char *namespace_id, struct bpfima_policy_config *config);
+int bpfima_policy_namespace_get_config(const char *namespace_id, u32 namespace_id__sz,
+                                                void *config, u32 config__sz);
 
 /* Global policy change history management */
 int bpfima_global_policy_init_history(void);
@@ -197,8 +175,8 @@ spinlock_t *bpfima_global_policy_get_history_lock(void);
 /* Policy kfunc registration */
 int register_policy_kfuncs(void);
 void unregister_policy_kfuncs(void);
-bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 filter_flags);
-bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 filter_flags);
+bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 cgroup_name__sz, u32 filter_flags);
+bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 path__sz, u32 filter_flags);
 #endif
 
 #endif /* BPFIMA_POLICY_H */

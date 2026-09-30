@@ -21,15 +21,13 @@
     * - 0 on success, -1 on failure
 */
 struct file_measure_ctx {
-    struct file *file;
+    const u8 *digest;
     const char *event_name;
     const char *cgroup_name;
     bool is_container_context;
     const char *fname;
     struct task_struct *cur;
     struct bpfima_policy_config *policy;
-    u8 *out_hash;
-    u64 *hash_duration;
     u64 *extend_duration;
     u64 *deps_duration;
 };
@@ -46,35 +44,69 @@ struct socket_measure_ctx {
     u64 *extend_duration;
 };
 
+struct measurement_ctx
+{
+    const char *event_name;
+    const char *namespace_id;
+    const char *dependencies;
+    const char *additional_data;
+    int additional_data_len;
+};
+
+static __attribute__((noinline, unused)) int bpfima_submit_measurement(struct measurement_ctx *ctx)
+{
+    u32 key = 0;
+    struct scratch_t *scratch;
+    struct bpfima_measurement_request *request;
+    int ret;
+
+    if (!ctx || !ctx->event_name || ctx->additional_data_len < 0 ||
+        ctx->additional_data_len >= BPFIMA_EVENT_DATA_SIZE ||
+        (!ctx->additional_data && ctx->additional_data_len))
+        return -1;
+
+    scratch = bpf_map_lookup_elem(&scratch_buf_map, &key);
+    if (!scratch)
+        return -1;
+
+    request = &scratch->measurement;
+    __builtin_memset(request, 0, sizeof(*request));
+    ret = bpf_probe_read_kernel_str(request->event_name, sizeof(request->event_name),
+                                    ctx->event_name);
+    if (ret <= 1 || ret >= sizeof(request->event_name))
+        return -1;
+
+    if (ctx->namespace_id)
+    {
+        ret = bpf_probe_read_kernel_str(request->namespace_id, sizeof(request->namespace_id),
+                                        ctx->namespace_id);
+        if (ret <= 0 || ret >= sizeof(request->namespace_id))
+            return -1;
+    }
+
+    if (ctx->dependencies)
+    {
+        ret = bpf_probe_read_kernel_str(request->dependencies, sizeof(request->dependencies),
+                                        ctx->dependencies);
+        if (ret <= 0 || ret >= sizeof(request->dependencies))
+            return -1;
+        request->flags = BPFIMA_MEASUREMENT_HAS_DEPENDENCIES;
+    }
+
+    if (ctx->additional_data_len &&
+        bpf_probe_read_kernel(request->additional_data, ctx->additional_data_len,
+                              ctx->additional_data))
+        return -1;
+
+    request->additional_data_len = ctx->additional_data_len;
+    return bpfima_measurement_extend(request, sizeof(*request));
+}
+
 static __attribute__((noinline, unused)) int measure_accessed_file(struct file_measure_ctx *ctx)
 {
-    if (!ctx || !ctx->file || !ctx->event_name) {
-        bpf_printk("No file or event_name provided for hashing.\n");
+    if (!ctx || !ctx->digest || !ctx->event_name) {
+        bpf_printk("No digest or event_name provided for measurement.\n");
         return -1;
-    }
-
-    u8 digest[32] = {0};
-    u64 file_scalar = 0;
-    struct file *file = ctx->file;
-
-    if (bpf_probe_read_kernel(&file_scalar, sizeof(file_scalar), &file) != 0 || file_scalar == 0) {
-        return -1;
-    }
-
-    /* Perform sleepable file hashing FIRST before accessing per-CPU scratch buffer */
-    u64 start = bpf_ktime_get_ns();
-    int ret = bpfima_file_hash(file_scalar, digest, sizeof(digest));
-    u64 end = bpf_ktime_get_ns();
-    if (ctx->hash_duration)
-        *ctx->hash_duration = end - start;
-
-    if (ret != 0) {
-        bpf_printk(" failed hashing failed extending found data about it\n");
-        return -1;
-    }
-
-    if (ctx->out_hash) {
-        __builtin_memcpy(ctx->out_hash, digest, 32);
     }
 
     /* Safely access per-CPU scratch buffer AFTER sleep point */
@@ -90,12 +122,16 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
                                                      task,
                                                      0,
                                                      BPF_LOCAL_STORAGE_GET_F_CREATE);
+    /* Access per-CPU scratch only after the caller has finished the sleepable hash. */
+    u32 scratch_key = 0;
+    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
     if (!scratch)
         return -1;
 
     char *deps = scratch->buf;
     int deps_actual = 0;
     int deps_max = sizeof(scratch->buf);
+    deps[0] = '\0';
 
     if (ctx->fname && ctx->cur && (!ctx->policy || (ctx->policy->action_flags & POLICY_ACTION_BUILD_DEPS))) {
         u64 d_start = bpf_ktime_get_ns();
@@ -111,19 +147,22 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
     }
 
     char *digest_hex = scratch->digest_hex;
-    int written = bytes_to_hex_str(digest, 32, digest_hex, sizeof(scratch->digest_hex));
+    int written = bytes_to_hex_str(ctx->digest, 32, digest_hex, sizeof(scratch->digest_hex));
     if (written < 0) {
         bpf_printk(" failed converting digest to hex string\n");
         return -1;
     }
 
-    start = bpf_ktime_get_ns();
-    ret = bpfima_measurement_extend(ctx->event_name, 
-                                    (const char *)(ctx->is_container_context ? ctx->cgroup_name : NULL), 
-                                    deps, 
-                                    digest_hex, 
-                                    64);
-    end = bpf_ktime_get_ns();
+    u64 start = bpf_ktime_get_ns();
+    struct measurement_ctx measurement = {
+        .event_name = ctx->event_name,
+        .namespace_id = ctx->is_container_context ? ctx->cgroup_name : NULL,
+        .dependencies = deps,
+        .additional_data = digest_hex,
+        .additional_data_len = 64,
+    };
+    int ret = bpfima_submit_measurement(&measurement);
+    u64 end = bpf_ktime_get_ns();
     if (ctx->extend_duration)
         *ctx->extend_duration = end - start;
 
@@ -142,7 +181,7 @@ static __attribute__((noinline, unused)) int measure_socket_data(struct socket_m
     if (!ctx || !ctx->event_name)
         return -1;
 
-    if (ctx->additional_data_len < 0 || ctx->additional_data_len >= 512) {
+    if (ctx->additional_data_len < 0 || ctx->additional_data_len >= BPFIMA_EVENT_DATA_SIZE) {
         bpf_printk("Invalid additional data length: %d\n", ctx->additional_data_len);
         return -1;
     }
@@ -153,11 +192,14 @@ static __attribute__((noinline, unused)) int measure_socket_data(struct socket_m
     }
 
     u64 start = bpf_ktime_get_ns();
-    int ret = bpfima_measurement_extend(ctx->event_name, 
-                                        (const char *)(ctx->is_container_context ? ctx->cgroup_name : NULL), 
-                                        ctx->deps, 
-                                        ctx->additional_data, 
-                                        ctx->additional_data_len);
+    struct measurement_ctx measurement = {
+        .event_name = ctx->event_name,
+        .namespace_id = ctx->is_container_context ? ctx->cgroup_name : NULL,
+        .dependencies = ctx->deps,
+        .additional_data = ctx->additional_data,
+        .additional_data_len = ctx->additional_data_len,
+    };
+    int ret = bpfima_submit_measurement(&measurement);
     u64 end = bpf_ktime_get_ns();
     if (ctx->extend_duration)
         *ctx->extend_duration = end - start;

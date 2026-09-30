@@ -29,9 +29,12 @@ char LICENSE[] SEC("license") = "GPL";
  * All Merkle tree operations and TPM extension are handled automatically
  * by the bpfima_measurement_extend kfunc, with behavior controlled by policy.
  */
-SEC("lsm/bprm_check_security")
-int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
+SEC("lsm.s/bprm_check_security")
+int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int previous_ret)
 {
+    if (previous_ret != 0)
+        return previous_ret;
+
     if (!bprm)
         return 0;
 
@@ -46,13 +49,14 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
     const char *debug_fname = BPF_CORE_READ(bprm, filename);
     bpf_printk("Check: PID=%u comm=%s file=%s\n", pid, comm, debug_fname);
 
-    char cgroup_name[32] = {0};
+    char cgroup_name[64] = {0};
     fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
 
     struct bpfima_policy_config *policy = NULL;
     struct bpfima_policy_config ns_policy = {0};
     if (cgroup_name[0] != '\0') {
-        if (bpfima_policy_namespace_get_config(cgroup_name, &ns_policy) == 0) {
+        if (bpfima_policy_namespace_get_config(cgroup_name, sizeof(cgroup_name),
+                                                &ns_policy, sizeof(ns_policy)) == 0) {
             policy = &ns_policy;
         }
     }
@@ -72,7 +76,7 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     bool is_container_context = false;
     if (cgroup_name[0] != '\0') {
-        if (bpfima_should_ignore_cgroup(cgroup_name, policy)) {
+        if (bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy)) {
             if (!policy || policy->log_level >= 3) {
                 bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
             }
@@ -95,19 +99,29 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm)
 
     const char *fname = BPF_CORE_READ(bprm, filename);
     char event_name[32] = "bprm_check_security";
-    struct file *file = BPF_CORE_READ(bprm, file);
     u8 hash[32] = {0};
 
+    /* Keep the verifier-tracked file pointer at the sleepable LSM call site. */
+    struct file *file = bprm->file;
+    if (!file)
+        return 0;
+
+    u64 hash_start = bpf_ktime_get_ns();
+    long hash_algo = bpf_ima_file_hash(file, hash, sizeof(hash));
+    hash_time = bpf_ktime_get_ns() - hash_start;
+    if (hash_algo != HASH_ALGO_SHA256) {
+        bpf_printk("IMA file hash failed or is not SHA-256: %ld\n", hash_algo);
+        return 0;
+    }
+
     struct file_measure_ctx mctx = {
-        .file = file,
+        .digest = hash,
         .event_name = event_name,
         .cgroup_name = cgroup_name,
         .is_container_context = is_container_context,
         .fname = fname,
         .cur = cur,
         .policy = policy,
-        .out_hash = hash,
-        .hash_duration = &hash_time,
         .extend_duration = &extend_time,
         .deps_duration = &deps_time,
     };
