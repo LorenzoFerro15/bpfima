@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +40,9 @@ type PolicyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logr.Logger
+
+	// applied reports whether a policy has been written to the maps and measured
+	applied atomic.Bool
 }
 
 // Struct to save the execution times
@@ -120,9 +125,20 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	r.applied.Store(true)
 	log.Info("Policy updated successfully", "selected-policy", selectedPolicy.Name)
 
 	return ctrl.Result{}, nil
+}
+
+// ReadyCheck is a readiness check that fails until a policy has been written
+// to the maps and recorded in the Merkle tree, so that the node is ready only
+// once the measurements follow the selected policy
+func (r *PolicyReconciler) ReadyCheck(_ *http.Request) error {
+	if !r.applied.Load() {
+		return fmt.Errorf("no policy applied yet")
+	}
+	return nil
 }
 
 func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy, s *Stats) error {

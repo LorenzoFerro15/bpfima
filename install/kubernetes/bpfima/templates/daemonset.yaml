@@ -11,6 +11,9 @@ spec:
     metadata:
       labels:
         app: bpfima
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

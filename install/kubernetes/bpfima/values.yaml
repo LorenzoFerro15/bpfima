@@ -57,6 +57,9 @@ agent:
     periodSeconds: 1
   resources: {}
 
+# This adds labels to the DaemonSet pods, e.g. to let other components select them
+podLabels: {}
+
 # This ensures the DaemonSet is only scheduled on certain nodes
 nodeSelector: {}
 
