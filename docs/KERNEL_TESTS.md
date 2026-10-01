@@ -50,15 +50,18 @@ first; the runner does not compile programs as root.
 - Kernel BTF at `/sys/kernel/btf/vmlinux` and module BTF at
   `/sys/kernel/btf/bpfima` once the module is loaded.
 - SecurityFS mounted at `/sys/kernel/security`.
+- BPF filesystem mounted at `/sys/fs/bpf` for the pinned-program unload test.
 - Root privileges for BPF attachment, module loading, and kernel log access.
 - The usual repository build dependencies, plus OpenSSL development headers and
-  `libcrypto` for independent SHA-256 calculations, and pthreads for stress tests.
-- Bash, GNU `timeout`, `dmesg`, `readelf`, and `mktemp`; `insmod` and `rmmod` when
+  `libcrypto` for independent SHA-256 calculations, libyaml for exercising the
+  management tool's production unload code, and pthreads for stress tests.
+- Bash, GNU `timeout`, `dmesg`, `readelf`, `stat`, and `mktemp`; `insmod` and `rmmod` when
   the runner loads the module.
 
-On Fedora, install the extra OpenSSL test dependency with
-`sudo dnf install openssl-devel`. The `modules kernel-tests` build does not build
-the YAML-based management tool or require Go.
+On Fedora, install the extra test dependencies with
+`sudo dnf install openssl-devel libyaml-devel`. The `modules kernel-tests` build
+does not require Go or build the management tool executable. The unload fixture
+compiles its production cleanup implementation directly into the test.
 
 A successful module compilation that prints
 `Skipping BTF generation ... due to unavailability of vmlinux` is insufficient.
@@ -92,6 +95,7 @@ complete replay log.
 | Area | Checks |
 | --- | --- |
 | Module lifecycle | BTF and SecurityFS publication on load; removal on unload when the runner owns the module |
+| Pinned references | Pin an LSM link, kfunc-calling program, and map; close the original handles; verify that production unload removes pins and releases the program with missing, stale, and invalid PID files; check idempotence, persistence override, and cleanup failure reporting |
 | Loaded ABI | All 17 exported kfunc signatures, verifier size annotations, policy size and field offsets |
 | Kfunc registration | Load-only kprobe, tracepoint, and raw tracepoint callers plus the attached LSM tests verify that both kfunc registration slots remain available; duplicate-registration kernel warnings fail the run |
 | Verifier boundaries | Ten undersized input/output-buffer programs must fail to load for a memory-access reason |
@@ -147,6 +151,7 @@ It contains:
 
 - `security-regression.log`: verifier diagnostics and LSM checks.
 - `module-interactions.log`: successful-operation and optional concurrency checks.
+- `pinned-unload.log`: retained BPF reference and production unload checks.
 - `dmesg-before.log` and `dmesg-run.log`: kernel diagnostics.
 - `kernel-errors.log`: matched warning/error reports, if any.
 - `kernel-warning-context.log`: matching reports with surrounding kernel-log lines, also printed on failure; `dmesg-run.log` retains the complete backtrace if it exceeds that excerpt.
@@ -176,14 +181,42 @@ need to preserve.
 
 ## Direct execution for debugging
 
-After loading the updated module, either executable can be run separately:
+After loading the updated module, each executable can be run separately:
 
 ```bash
 sudo ./build/security-regression build/security-regression.bpf.o build
 sudo ./build/module-interactions build/module-interactions.bpf.o \
     /sys/kernel/security/bpfima
+sudo ./build/pinned-unload build/module-interactions.bpf.o
 ```
 
 The wrapper is the recommended entry point because it adds prerequisite checks,
 timeouts, kernel log collection, temporary-file cleanup after forced termination,
 and optional module lifecycle checks.
+
+## A module that remains in use
+
+Pinned BPF programs calling module kfuncs can retain module references after the
+loader exits. The management tool's explicit `unload` removes retained links and
+maps even when its PID file is missing or stale. Rebuild the tool, stop any
+supervisor that would immediately restart it, then release the pins before
+removing the module:
+
+```bash
+make build/bpfima-tool
+sudo ./build/bpfima-tool unload
+for attempt in {1..10}; do
+    sudo rmmod bpfima && break
+    sleep 1
+done
+```
+
+If it remains busy, inspect `sudo bpftool prog show` and
+`sudo bpftool link show` for another program or process retaining a reference.
+The module reference count alone does not identify its holder. Forced module
+removal does not release the BPF references safely.
+
+The pin test uses private directories and leaves production pins untouched. A
+filesystem-only smoke check of the same cleanup code is available without root
+or a loaded module: `./build/pinned-unload --filesystem`. It cannot verify BPF
+program lifetime or module reference release.

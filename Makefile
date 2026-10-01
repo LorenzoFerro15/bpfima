@@ -106,6 +106,9 @@ $(BUILD_DIR)/module-interactions.bpf.o: tests/kernel/module_interactions.bpf.c t
 $(BUILD_DIR)/module-interactions: tests/kernel/module_interactions.c tests/kernel/module_interactions.h tests/kernel/check_kfunc_abi.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Wextra -Werror -pthread $< -o $@ -lbpf -lelf -lz -lcrypto
 
-kernel-tests: security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o
+$(BUILD_DIR)/pinned-unload: tests/kernel/pinned_unload.c tools/bpfima_tool.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h include/bpfima_policy_defaults.h include/bpfima_kfunc_types.h include/bpfima_event.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Werror -I. $< tools/yaml_parser.c -o $@ $(LIBS)
+
+kernel-tests: security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o $(BUILD_DIR)/pinned-unload
 
 .PHONY: all modules clean bpf-only test-security security-regression kernel-tests

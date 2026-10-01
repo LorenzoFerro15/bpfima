@@ -37,9 +37,17 @@ static int g_link_count = 0;
 #define PATH_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_path_patterns_map"
 #define HOOK_CONFIG_MAP_PATH "/sys/fs/bpf/bpfima_hook_config_map"
 
+#ifndef BPF_MAP_DIR
+#define BPF_MAP_DIR "/sys/fs/bpf"
+#endif
+#ifndef BPF_PIN_DIR
+#define BPF_PIN_DIR "/sys/fs/bpf/bpfima"
+#endif
 
 /* PID file for daemon tracking */
+#ifndef PID_FILE
 #define PID_FILE "/var/run/bpfima.pid"
+#endif
 
 /**
  * @brief Signal handler for graceful shutdown
@@ -144,7 +152,7 @@ static int read_pid_file(void)
         return -1;
 
     int pid = -1;
-    if (fscanf(fp, "%d", &pid) != 1)
+    if (fscanf(fp, "%d", &pid) != 1 || pid <= 1)
         pid = -1;
 
     fclose(fp);
@@ -451,12 +459,85 @@ static void unpin_links_from_loaded_objects(void)
         bpf_object__for_each_program(prog, g_objs[i]) {
             const char *prog_name = bpf_program__name(prog);
             char pin_path[256];
-            snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/bpfima/%s", prog_name);
+            snprintf(pin_path, sizeof(pin_path), "%s/%s", BPF_PIN_DIR, prog_name);
             if (access(pin_path, F_OK) == 0) {
                 unlink(pin_path);
             }
         }
     }
+}
+
+static int remove_pin(const char *path)
+{
+    if (unlink(path) == 0 || errno == ENOENT)
+        return 0;
+    fprintf(stderr, "Failed to remove %s: %s\n", path, strerror(errno));
+    return 1;
+}
+
+static int cleanup_pinned_links(void)
+{
+    int fd = open(BPF_PIN_DIR, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    int ret = 0;
+    DIR *dir;
+    struct dirent *entry;
+
+    if (fd < 0) {
+        if (errno == ENOENT)
+            return 0;
+        fprintf(stderr, "Failed to open %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        return 1;
+    }
+    dir = fdopendir(fd);
+    if (!dir) {
+        fprintf(stderr, "Failed to read %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        close(fd);
+        return 1;
+    }
+    errno = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        if (unlinkat(fd, entry->d_name, 0) && errno != ENOENT) {
+            fprintf(stderr, "Failed to unpin %s/%s: %s\n", BPF_PIN_DIR,
+                    entry->d_name, strerror(errno));
+            ret = 1;
+        }
+        errno = 0;
+    }
+    if (errno) {
+        fprintf(stderr, "Failed to read %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        ret = 1;
+    }
+    if (closedir(dir)) {
+        fprintf(stderr, "Failed to close %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        ret = 1;
+    }
+    if (rmdir(BPF_PIN_DIR) && errno != ENOENT) {
+        fprintf(stderr, "Failed to remove %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        ret = 1;
+    }
+    return ret;
+}
+
+static int cleanup_pinned_maps(void)
+{
+    const char *names[] = {"bpfima_policy_map", "bpfima_cgroup_patterns_map",
+                           "bpfima_path_patterns_map", "bpfima_hook_config_map",
+                           "bpf_timing_stats", "bpf_timing_stats_bprm",
+                           "bpf_timing_stats_socket", "bpf_timing_stats_count", "scratch_buf_map"};
+    int ret = 0;
+
+    for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char path[512];
+        int written = snprintf(path, sizeof(path), "%s/%s", BPF_MAP_DIR, names[i]);
+        if (written < 0 || (size_t)written >= sizeof(path)) {
+            ret = 1;
+            continue;
+        }
+        ret |= remove_pin(path);
+    }
+    return ret;
 }
 
 /**
@@ -579,7 +660,7 @@ static int load_and_attach_one_object(const char *filename)
     bpf_object__for_each_program(prog, obj) {
         const char *prog_name = bpf_program__name(prog);
         char pin_path[256];
-        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/bpfima/%s", prog_name);
+        snprintf(pin_path, sizeof(pin_path), "%s/%s", BPF_PIN_DIR, prog_name);
 
         // If the program was already pinned try to atomically substitute it with the new version
         if (access(pin_path, F_OK) == 0) {
@@ -651,9 +732,9 @@ static int ensure_single_instance(void) {
 
 static int load_all_bpf_objects(const char **filenames, int file_count) {
     // Directory to which pin the eBPF programs
-    if (mkdir("/sys/fs/bpf/bpfima", 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "Warning: Failed to create /sys/fs/bpf/bpfima: %s\n", strerror(errno));
-        return 1;
+    if (mkdir(BPF_PIN_DIR, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "Warning: Failed to create %s: %s\n", BPF_PIN_DIR, strerror(errno));
+        return -1;
     }
 
     for (int i = 0; i < file_count; i++) {
@@ -719,30 +800,19 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
     }
 
 cleanup:
-    if (err || !daemon_mode) {
+    {
         // The env variable is set in the manifest of the bpfima_tool container
         // to indicate that we are in a k8s environment
         bool persist_state = (getenv("BPFIMA_PERSIST_STATE") != NULL);
 
         if (persist_state && !err) {
             printf("Persisting pinned BPF links for atomic reload...\n");
-
-            // In k8s, BPFIMA objects must stay pinned to have continous attesation
-            // So close the user-space objects to prevent memory leaks in case of restart.
-            for (int i = 0; i < g_obj_count; i++) {
-                if (g_objs[i]) {
-                    bpf_object__close(g_objs[i]);
-                    g_objs[i] = NULL;
-                }
-            }
-            g_obj_count = 0;
-            g_link_count = 0;
         }
         else {
             unpin_maps_from_loaded_objects();
             unpin_links_from_loaded_objects();
-            destroy_runtime_state();
         }
+        destroy_runtime_state();
         remove_pid_file();
     }
 
@@ -755,61 +825,56 @@ cleanup:
 static int cmd_unload(void)
 {
     int pid = read_pid_file();
+    int ret = 0;
 
-    if (pid < 0)
+    if (pid < 0 || !is_process_running(pid))
     {
-        fprintf(stderr, "No running BPF IMA process found\n");
-        return 1;
+        printf("No running BPF IMA daemon; cleaning up retained pins\n");
     }
-
-    if (!is_process_running(pid))
+    else
     {
-        fprintf(stderr, "Stale PID file found (process %d not running)\n", pid);
-        remove_pid_file();
-        return 1;
+        printf("Stopping BPF IMA (PID: %d)...\n", pid);
+
+        if (kill(pid, SIGTERM) < 0 && errno != ESRCH)
+        {
+            fprintf(stderr, "Failed to send signal: %s\n", strerror(errno));
+            return 1;
+        }
+
+        int attempts = 0;
+        while (is_process_running(pid) && attempts < 10)
+        {
+            usleep(100000);
+            attempts++;
+        }
+
+        if (is_process_running(pid))
+        {
+            fprintf(stderr, "Process did not exit gracefully, forcing...\n");
+            if (kill(pid, SIGKILL) < 0 && errno != ESRCH) {
+                fprintf(stderr, "Failed to stop process %d: %s\n", pid, strerror(errno));
+                return 1;
+            }
+            for (int i = 0; i < 30 && is_process_running(pid); i++)
+                usleep(100000);
+            if (is_process_running(pid)) {
+                fprintf(stderr, "Process %d still holds BPF handles\n", pid);
+                return 1;
+            }
+        }
+        // Final dump of securityfs data before cleanup
+        printf("Performing final securityfs dump...\n");
+        dump_securityfs_to_files();
     }
-
-    printf("Stopping BPF IMA (PID: %d)...\n", pid);
-
-    if (kill(pid, SIGTERM) < 0)
-    {
-        fprintf(stderr, "Failed to send signal: %s\n", strerror(errno));
-        return 1;
-    }
-
-    int attempts = 0;
-    while (is_process_running(pid) && attempts < 10)
-    {
-        usleep(100000);
-        attempts++;
-    }
-
-    if (is_process_running(pid))
-    {
-        fprintf(stderr, "Process did not exit gracefully, forcing...\n");
-        kill(pid, SIGKILL);
-        sleep(1);
-    }
-
-    remove_pid_file();
-    // Final dump of securityfs data before cleanup
-    printf("Performing final securityfs dump...\n");
-    dump_securityfs_to_files();
-
 
     printf("Cleaning up pinned maps and links...\n");
-    unlink(POLICY_MAP_PATH);
-    unlink(CGROUP_PATTERNS_MAP_PATH);
-    unlink(PATH_PATTERNS_MAP_PATH);
-    unlink(HOOK_CONFIG_MAP_PATH);
-    unlink("/sys/fs/bpf/bpf_timing_stats_bprm");
-    unlink("/sys/fs/bpf/bpf_timing_stats_socket");
-    unlink("/sys/fs/bpf/bpf_timing_stats_count");
+    ret |= cleanup_pinned_links();
+    ret |= cleanup_pinned_maps();
+    ret |= remove_pin(PID_FILE);
 
-    system("rm -rf /sys/fs/bpf/bpfima");
-
-    printf("  BPF IMA unloaded successfully\n");
-    return 0;
+    if (!ret)
+        printf("  BPF IMA unloaded successfully\n");
+    return ret;
 }
 
 /**

@@ -121,8 +121,9 @@ sudo ./scripts/test_kernel.sh --load-module --stress
 ```
 
 The suite checks kfunc contracts, measurements and hashes, namespace policy,
-SecurityFS, TPM reads/extensions, all five hooks' denial propagation, and kernel
-diagnostics. It unloads the module only if it loaded it. Tests can extend TPM PCRs;
+SecurityFS, TPM reads/extensions, all five hooks' denial propagation, retained
+BPF pins and their cleanup, and kernel diagnostics. It unloads the module only
+if it loaded it. Tests can extend TPM PCRs;
 use a disposable test system. See [Kernel integration tests](docs/KERNEL_TESTS.md)
 for requirements, coverage, cleanup behavior, and report locations.
 

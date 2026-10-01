@@ -96,6 +96,20 @@ log_err() {
     echo "[ERR] $1"
 }
 
+unload_test_module() {
+    for attempt in {1..10}; do
+        if ! lsmod | grep -q "^bpfima "; then
+            return 0
+        fi
+        if rmmod bpfima 2>/dev/null; then
+            return 0
+        fi
+        # BPF program destruction can finish after an RCU grace period.
+        sleep 1
+    done
+    return 1
+}
+
 # Cleanup function
 cleanup() {
     log_info "Cleanup started"
@@ -136,21 +150,19 @@ cleanup() {
         done
     fi
     
-    # Clean up pinned BPF maps
-    log_verbose "Cleaning up pinned BPF maps"
-    rm -f /sys/fs/bpf/bpfima_policy_map 2>/dev/null || true
-    rm -f /sys/fs/bpf/bpfima_hook_config_map 2>/dev/null || true
-    rm -f /sys/fs/bpf/bpfima_cgroup_patterns_map 2>/dev/null || true
-    rm -f /sys/fs/bpf/bpfima_path_patterns_map 2>/dev/null || true
+    log_verbose "Cleaning up pinned BPF maps and links"
+    if [ -x "$BUILD_DIR/bpfima-tool" ] && ! "$BUILD_DIR/bpfima-tool" unload; then
+        log_warn "BPF pin cleanup failed; check the errors above"
+    fi
     
     # Try to remove module
     if lsmod | grep -q "^bpfima "; then
         log_info "Removing kernel module"
-        if rmmod bpfima 2>/dev/null; then
+        if unload_test_module; then
             log_info "Kernel module removed"
         else
             log_warn "Could not remove module (may require manual cleanup)"
-            log_warn "Try: sudo rmmod -f bpfima"
+            log_warn "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
         fi
     fi
     
@@ -182,18 +194,13 @@ log_info "Build successful"
 log_info "Loading kernel module..."
 if lsmod | grep -q "^bpfima "; then
     log_info "Module already loaded, removing..."
-    pkill -9 -f "$BUILD_DIR/bpfima-tool" 2>/dev/null || true
-    
-    if ! wait_for_module_unload bpfima 2; then
-        if ! rmmod -f bpfima 2>/dev/null; then
-            log_err "Cannot remove existing module - it may be in use"
-            log_err "Please run: sudo pkill -9 bpfima-tool && sudo rmmod -f bpfima"
-            exit 1
-        fi
+    if ! "$BUILD_DIR/bpfima-tool" unload; then
+        log_err "Cannot clean up existing BPF pins"
+        exit 1
     fi
-    
-    if ! wait_for_module_unload bpfima 5; then
-        log_err "Module did not unload in time"
+    if ! unload_test_module; then
+        log_err "Cannot remove existing module - a BPF program or open handle may still reference it"
+        log_err "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
         exit 1
     fi
 fi
