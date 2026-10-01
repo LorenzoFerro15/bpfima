@@ -32,7 +32,7 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
         .event_name = event_name,
         .namespace_id = cgroup_name[0] ? cgroup_name : NULL,
         .additional_data = attrs,
-        .additional_data_len = sizeof(attrs),
+        .additional_data_len = attr_len,
     };
     int ret = bpfima_submit_measurement(&measurement);
     return ret < 0 ? -1 : 0;

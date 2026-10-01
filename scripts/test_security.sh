@@ -6,14 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
-make test-security
 
 case "${1:-}" in
-    "") ;;
+    "") make test-security ;;
     --kernel)
-        make security-regression
-        exec "$PROJECT_ROOT/build/security-regression" \
-            "$PROJECT_ROOT/build/security-regression.bpf.o" "$PROJECT_ROOT/build"
+        shift
+        exec "$SCRIPT_DIR/test_kernel.sh" "$@"
         ;;
     *)
         echo "Usage: $0 [--kernel]" >&2

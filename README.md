@@ -97,16 +97,23 @@ Run the bounded-input tests with AddressSanitizer and UndefinedBehaviorSanitizer
 make test-security CC=clang
 ```
 
-On a host with BPF LSM and the updated bpfima module loaded with BTF, run the
-verifier rejection and LSM denial propagation tests:
+For the kernel module integration suite, build the test fixtures and run on an
+isolated host with BPF LSM and module BTF:
 
 ```bash
-sudo ./scripts/test_security.sh --kernel
+make modules kernel-tests
+./scripts/test_kernel.sh --check --load-module
+sudo ./scripts/test_kernel.sh --load-module
+
+# Also exercise concurrent creation, measurements, and deduplication
+sudo ./scripts/test_kernel.sh --load-module --stress
 ```
 
-The kernel tests attach temporary programs scoped to the test process, check all
-five production hooks, and detach their programs on exit. They use private maps
-and temporary files rather than the installed policy maps.
+The suite checks kfunc contracts, measurements and hashes, namespace policy,
+SecurityFS, TPM reads/extensions, all five hooks' denial propagation, and kernel
+diagnostics. It unloads the module only if it loaded it. Tests can extend TPM PCRs;
+use a disposable test system. See [Kernel integration tests](docs/KERNEL_TESTS.md)
+for requirements, coverage, cleanup behavior, and report locations.
 
 ### Kfunc interface
 

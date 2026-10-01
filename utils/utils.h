@@ -327,20 +327,48 @@ static __attribute__((noinline, unused)) int bytes_to_hex_str(const u8 *bytes, i
 static __attribute__((noinline, unused)) void append_attr(char *buf, int buf_max,
                                                 int *off, const char *fmt, __u64 val)
 {
-    if (!buf || !off || *off >= buf_max)
+    if (!buf || !off)
         return;
 
+    int offset = *off;
+    if (offset < 0 || offset >= buf_max) {
+        *off = -1;
+        return;
+    }
+
+    int remaining = buf_max - offset;
+    char formatted[64] = {0};
     __u64 args[1];
     args[0] = val;
 
-    int n = bpf_snprintf(buf + *off,
-                         buf_max - *off,
+    /* Keep helper writes at a fixed stack address with a constant size. */
+    long n = bpf_snprintf(formatted,
+                         sizeof(formatted),
                          fmt,
                          args,
                          sizeof(args));
 
-    if (n > 0)
-        *off += n;
+    /* bpf_snprintf includes the NUL and reports the required size on truncation. */
+    if (n <= 0 || n > sizeof(formatted) || n > remaining) {
+        *off = -1;
+        return;
+    }
+
+    /* Check each destination index: the verifier does not retain offset/size correlations. */
+    #pragma clang loop unroll(disable)
+    for (int i = 0; i < sizeof(formatted); i++) {
+        if (i >= n)
+            break;
+        int position = offset + i;
+        /* Preserve this range check and the combined index in BPF code. */
+        barrier_var(position);
+        if (position < 0 || position >= buf_max) {
+            *off = -1;
+            return;
+        }
+        buf[position] = formatted[i];
+    }
+    *off = offset + n - 1;
 }
 
 static __attribute__((noinline, unused)) int build_attributes(char *attrs, int attrs_max, struct iattr *attr)
@@ -351,16 +379,16 @@ static __attribute__((noinline, unused)) int build_attributes(char *attrs, int a
         return 0;
 
     if (attr->ia_valid & ATTR_MODE)
-        append_attr(attrs, 64, &off, "mode=%llu,", (__u64)attr->ia_mode);
+        append_attr(attrs, attrs_max, &off, "mode=%llu,", (__u64)attr->ia_mode);
 
     if (attr->ia_valid & ATTR_UID)
-        append_attr(attrs, 64, &off, "uid=%llu,", (__u64)attr->ia_uid.val);
+        append_attr(attrs, attrs_max, &off, "uid=%llu,", (__u64)attr->ia_uid.val);
 
     if (attr->ia_valid & ATTR_GID)
-        append_attr(attrs, 64, &off, "gid=%llu,", (__u64)attr->ia_gid.val);
+        append_attr(attrs, attrs_max, &off, "gid=%llu,", (__u64)attr->ia_gid.val);
 
     if (attr->ia_valid & ATTR_SIZE)
-        append_attr(attrs, 64, &off, "size=%llu,", (__u64)attr->ia_size);
+        append_attr(attrs, attrs_max, &off, "size=%llu,", (__u64)attr->ia_size);
 
     if (attr->ia_valid & ATTR_KILL_PRIV)
         append_attr(attrs, attrs_max, &off, "kill_priv=1,", 0);
@@ -371,12 +399,14 @@ static __attribute__((noinline, unused)) int build_attributes(char *attrs, int a
     if (attr->ia_valid & ATTR_KILL_SGID)
         append_attr(attrs, attrs_max, &off, "kill_sgid=1,", 0);
 
-    if (off > 0 && off < attrs_max) {
+    if (off < 0 || off >= attrs_max)
+        return -1;
+
+    if (off > 0) {
         if (attrs[off - 1] == ',')
-            attrs[off - 1] = '\0';
-    } else if (off >= 0 && off < attrs_max) {
-        attrs[off] = '\0';
+            off--;
     }
+    attrs[off] = '\0';
 
     return off;
 }

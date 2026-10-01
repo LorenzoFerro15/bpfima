@@ -1,4 +1,5 @@
 #include "../../utils/headers_bpf.h"
+#include "../../utils/utils.h"
 
 #define EACCES_VALUE 13
 #define EINVAL_VALUE 22
@@ -9,6 +10,9 @@ struct security_test_state
     __u32 calls;
     __u32 failures;
     struct bpfima_measurement_request request;
+    __u32 attribute_case;
+    __s32 attribute_length;
+    char attributes[64];
 };
 
 struct
@@ -34,6 +38,93 @@ static __always_inline int deny_target(int previous_ret)
     if (previous_ret != 0)
         return previous_ret;
     return test_state() ? -EACCES_VALUE : 0;
+}
+
+/* Load-only checks: verify registration without attaching system-wide probes. */
+SEC("kprobe/bpfima_registration_probe")
+int check_registration_kprobe(void *ctx)
+{
+    return bpfima_container_get_count();
+}
+
+SEC("tracepoint/syscalls/sys_enter_openat")
+int check_registration_tracepoint(void *ctx)
+{
+    return bpfima_container_get_count();
+}
+
+SEC("raw_tp/sys_enter")
+int check_registration_raw_tracepoint(void *ctx)
+{
+    return bpfima_container_get_count();
+}
+
+SEC("lsm.s/file_open")
+int BPF_PROG(check_attributes, struct file *file, int previous_ret)
+{
+    struct security_test_state *state = test_state();
+    struct {
+        __u64 before;
+        char data[64];
+        __u64 after;
+    } buffer = {.before = 0x12345678, .after = 0x87654321};
+    struct iattr attr = {0};
+    int length = 0;
+
+    if (previous_ret || !state)
+        return previous_ret;
+
+    __u32 attribute_case = state->attribute_case;
+    state->calls++;
+    switch (attribute_case)
+    {
+    case 0:
+        break;
+    case 1:
+        attr.ia_valid = ATTR_MODE | ATTR_UID | ATTR_GID | ATTR_SIZE;
+        attr.ia_mode = 0600;
+        attr.ia_uid.val = 1000;
+        attr.ia_gid.val = 1001;
+        attr.ia_size = 4096;
+        break;
+    case 2:
+        attr.ia_valid = ATTR_MODE | ATTR_UID | ATTR_GID | ATTR_SIZE |
+                        ATTR_KILL_PRIV | ATTR_KILL_SUID | ATTR_KILL_SGID;
+        attr.ia_mode = 65535;
+        attr.ia_uid.val = 0xffffffff;
+        attr.ia_gid.val = 0xffffffff;
+        attr.ia_size = 0x7fffffffffffffffLL;
+        break;
+    case 3:
+        length = (-2147483647 - 1);
+        break;
+    case 4:
+        length = sizeof(buffer.data);
+        break;
+    case 5:
+        length = sizeof(buffer.data) - sizeof("mode=7,");
+        break;
+    case 6:
+        length = sizeof(buffer.data) - sizeof("mode=7,") + 1;
+        break;
+    case 7:
+        attr.ia_valid = ATTR_KILL_PRIV | ATTR_KILL_SUID | ATTR_KILL_SGID;
+        break;
+    default:
+        state->failures++;
+        return 0;
+    }
+
+    if (attribute_case <= 2 || attribute_case == 7)
+        length = build_attributes(buffer.data, sizeof(buffer.data), &attr);
+    else
+        append_attr(buffer.data, sizeof(buffer.data), &length, "mode=%llu,", 7);
+
+    state->attribute_length = length;
+    __builtin_memcpy(state->attributes, buffer.data, sizeof(buffer.data));
+    if (buffer.before != 0x12345678 || buffer.after != 0x87654321)
+        state->failures++;
+    return 0;
 }
 
 SEC("lsm.s/bprm_check_security")

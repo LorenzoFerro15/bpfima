@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include <bpf/libbpf.h>
 
 #include "bpfima_kfunc_types.h"
+#include "../kernel/check_kfunc_abi.h"
 
 struct security_test_state
 {
@@ -22,9 +24,18 @@ struct security_test_state
     __u32 calls;
     __u32 failures;
     struct bpfima_measurement_request request;
+    __u32 attribute_case;
+    __s32 attribute_length;
+    char attributes[64];
 };
 
 static char verifier_log[1024 * 1024];
+static volatile sig_atomic_t interrupted;
+
+static void handle_signal(int signal_number)
+{
+    interrupted = signal_number;
+}
 
 static struct bpf_object *load_program(const char *path, const char *name)
 {
@@ -38,7 +49,7 @@ static struct bpf_object *load_program(const char *path, const char *name)
 
     verifier_log[0] = '\0';
     obj = bpf_object__open_file(path, &opts);
-    if (libbpf_get_error(obj))
+    if (!obj || libbpf_get_error(obj))
         return NULL;
 
     bpf_object__for_each_map(map, obj)
@@ -58,6 +69,97 @@ static int write_state(int fd, const struct security_test_state *state)
 {
     __u32 key = 0;
     return bpf_map_update_elem(fd, &key, state, BPF_ANY);
+}
+
+static struct bpf_object *load_rejected_program(const char *path, const char *name)
+{
+    libbpf_print_fn_t previous = libbpf_set_print(NULL);
+    struct bpf_object *obj = load_program(path, name);
+
+    libbpf_set_print(previous);
+    return obj;
+}
+
+static int test_attributes(const char *fixture, const char *file_path)
+{
+    const char *names[] = {"empty", "combined", "truncated", "negative offset",
+                           "full buffer", "exact fit", "one-byte overflow", "privilege flags"};
+    const int lengths[] = {0, sizeof("mode=384,uid=1000,gid=1001,size=4096") - 1,
+                            -1, -1, -1, 63, -1,
+                            sizeof("kill_priv=1,kill_suid=1,kill_sgid=1") - 1};
+    struct bpf_object *obj = load_program(fixture, "check_attributes");
+    struct bpf_link *link;
+    __u32 key = 0;
+    int ret = 1;
+
+    if (!obj)
+    {
+        fprintf(stderr, "Unable to load the attribute formatter test:\n%s\n", verifier_log);
+        return 1;
+    }
+    int map_fd = bpf_object__find_map_fd_by_name(obj, "security_test_map");
+    link = bpf_program__attach(bpf_object__find_program_by_name(obj, "check_attributes"));
+    if (!link || libbpf_get_error(link))
+        goto cleanup_object;
+
+    for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    {
+        struct security_test_state state = {.target_pid = getpid(), .attribute_case = i};
+        char expected[64] = {0};
+
+        if (interrupted || write_state(map_fd, &state))
+            goto cleanup_link;
+        int fd = open(file_path, O_RDONLY);
+        if (fd < 0)
+            goto cleanup_link;
+        close(fd);
+        if (i == 1)
+            strcpy(expected, "mode=384,uid=1000,gid=1001,size=4096");
+        else if (i == 2)
+            strcpy(expected, "mode=65535,uid=4294967295,gid=4294967295,");
+        else if (i == 5)
+            strcpy(expected + 56, "mode=7,");
+        else if (i == 7)
+            strcpy(expected, "kill_priv=1,kill_suid=1,kill_sgid=1");
+        if (bpf_map_lookup_elem(map_fd, &key, &state) || !state.calls || state.failures ||
+            state.attribute_length != lengths[i] ||
+            memcmp(state.attributes, expected, sizeof(expected)))
+        {
+            fprintf(stderr, "FAIL: attribute formatter %s case\n", names[i]);
+            goto cleanup_link;
+        }
+        printf("PASS: attribute formatter %s case\n", names[i]);
+    }
+    ret = 0;
+
+cleanup_link:
+    bpf_link__destroy(link);
+cleanup_object:
+    bpf_object__close(obj);
+    return ret;
+}
+
+static int test_registration(const char *fixture)
+{
+    const char *programs[] = {"check_registration_kprobe", "check_registration_tracepoint",
+                              "check_registration_raw_tracepoint"};
+    int failed = 0;
+
+    for (unsigned int i = 0; i < sizeof(programs) / sizeof(programs[0]); i++)
+    {
+        if (interrupted)
+            return 1;
+        struct bpf_object *obj = load_program(fixture, programs[i]);
+        if (!obj)
+        {
+            fprintf(stderr, "FAIL: %s cannot call module kfuncs:\n%s\n", programs[i], verifier_log);
+            failed = 1;
+            continue;
+        }
+        printf("PASS: %s can call module kfuncs\n", programs[i]);
+        bpf_object__close(obj);
+    }
+    return failed;
 }
 
 static int test_buffers(const char *fixture, const char *file_path)
@@ -81,11 +183,13 @@ static int test_buffers(const char *fixture, const char *file_path)
     }
     map_fd = bpf_object__find_map_fd_by_name(obj, "security_test_map");
     link = bpf_program__attach(bpf_object__find_program_by_name(obj, "check_buffers"));
-    if (libbpf_get_error(link))
+    if (!link || libbpf_get_error(link))
         goto cleanup_object;
 
     for (unsigned int i = 0; i < 8; i++)
     {
+        if (interrupted)
+            goto cleanup_link;
         memset(&state, 0, sizeof(state));
         state.target_pid = getpid();
         strcpy(state.request.event_name, "test");
@@ -126,7 +230,9 @@ cleanup_object:
 
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++)
     {
-        obj = load_program(fixture, rejected[i]);
+        if (interrupted)
+            return 1;
+        obj = load_rejected_program(fixture, rejected[i]);
         if (obj)
         {
             fprintf(stderr, "FAIL: verifier accepted %s\n", rejected[i]);
@@ -145,7 +251,7 @@ cleanup_object:
         printf("PASS: verifier rejects %s\n", rejected[i]);
     }
 
-    obj = load_program(fixture, "reject_nonsleepable");
+    obj = load_rejected_program(fixture, "reject_nonsleepable");
     if (obj)
     {
         fprintf(stderr, "FAIL: verifier accepted a sleepable kfunc in an atomic program\n");
@@ -183,9 +289,14 @@ static int trigger_hook(unsigned int hook, const char *path, int file_fd,
             if (write_state(map_fd, &state))
                 _exit(2);
             execve(args[0], args, env);
-            _exit(expect_denial && errno == EACCES ? 0 : 1);
+            _exit(expect_denial && errno == EACCES ? 0 : 2);
         }
-        if (waitpid(child, &status, 0) != child)
+        pid_t waited;
+        do
+        {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited != child)
             return 1;
         return !WIFEXITED(status) || WEXITSTATUS(status) != (expect_denial ? 0 : 1);
     }
@@ -239,9 +350,12 @@ static int test_denials(const char *fixture, const char *build_dir,
     const char *deny_names[] = {"deny_bprm", "deny_post_open", "deny_setattr", "deny_mmap", "deny_connect"};
     const char *objects[] = {"lsm_bprm_check_security", "lsm_file_post_open", "lsm_inode_setattr",
                             "lsm_mmap_file", "lsm_socket_connect"};
+    int failed = 0;
 
     for (unsigned int i = 0; i < sizeof(objects) / sizeof(objects[0]); i++)
     {
+        if (interrupted)
+            return 1;
         struct bpf_object *gate = load_program(fixture, deny_names[i]);
         struct bpf_object *production = NULL;
         struct bpf_link *gate_link = NULL;
@@ -254,7 +368,8 @@ static int test_denials(const char *fixture, const char *build_dir,
         if (!gate)
         {
             fprintf(stderr, "Unable to load %s:\n%s\n", deny_names[i], verifier_log);
-            return 1;
+            failed = 1;
+            continue;
         }
         map_fd = bpf_object__find_map_fd_by_name(gate, "security_test_map");
         if (trigger_hook(i, path, file_fd, address, map_fd, false))
@@ -265,7 +380,7 @@ static int test_denials(const char *fixture, const char *build_dir,
         if (write_state(map_fd, &state))
             goto cleanup;
         gate_link = bpf_program__attach(bpf_object__find_program_by_name(gate, deny_names[i]));
-        if (libbpf_get_error(gate_link))
+        if (!gate_link || libbpf_get_error(gate_link))
         {
             gate_link = NULL;
             goto cleanup;
@@ -285,7 +400,7 @@ static int test_denials(const char *fixture, const char *build_dir,
             goto cleanup;
         }
         production_link = bpf_program__attach(bpf_object__next_program(production, NULL));
-        if (libbpf_get_error(production_link))
+        if (!production_link || libbpf_get_error(production_link))
         {
             production_link = NULL;
             goto cleanup;
@@ -304,29 +419,49 @@ cleanup:
         bpf_object__close(production);
         bpf_object__close(gate);
         if (ret)
-            return ret;
+            failed = 1;
     }
-    return 0;
+    return failed;
 }
 
 int main(int argc, char **argv)
 {
-    char directory[] = "/tmp/bpfima-security-XXXXXX";
+    char directory[PATH_MAX];
     char file_path[PATH_MAX];
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     int file_fd = -1;
     int listener = -1;
     int ret = 1;
+    const char *temporary_root = getenv("TMPDIR");
+    struct sigaction action = {.sa_handler = handle_signal};
 
+    setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc != 3 || geteuid() != 0 || access("/sys/kernel/btf/bpfima", R_OK))
     {
         fprintf(stderr, "Requires root and an already loaded bpfima module with BTF.\n");
         return 1;
     }
-    if (!mkdtemp(directory))
+    if (bpfima_test_check_kfunc_abi())
         return 1;
-    snprintf(file_path, sizeof(file_path), "%s/file", directory);
-    snprintf(address.sun_path, sizeof(address.sun_path), "%s/socket", directory);
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGINT, &action, NULL);
+    sigaction(SIGTERM, &action, NULL);
+    int written = snprintf(directory, sizeof(directory), "%s/bpfima-security-XXXXXX",
+                           temporary_root ? temporary_root : "/tmp");
+    if (written < 0 || (size_t)written >= sizeof(directory) || !mkdtemp(directory))
+        return 1;
+    written = snprintf(file_path, sizeof(file_path), "%s/file", directory);
+    if (written < 0 || (size_t)written >= sizeof(file_path))
+    {
+        rmdir(directory);
+        return 1;
+    }
+    written = snprintf(address.sun_path, sizeof(address.sun_path), "%s/socket", directory);
+    if (written < 0 || (size_t)written >= sizeof(address.sun_path))
+    {
+        rmdir(directory);
+        return 1;
+    }
     file_fd = open(file_path, O_CREAT | O_RDWR, 0600);
     if (file_fd < 0 || ftruncate(file_fd, 8192))
         goto cleanup;
@@ -335,9 +470,15 @@ int main(int argc, char **argv)
         listen(listener, 16))
         goto cleanup;
 
-    ret = test_buffers(argv[1], file_path);
-    if (!ret)
-        ret = test_denials(argv[1], argv[2], file_path, file_fd, &address);
+    ret = test_registration(argv[1]);
+    if (!interrupted)
+        ret |= test_buffers(argv[1], file_path);
+    if (!interrupted)
+        ret |= test_attributes(argv[1], file_path);
+    if (!interrupted)
+        ret |= test_denials(argv[1], argv[2], file_path, file_fd, &address);
+    if (interrupted)
+        ret = 1;
 
 cleanup:
     if (listener >= 0)

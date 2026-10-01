@@ -1,0 +1,189 @@
+# Kernel module integration tests
+
+This suite exercises the loaded `bpfima` module through BPF kfuncs, the kernel
+BPF verifier, LSM attachment, SecurityFS, and the TPM interface. It does not run
+the Go verifier, YAML parser tests, or userspace-only buffer tests.
+
+## Build and run
+
+Run from the repository root on an isolated test host or VM:
+
+```bash
+make modules kernel-tests
+./scripts/test_kernel.sh --check --load-module
+sudo ./scripts/test_kernel.sh --load-module
+```
+
+`--load-module` loads `build/bpfima.ko` if it is absent and unloads it after the
+tests. If a module is already loaded, the runner checks its ABI, uses it, and
+leaves it loaded. It never replaces or forcibly unloads an existing module.
+
+To test an already loaded, updated module:
+
+```bash
+sudo ./scripts/test_kernel.sh
+```
+
+To include concurrency tests:
+
+```bash
+sudo ./scripts/test_kernel.sh --load-module --stress
+```
+
+The runner has a 300-second timeout for each test executable. For a slow TPM or
+an instrumented debug kernel, increase it and choose an explicit report folder:
+
+```bash
+sudo ./scripts/test_kernel.sh --load-module --stress \
+    --timeout 900 --output-dir build/kernel-test-report
+```
+
+`./scripts/test_security.sh --kernel` is a compatibility entry point for the same
+runner and accepts the same remaining options. Build with `make kernel-tests`
+first; the runner does not compile programs as root.
+
+## Host requirements
+
+- Kernel headers and a module built for the running kernel.
+- BPF LSM enabled in both the kernel configuration and the active LSM list at
+  `/sys/kernel/security/lsm`.
+- Kernel BTF at `/sys/kernel/btf/vmlinux` and module BTF at
+  `/sys/kernel/btf/bpfima` once the module is loaded.
+- SecurityFS mounted at `/sys/kernel/security`.
+- Root privileges for BPF attachment, module loading, and kernel log access.
+- The usual repository build dependencies, plus OpenSSL development headers and
+  `libcrypto` for independent SHA-256 calculations, and pthreads for stress tests.
+- Bash, GNU `timeout`, `dmesg`, `readelf`, and `mktemp`; `insmod` and `rmmod` when
+  the runner loads the module.
+
+On Fedora, install the extra OpenSSL test dependency with
+`sudo dnf install openssl-devel`. The `modules kernel-tests` build does not build
+the YAML-based management tool or require Go.
+
+A successful module compilation that prints
+`Skipping BTF generation ... due to unavailability of vmlinux` is insufficient.
+Install the debug information for the exact running kernel and provide its
+matching `vmlinux` in `/lib/modules/$(uname -r)/build/vmlinux`, then rebuild:
+
+```bash
+make modules
+./scripts/test_kernel.sh --check --load-module
+```
+
+The preflight rejects a module without a `.BTF` section. For an already loaded
+module, it also checks all exported kfunc parameter names/size annotations and
+the policy structure's size and field offsets before any test kfunc is called.
+Rebuilding a file on disk does not update a module that is already loaded.
+
+If SecurityFS is mounted elsewhere, pass the actual module directory:
+
+```bash
+sudo ./scripts/test_kernel.sh --securityfs-dir /path/to/securityfs/bpfima
+```
+
+Use a quiet host with other integrity-monitoring BPF programs stopped. Exact
+container counts and global root/history comparisons require the test run to
+be the only measurement producer. Use a fresh module with untrimmed history;
+the tests reject aggregated history records instead of treating them as a
+complete replay log.
+
+## Coverage
+
+| Area | Checks |
+| --- | --- |
+| Module lifecycle | BTF and SecurityFS publication on load; removal on unload when the runner owns the module |
+| Loaded ABI | All 17 exported kfunc signatures, verifier size annotations, policy size and field offsets |
+| Kfunc registration | Load-only kprobe, tracepoint, and raw tracepoint callers plus the attached LSM tests verify that both kfunc registration slots remain available; duplicate-registration kernel warnings fail the run |
+| Verifier boundaries | Ten undersized input/output-buffer programs must fail to load for a memory-access reason |
+| Sleepability | A non-sleepable program calling the measurement kfunc must fail to load |
+| Runtime validation | Malformed measurement requests, unterminated/empty identifiers, invalid namespace names, wrong output lengths, invalid filter strings |
+| Output writes | Guard bytes after root, leaf, policy hash, policy configuration, and PCR output buffers remain intact |
+| Namespace handling | Missing-namespace errors, successful creation, idempotent creation, initial zero leaf, unchanged root for empty containers |
+| Measurement flow | Payload-only, payload plus dependencies, dependencies-only, maximum payload/dependency sizes, automatic namespace creation |
+| Deduplication | Repeated measurements preserve count/leaf/root; the same digest is accepted in a different namespace |
+| Integrity state | Independent OpenSSL SHA-256 expectations for template digest, leaf extension, root extension, and replay of SecurityFS logs |
+| Policy | All four kfunc setters, full configuration reads, policy change hash, SecurityFS reads/writes, rejected writes preserving committed state, global policy isolation |
+| Filters | Positive and negative cgroup/path filtering through module kfuncs |
+| TPM | Availability and bounded PCR reads; actual PCR23 extension checked when a TPM exists and `tpm_pcr_index=23` |
+| LSM composition | A denying BPF program is attached first; exec, open, chmod, mmap, and socket connect must remain denied after each corresponding production hook is attached |
+| Setattr formatting | The production formatter runs inside BPF: empty and combined attributes, privilege flags, truncation preserving the existing prefix, negative/full-buffer offsets, exact fit, and one-byte overflow; lengths, contents, termination, and buffer guards are checked |
+| Kernel diagnostics | New kernel warning splats, BUG reports, KASAN/KCSAN/UBSAN reports, lockdep reports, atomic-sleep warnings, and selected stall/refcount reports fail the run |
+
+The LSM composition tests first verify a successful operation without the
+denying program, then verify that the denying program works, then attach the
+production hook and require the same `EACCES` denial. They do not treat a failed
+program load or a missing executable as a successful denial test.
+Independent hook checks continue after a failure so a single run reports all
+affected hooks. Expected negative verifier tests print a PASS line; unexpected
+rejections and failed production loads retain the verifier diagnostics.
+
+The tests invoke successful measurement and policy operations through a small
+BPF fixture. The production hooks are tested for loading and denial propagation;
+the suite does not claim to test every production hook's filtering/hash-success
+path under every IMA configuration.
+
+## Concurrency tests
+
+`--stress` starts eight threads together, with a separate BPF command/result map
+entry for each thread. It checks:
+
+1. Concurrent creation of one namespace publishes exactly one container and
+   every caller succeeds.
+2. Eight measurements per thread produce 64 records, and the public measurement
+   order reproduces the leaf hash while global history reproduces the root.
+3. Concurrent submissions of the same measurement commit exactly once.
+
+These are regression checks for the creation, deduplication, and ordering races
+identified in the review. The earlier two security fixes did not resolve all of
+those races; a stress failure is reported as a failure. Passing one run does not
+establish the absence of a race. For more visibility, also run on kernels built
+with KASAN, KCSAN, or lockdep support; the suite collects their reports when those
+facilities are enabled.
+
+## Results and cleanup
+
+The default report directory is `build/kernel-test-results/<timestamp>-<pid>/`.
+It contains:
+
+- `security-regression.log`: verifier diagnostics and LSM checks.
+- `module-interactions.log`: successful-operation and optional concurrency checks.
+- `dmesg-before.log` and `dmesg-run.log`: kernel diagnostics.
+- `kernel-errors.log`: matched warning/error reports, if any.
+- `kernel-warning-context.log`: matching reports with surrounding kernel-log lines, also printed on failure; `dmesg-run.log` retains the complete backtrace if it exceeds that excerpt.
+- `load.log` and `unload.log`: module lifecycle output when applicable.
+- `result.txt`: final exit code, kernel version, and whether stress was requested.
+
+Before loading the module or attaching test programs, the runner verifies that
+`dmesg --since` accepts its local start timestamp. The timestamp omits the ISO
+8601 timezone suffix, which some util-linux versions reject.
+
+Exit code `0` means all requested checks passed. Exit code `1` means a test or
+cleanup check failed. Exit code `2` identifies a prerequisite/setup error;
+interrupts use `130` or `143`. Individual executable timeouts appear in their
+suite status and cause the overall run to fail.
+
+Temporary BPF links and maps are unpinned and closed after the tests. The runner
+removes its temporary files on failure or interruption and retries a normal
+module unload briefly to allow BPF references to be released. It never forces
+an unload. Kernel deadlocks or crashes may require recovering the test VM.
+
+Successful tests create namespace records and policy/measurement history and
+can extend the configured TPM PCR. PCR extensions cannot be undone by unloading
+the module. When an existing module is reused, test namespaces remain until
+that module is unloaded because it has no namespace deletion API. Run this suite
+on a disposable test system rather than a machine whose attestation state you
+need to preserve.
+
+## Direct execution for debugging
+
+After loading the updated module, either executable can be run separately:
+
+```bash
+sudo ./build/security-regression build/security-regression.bpf.o build
+sudo ./build/module-interactions build/module-interactions.bpf.o \
+    /sys/kernel/security/bpfima
+```
+
+The wrapper is the recommended entry point because it adds prerequisite checks,
+timeouts, kernel log collection, temporary-file cleanup after forced termination,
+and optional module lifecycle checks.

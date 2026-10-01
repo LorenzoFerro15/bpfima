@@ -86,12 +86,20 @@ $(BUILD_DIR)/kfunc-buffer-test: tests/security/kfunc_buffer_test.c include/bpfim
 test-security: $(BUILD_DIR)/kfunc-buffer-test
 	./$(BUILD_DIR)/kfunc-buffer-test
 
-$(BUILD_DIR)/security-regression.bpf.o: tests/security/security_regression.bpf.c utils/headers_bpf.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
+$(BUILD_DIR)/security-regression.bpf.o: tests/security/security_regression.bpf.c utils/headers_bpf.h utils/utils.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/security-regression: tests/security/security_regression.c include/bpfima_kfunc_types.h | $(BUILD_DIR)
-	$(CC) $(USER_CFLAGS) -Wextra -Werror -Iinclude $< -o $@ $(LIBS)
+$(BUILD_DIR)/security-regression: tests/security/security_regression.c tests/kernel/check_kfunc_abi.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Wextra -Werror -Iinclude $< -o $@ -lbpf -lelf -lz
 
 security-regression: $(BUILD_DIR)/security-regression $(BUILD_DIR)/security-regression.bpf.o $(BPF_OBJS)
 
-.PHONY: all modules clean test-security security-regression
+$(BUILD_DIR)/module-interactions.bpf.o: tests/kernel/module_interactions.bpf.c tests/kernel/module_interactions.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/module-interactions: tests/kernel/module_interactions.c tests/kernel/module_interactions.h tests/kernel/check_kfunc_abi.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
+	$(CC) $(USER_CFLAGS) -Wextra -Werror -pthread $< -o $@ -lbpf -lelf -lz -lcrypto
+
+kernel-tests: security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o
+
+.PHONY: all modules clean test-security security-regression kernel-tests

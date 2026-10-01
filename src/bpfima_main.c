@@ -151,14 +151,10 @@ const struct btf_kfunc_id_set bpf_kfunc_example_set = {
 /*
  * bpfima_init - Module initialization function
  *
- * Registers BPF kfunc sets for both kprobe and tracepoint program types.
- * This allows BPF programs of these types to call the measurement functions.
- * The registration process creates BTF metadata that enables BPF verifier
- * to understand and validate calls to our kfuncs.
- *
- * Supported BPF program types:
- * - BPF_PROG_TYPE_KPROBE: For kernel probe programs
- * - BPF_PROG_TYPE_TRACEPOINT: For tracepoint programs
+ * Registers the separate kprobe and shared tracing kfunc sets. The tracing
+ * registration also covers tracepoint, raw tracepoint, perf event, and LSM
+ * programs. Registering those types separately would duplicate the same
+ * kernel kfunc hook and invalidate the module's registration table.
  *
  * Returns: 0 on success, negative error code on registration failure
  */
@@ -209,24 +205,11 @@ static int __init bpfima_init(void)
         goto err_merkle_tfm;
     }
 
-    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_kfunc_example_set);
-    if (ret)
-    {
-        pr_err("bpfima: Failed to register BTF kfunc ID set for tracepoint: %d\n", ret);
-        goto err_merkle_tfm;
-    }
-
-    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_LSM, &bpf_kfunc_example_set);
-    if (ret)
-    {
-        pr_warn("bpfima: Failed to register BTF kfunc ID set for LSM: %d\n", ret);
-        pr_warn("bpfima: LSM hooks may not have access to all kfuncs\n");
-    }
-
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_kfunc_example_set);
     if (ret)
     {
-        pr_warn("bpfima: Failed to register BTF kfunc ID set for TRACING: %d\n", ret);
+        pr_err("bpfima: Failed to register BTF kfunc ID set for tracing/LSM: %d\n", ret);
+        goto err_merkle_tfm;
     }
 
     ret = bpfima_securityfs_init();
