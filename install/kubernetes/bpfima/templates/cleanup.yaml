@@ -86,6 +86,11 @@ spec:
                   name: bpfima-temp-cleaner
               spec:
                 hostPID: true
+                {{- with .Values.tolerations }}
+                # the cleaner must reach every node the DaemonSet may run on
+                tolerations:
+                  {{- toYaml . | nindent 18 }}
+                {{- end }}
                 terminationGracePeriodSeconds: 0
                 containers:
                 - name: cleaner

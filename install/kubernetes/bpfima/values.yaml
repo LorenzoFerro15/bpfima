@@ -64,4 +64,5 @@ podLabels: {}
 nodeSelector: {}
 
 # This allows to bypass Kubernetes taints, ensuring that BPFIMA can monitor restricted or dedicated nodes on which standard workloads are normally not scheduled
+# The same tolerations apply to the clean-up DaemonSet run on uninstallation
 tolerations: []
