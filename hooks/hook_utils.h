@@ -55,7 +55,7 @@ struct measurement_ctx
 
 static __attribute__((noinline, unused)) int bpfima_submit_measurement(struct measurement_ctx *ctx)
 {
-    u32 key = 0;
+    struct task_struct *task;
     struct scratch_t *scratch;
     struct bpfima_measurement_request *request;
     int ret;
@@ -65,7 +65,11 @@ static __attribute__((noinline, unused)) int bpfima_submit_measurement(struct me
         (!ctx->additional_data && ctx->additional_data_len))
         return -1;
 
-    scratch = bpf_map_lookup_elem(&scratch_buf_map, &key);
+    task = (struct task_struct *)bpf_get_current_task_btf();
+    if (!task)
+        return -1;
+    scratch = bpf_task_storage_get(&scratch_buf_map, task, 0,
+                                  BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (!scratch)
         return -1;
 
@@ -109,7 +113,6 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
         return -1;
     }
 
-    /* Safely access per-CPU scratch buffer AFTER sleep point */
     /* Get the current task context */
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
     if (!task) {
@@ -122,9 +125,6 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
                                                      task,
                                                      0,
                                                      BPF_LOCAL_STORAGE_GET_F_CREATE);
-    /* Access per-CPU scratch only after the caller has finished the sleepable hash. */
-    u32 scratch_key = 0;
-    struct scratch_t *scratch = bpf_map_lookup_elem(&scratch_buf_map, &scratch_key);
     if (!scratch)
         return -1;
 
