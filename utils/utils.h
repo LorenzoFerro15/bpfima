@@ -50,11 +50,13 @@ struct scratch_t {
     struct bpfima_measurement_request measurement;
 };
 
+// BPF_MAP_TYPE_TASK_STORAGE is safer then BPF_MAP_TYPE_PERCPU_ARRAY against race conditions
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+    __uint(max_entries, 0);
     __type(key, u32);
     __type(value, struct scratch_t);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
 } scratch_buf_map SEC(".maps");
 
 struct hook_timing {

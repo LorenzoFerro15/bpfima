@@ -23,6 +23,72 @@ __bpf_kfunc int bpfima_measurement_extend(const void *data, u32 data__sz)
     const char *effective_ns;
     size_t total_len;
     u8 hash_value[SHA256_DIGEST_SIZE];
+    int ret = -1;
+    char separator = ' ';
+    bool can_sleep = !in_atomic() && !irqs_disabled();
+    u32 dependencies_len = dependencies ? strlen(dependencies) : 0;
+
+    printk(KERN_INFO "bpfima: event_name='%s' namespace_id='%s' dependencies='%s' additional_data_len=%u\n",
+           event_name ? event_name : "(null)",
+           namespace_id ? namespace_id : "(null)",
+           dependencies ? dependencies : "(null)",
+           additional_data_len);
+
+    if (!event_name && !namespace_id && !dependencies && !additional_data)
+    {
+        printk(KERN_ERR "bpfima: All parameters are null\n");
+        return -EINVAL;
+    }
+    
+    if (event_name && strlen(event_name) == 0)
+    {
+        printk(KERN_ERR "bpfima: Empty event_name not allowed\n");
+        return -EINVAL;
+    }
+
+
+    if (dependencies)
+    {
+        total_len += dependencies_len + 1;
+    }
+    
+    if (additional_data && additional_data_len > 0)
+    {
+        total_len += additional_data_len + 1;
+    }
+    
+    if (total_len > 0)
+    {
+        // separator between fields are of number n-1
+        total_len -= 1;
+    }
+    else
+    {
+        printk(KERN_ERR "bpfima: No valid data to concatenate\n");
+        return -EINVAL;
+    }
+
+    concat_data = kmalloc(total_len, can_sleep ? GFP_KERNEL : GFP_ATOMIC);
+    if (!concat_data)
+    {
+        printk(KERN_ERR "bpfima: kmalloc failed\n");
+        return -ENOMEM;
+    }
+
+    if (additional_data && additional_data_len > 0)
+    {
+        memcpy(concat_data + offset, additional_data, additional_data_len);
+        offset += additional_data_len;
+
+        if (dependencies)
+            concat_data[offset++] = separator;
+    }
+
+    if (dependencies)
+    {
+        memcpy(concat_data + offset, dependencies, dependencies_len);
+        offset += dependencies_len;
+    }
     int ret;
 
     ret = bpfima_prepare_measurement(data, data__sz, &request,
