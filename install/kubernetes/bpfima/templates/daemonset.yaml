@@ -38,6 +38,7 @@ spec:
           command: ["/opt/bpfima/scripts/init/build_kernel_module.sh"]
           args:
             - "{{ .Values.initKernelModule.tpm_pcr_index }}"
+            - "{{ .Values.initKernelModule.merkle_history_max_size }}"
           {{- with .Values.initKernelModule.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

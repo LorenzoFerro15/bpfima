@@ -19,6 +19,9 @@ fullnameOverride: ""
 # This sets the PCR to extend in the TPM and the resource limits/requests for the first init container
 initKernelModule:
   tpm_pcr_index: 23
+  # Merkle root history entries kept before the oldest are aggregated, empty for the module default (1000)
+  # A remote verifier replaying the history needs all of them: 0 keeps the whole history
+  merkle_history_max_size: ""
   resources: {}
     # limits:
     #   cpu: 100m

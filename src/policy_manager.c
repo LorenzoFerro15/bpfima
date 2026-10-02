@@ -6,6 +6,12 @@
 #include "bpfima_policy_defaults.h"
 
 static struct bpfima_policy_config global_policy;
+
+/* Merkle root history size, configurable since a remote verifier must replay every entry */
+static uint merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+module_param(merkle_history_max_size, uint, 0444);
+MODULE_PARM_DESC(merkle_history_max_size,
+                 "Merkle root history entries kept before the oldest are aggregated, 0 keeps them all (default: 1000)");
 static struct bpfima_pattern_entry cgroup_patterns[MAX_IGNORE_PATTERNS];
 static struct bpfima_pattern_entry path_patterns[MAX_PATH_FILTERS];
 static struct bpfima_hook_config hook_configs[HOOK_MAX];
@@ -33,7 +39,7 @@ int bpfima_policy_init(void)
 
     memset(&global_policy, 0, sizeof(global_policy));
     bpfima_init_default_config(&global_policy);
-    global_policy.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+    global_policy.merkle_history_max_size = merkle_history_max_size;
     global_policy.merkle_history_scope = DEFAULT_MERKLE_HISTORY_SCOPE;
 
     memset(cgroup_patterns, 0, sizeof(cgroup_patterns));
@@ -233,7 +239,7 @@ int bpfima_policy_set_default(void)
     global_policy.min_file_size = DEFAULT_MIN_FILE_SIZE;
     global_policy.max_path_depth = DEFAULT_MAX_PATH_DEPTH;
     global_policy.log_level = DEFAULT_LOG_LEVEL;
-    global_policy.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+    global_policy.merkle_history_max_size = merkle_history_max_size;
     global_policy.merkle_history_scope = DEFAULT_MERKLE_HISTORY_SCOPE;
 
     spin_unlock_irqrestore(&policy_lock, flags);

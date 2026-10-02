@@ -3,6 +3,8 @@
 set -e
 
 TPM_PCR=$1
+# Merkle root history size, empty for the module default (0 keeps the whole history)
+MERKLE_HISTORY_MAX_SIZE=$2
 
 # First of all, verify if the module is already inserted and the version is the same
 # This optimization allows to save time avoiding rebuilding the module each time and losing the previous logs
@@ -11,8 +13,12 @@ if cat /proc/modules | grep -q bpfima; then
     echo "Verifying version..."
     LOADED_VER=$(cat /sys/module/bpfima/version 2>/dev/null)
     DISK_VER=$(awk -F'"' '/MODULE_VERSION/ {print $2}' /opt/bpfima/src/bpfima_main.c)
+    LOADED_MAX=$(cat /sys/module/bpfima/parameters/merkle_history_max_size 2>/dev/null)
     if [ "$LOADED_VER" != "$DISK_VER" ]; then
         echo "Different version available... building it"
+        rmmod bpfima
+    elif [ -n "$MERKLE_HISTORY_MAX_SIZE" ] && [ "$LOADED_MAX" != "$MERKLE_HISTORY_MAX_SIZE" ]; then
+        echo "Different Merkle history size requested... reloading it"
         rmmod bpfima
     else
         echo "Same version available... reusing it"
@@ -62,5 +68,6 @@ make modules KERNEL_SRC=$KERNEL_SRC KERNEL_HEADERS=$KERNEL_SRC
 rm -f /host/lib/modules/$KERNEL_VER/build/vmlinux
 
 # Load the module
-insmod build/bpfima.ko tpm-pcr-index="${TPM_PCR}"
+insmod build/bpfima.ko tpm-pcr-index="${TPM_PCR}" \
+    ${MERKLE_HISTORY_MAX_SIZE:+merkle-history-max-size="${MERKLE_HISTORY_MAX_SIZE}"}
 echo "Module inserted"
