@@ -41,7 +41,7 @@ const (
 	HookFlagMeasureHash
 )
 
-// BPFPolicyConfig matches the kernel struct bpfima_policy_config
+// BPFPolicyConfig matches the kernel struct bpfima_policy_config (36 bytes)
 type BpfimaPolicyConfig struct {
 	Enabled      uint8
 	_            [3]byte // padding
@@ -50,7 +50,12 @@ type BpfimaPolicyConfig struct {
 	MinFileSize  uint32
 	MaxPathDepth uint32
 	LogLevel     uint32
-	Reserved     [2]uint32
+	// The Merkle history fields are not read from the map: the kernel module
+	// keeps its own copy, so they are left zero as bpfima-tool does
+	MerkleHistoryMaxSize uint32
+	MerkleHistoryScope   uint8
+	_                    [3]byte // padding
+	Reserved             [1]uint32
 }
 
 // BPFPatternEntry matches the kernel struct bpfima_pattern_entry
