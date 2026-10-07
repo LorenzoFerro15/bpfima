@@ -1,6 +1,7 @@
 package measurement
 
 import (
+	"bytes"
 	"crypto"
 	"errors"
 	"fmt"
@@ -39,6 +40,42 @@ func NewList(src LineReader, parse Parser, hashAlgo crypto.Hash) (*List, error) 
 // (e.g. container or namespace measurement lists).
 func NewHashedFileList(src LineReader, hashAlgo crypto.Hash) (*List, error) {
 	return NewList(src, func(line string) (Measurement, error) { return ParseHashedFile(line) }, hashAlgo)
+}
+
+// HashedFiles reads every entry of a list of [HashedFile] entries (e.g. a
+// container measurement list), validating their template hashes.
+func HashedFiles(src LineReader, hashAlgo crypto.Hash) ([]*HashedFile, error) {
+	list, err := NewHashedFileList(src, hashAlgo)
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []*HashedFile
+	for {
+		err = list.Next()
+		if errors.Is(err, io.EOF) {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		entry, ok := list.Current().(*HashedFile)
+		if !ok {
+			return nil, fmt.Errorf("%w: not a hashed file", ErrMalformedEntry)
+		}
+		entries = append(entries, entry)
+	}
+}
+
+// MarshalHashedFiles returns the measurement list of the entries, one line per
+// entry, as the kernel module writes it and [HashedFiles] reads it.
+func MarshalHashedFiles(entries ...*HashedFile) []byte {
+	var b bytes.Buffer
+	for _, entry := range entries {
+		b.WriteString(entry.String())
+		b.WriteByte('\n')
+	}
+	return b.Bytes()
 }
 
 // NewLeafList creates a List of [Leaf] entries (i.e. the Merkle leaf list).
