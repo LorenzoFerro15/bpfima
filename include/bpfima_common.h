@@ -39,6 +39,7 @@
 
 /* TPM serialization mutex - defined in tpm_ops.c */
 extern struct mutex bpfima_tpm_mutex;
+extern int bpfima_tpm_pcr_index;
 
 /**
  * struct measurement_entry - Represents a single measurement/extension event
@@ -59,11 +60,12 @@ struct measurement_entry
 
 #include <linux/refcount.h>
 #include <linux/rculist.h>
+#include <linux/workqueue.h>
 
 /**
  * struct container_node - Represents a container/pod with its measurement list
  * @list: Linked list node for maintaining list of all containers
- * @rcu: RCU head for asynchronous lockless destruction
+ * @free_work: Deferred destruction after an RCU grace period
  * @refcnt: Reference counter for safe access without dangling pointers
  * @id: Unique container identifier
  * @measurement_list: List of measurements specific to this container
@@ -78,7 +80,7 @@ struct measurement_entry
 struct container_node
 {
     struct list_head list;
-    struct rcu_head rcu;
+    struct rcu_work free_work;
     refcount_t refcnt;
     char id[CONTAINER_ID_MAX_LEN];
     struct list_head measurement_list;

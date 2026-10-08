@@ -14,6 +14,9 @@ int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
     if (previous_ret != 0)
         return previous_ret;
 
+    if (!bpfima_should_process(HOOK_LSM_MMAP_FILE))
+        return 0;
+
     if (!file)
         return 0;
 

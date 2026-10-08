@@ -76,7 +76,7 @@ int status_show(struct seq_file *s, void *unused)
     }
 
     seq_printf(s, "module=bpfima\n");
-    seq_printf(s, "pcr_index=%d\n", TPM_PCR_INDEX);
+    seq_printf(s, "pcr_index=%d\n", bpfima_tpm_pcr_index);
     seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
     seq_printf(s, "digest_algorithm=sha256\n");
 

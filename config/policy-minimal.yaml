@@ -1,108 +1,44 @@
-# BPF IMA Minimal Policy - Reduce overhead, track only critical events
-#
-# Use this for systems where performance is critical
-# Tracks only: executables, containers, and critical system files
-
----
+# Supported userspace YAML policy syntax. Kubernetes Policy CRs use a separate schema.
+# Appraisal and enforcement are not implemented by the current hooks.
 policy:
   enabled: true
-  log_level: 1  # WARN only
-  min_file_size: 4096  # Skip tiny files
-  max_path_depth: 16
+  log_level: 1
+  measure_enabled: true
+  appraise_enabled: false
+  enforce_enabled: false
+  container_tracking: true
 
 filters:
-  system_cgroups: true       # Skip system internals
-  proc_sys: true             # Skip /proc and /sys
-  dev: true                  # Skip /dev
-  readonly_files: true       # Skip readonly opens
-  small_files: true          # Skip small files
-  non_executable: true       # Only track executables
-  libraries: false           # Track libraries (important for integrity)
-  tmp_files: true            # Skip /tmp
-
-actions:
-  extend_tpm: true
-  log_securityfs: true
-  log_kernel: false          # Reduce kernel log noise
-  alert_suspicious: false
-  block: false
-  track_container: true
-  build_deps: true
-
-cgroup_patterns:
-  - pattern: "/"
-    enabled: true
-    match_type: 0
-  - pattern: "init.scope"
-    enabled: true
-    match_type: 0
-  - pattern: "system.slice"
-    enabled: true
-    match_type: 0
-
-path_patterns:
-  - pattern: "/proc/"
-    enabled: true
-    match_type: 1
-  - pattern: "/sys/"
-    enabled: true
-    match_type: 1
-  - pattern: "/dev/"
-    enabled: true
-    match_type: 1
-  - pattern: "/tmp/"
-    enabled: true
-    match_type: 1
-  - pattern: "/var/tmp/"
-    enabled: true
-    match_type: 1
+  cgroup_patterns:
+    - "/"
+    - "init.scope"
+    - "system.slice"
+  path_patterns:
+    - "/proc/"
+    - "/sys/"
+    - "/dev/"
+    - "/tmp/"
+    - "/var/tmp/"
 
 hooks:
-  lsm_bprm_check_security:
+  - name: "lsm_bprm_check_security"
     enabled: true
-    track_containers: true
-    measure_hash: true
-    filter_override: 0
-    action_override: 0
-
-  lsm_file_open:
-    enabled: false  # Disable to reduce overhead
-    track_containers: false
-    measure_hash: false
-    filter_override: 0
-    action_override: 0
-
-  lsm_file_post_open:
-    enabled: true
-    track_containers: true
-    measure_hash: true
-    filter_override: 0
-    action_override: 0
-
-  lsm_mmap_file:
-    enabled: true
-    track_containers: true
-    measure_hash: true
-    filter_override: 0
-    action_override: 0
-
-  lsm_socket_connect:
-    enabled: true
-    track_containers: false
-    measure_hash: false
-    filter_override: 0
-    action_override: 0
-
-  lsm_container_events:
-    enabled: true
-    track_containers: true
-    measure_hash: true
-    filter_override: 0
-    action_override: 0
-
-  kprobe_file_open:
+    measure: true
+  - name: "lsm_file_open"
     enabled: false
-    track_containers: false
-    measure_hash: false
-    filter_override: 0
-    action_override: 0
+    measure: false
+  - name: "lsm_file_post_open"
+    enabled: true
+    measure: true
+  - name: "lsm_mmap_file"
+    enabled: true
+    measure: true
+  - name: "lsm_socket_connect"
+    enabled: true
+    measure: true
+  - name: "lsm_container_events"
+    enabled: true
+    measure: true
+  - name: "kprobe_file_open"
+    enabled: false
+    measure: false

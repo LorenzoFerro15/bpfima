@@ -16,6 +16,10 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# CRDs are shared cluster-wide; preserve them unless deletion is explicitly requested.
+cleanup:
+  deleteCRD: false
+
 # This sets the PCR to extend in the TPM and the resource limits/requests for the first init container
 initKernelModule:
   tpm_pcr_index: 23

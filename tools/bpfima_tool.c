@@ -12,6 +12,7 @@
 #include <bpf/bpf.h>
 #include <yaml.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "include/bpfima_policy_user.h"
 #include "include/bpfima_policy_defaults.h"
@@ -95,13 +96,7 @@ static int daemonize(void)
         exit(EXIT_SUCCESS);
 
     /* Set new file permissions */
-    umask(0);
-
-    /* Change the working directory to the root directory */
-    /* or another appropriated directory */
-    if (chdir("/") < 0) {
-        // Log failure but continue if possible
-    }
+    umask(077);
 
     /* Close all open file descriptors */
     /* Close standard file descriptors */
@@ -122,16 +117,24 @@ static int daemonize(void)
  */
 static int write_pid_file(void)
 {
-    FILE *fp = fopen(PID_FILE, "w");
-    if (!fp)
-    {
-        // Since we closed stderr/stdout in daemonize, we can't print there easily
-        // But for now let's hope it works or log to a file if we had logging
+    struct stat st;
+    int fd = open(PID_FILE, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return -1;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+        st.st_nlink != 1 || fchmod(fd, 0600) || ftruncate(fd, 0)) {
+        close(fd);
         return -1;
     }
-    fprintf(fp, "%d\n", getpid());
-    fclose(fp);
-    return 0;
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) {
+        close(fd);
+        return -1;
+    }
+    int ret = fprintf(fp, "%d\n", getpid()) < 0 ? -1 : 0;
+    if (fclose(fp))
+        ret = -1;
+    return ret;
 }
 
 /**
@@ -147,16 +150,36 @@ static void remove_pid_file(void)
  */
 static int read_pid_file(void)
 {
-    FILE *fp = fopen(PID_FILE, "r");
-    if (!fp)
+    struct stat st;
+    int fd = open(PID_FILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
         return -1;
-
-    int pid = -1;
-    if (fscanf(fp, "%d", &pid) != 1 || pid <= 1)
-        pid = -1;
-
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+        (st.st_mode & 022) || st.st_nlink != 1) {
+        close(fd);
+        errno = EPERM;
+        return -1;
+    }
+    FILE *fp = fdopen(fd, "r");
+    if (!fp) {
+        close(fd);
+        return -1;
+    }
+    char text[64];
+    char *end;
+    long pid = -1;
+    if (fgets(text, sizeof(text), fp)) {
+        errno = 0;
+        pid = strtol(text, &end, 10);
+        if (*end == '\n')
+            end++;
+        if (errno || *end || pid <= 1 || pid > INT_MAX)
+            pid = -1;
+    }
     fclose(fp);
-    return pid;
+    if (pid < 0)
+        errno = EINVAL;
+    return (int)pid;
 }
 
 
@@ -338,6 +361,10 @@ static void dump_securityfs_to_files(void) {
     }
 
     // Create root directory
+    if (mkdir("build", 0755) && errno != EEXIST)
+        return;
+    if (mkdir("build/namespaces", 0755) && errno != EEXIST)
+        return;
     if (stat("build/namespaces/root", &st) == -1) {
         mkdir("build/namespaces/root", 0755);
     }
@@ -722,6 +749,10 @@ static int load_and_attach_one_object(const char *filename)
 
 static int ensure_single_instance(void) {
     int pid = read_pid_file();
+    if (pid < 0 && (errno == EPERM || errno == ELOOP)) {
+        fprintf(stderr, "Refusing unsafe PID file %s\n", PID_FILE);
+        return -1;
+    }
     if (pid > 0 && is_process_running(pid)) {
         fprintf(stderr, "Error: BPF IMA is already running (PID: %d)\n", pid);
         fprintf(stderr, "Run 'bpfima-tool unload' first\n");
@@ -753,7 +784,8 @@ static int run_daemon_loop(void) {
         return -1;
     }
 
-    write_pid_file();
+    if (write_pid_file())
+        return -1;
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -826,6 +858,11 @@ static int cmd_unload(void)
 {
     int pid = read_pid_file();
     int ret = 0;
+
+    if (pid < 0 && (errno == EPERM || errno == ELOOP)) {
+        fprintf(stderr, "Refusing unsafe PID file %s\n", PID_FILE);
+        return 1;
+    }
 
     if (pid < 0 || !is_process_running(pid))
     {

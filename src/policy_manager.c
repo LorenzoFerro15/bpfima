@@ -252,6 +252,15 @@ struct bpfima_policy_config *bpfima_policy_get(void)
     return &global_policy;
 }
 
+void bpfima_policy_get_config(struct bpfima_policy_config *config)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&policy_lock, flags);
+    memcpy(config, &global_policy, sizeof(*config));
+    spin_unlock_irqrestore(&policy_lock, flags);
+}
+
 /**
  * bpfima_policy_update - Update policy configuration
  * @new_config: New policy configuration to apply

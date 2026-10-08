@@ -86,7 +86,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     int buffer_len = 0;
     if (len > 0) {
-        buffer_len = (len >= MAX_DATA_BUF_SIZE) ? (MAX_DATA_BUF_SIZE - 1) : len;
+        buffer_len = (len > MAX_DATA_BUF_SIZE) ? (MAX_DATA_BUF_SIZE - 1) : len - 1;
         additional_data[buffer_len] = '\0';
     }
 

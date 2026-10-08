@@ -18,10 +18,10 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-#define MAX_IGNORE_PATTERNS 32
+#define MAX_IGNORE_PATTERNS 8
 #define MAX_PATTERN_LEN 64
 
-#define MAX_PATH_FILTERS 64
+#define MAX_PATH_FILTERS 8
 
 /* Policy filter flags (what to filter/skip) - must match bpfima_policy.h */
 #define POLICY_FILTER_SYSTEM_CGROUPS (1 << 0) /* Filter system cgroups */

@@ -16,6 +16,8 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
     fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
 
     struct bpfima_policy_config *policy = bpfima_get_policy();
+    if (policy && !policy->enabled)
+        return 0;
     if (cgroup_name[0] != '\0' && bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy))
         return 0;
 

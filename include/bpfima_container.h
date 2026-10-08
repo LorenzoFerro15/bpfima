@@ -9,6 +9,8 @@ extern spinlock_t container_list_lock;
 extern atomic_t container_count;
 
 /* Container management functions */
+int bpfima_container_init(void);
+void bpfima_container_cleanup(void);
 struct container_node *find_container_by_id(const char *container_id);
 struct container_node *find_container_by_id_rcu(const char *container_id);
 struct container_node *bpfima_get_container(struct container_node *container);

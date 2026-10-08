@@ -3,6 +3,7 @@ package mapsmanager
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
@@ -43,14 +44,17 @@ const (
 
 // BPFPolicyConfig matches the kernel struct bpfima_policy_config
 type BpfimaPolicyConfig struct {
-	Enabled      uint8
-	_            [3]byte // padding
-	FilterFlags  uint32
-	ActionFlags  uint32
-	MinFileSize  uint32
-	MaxPathDepth uint32
-	LogLevel     uint32
-	Reserved     [2]uint32
+	Enabled              uint8
+	_                    [3]byte // padding
+	FilterFlags          uint32
+	ActionFlags          uint32
+	MinFileSize          uint32
+	MaxPathDepth         uint32
+	LogLevel             uint32
+	MerkleHistoryMaxSize uint32
+	MerkleHistoryScope   uint8
+	_                    [3]byte // padding
+	Reserved             [1]uint32
 }
 
 // BPFPatternEntry matches the kernel struct bpfima_pattern_entry
@@ -153,12 +157,13 @@ func computeActionFlags(a v1alpha1.ActionConfig) uint32 {
 
 func computeValue(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) BpfimaPolicyConfig {
 	return BpfimaPolicyConfig{
-		Enabled:      boolToUint8(policy.Enabled),
-		FilterFlags:  computeFilterFlags(filters),
-		ActionFlags:  computeActionFlags(actions),
-		MinFileSize:  uint32(policy.MinFileSize),
-		MaxPathDepth: uint32(policy.MaxPathDepth),
-		LogLevel:     uint32(policy.LogLevel),
+		Enabled:              boolToUint8(policy.Enabled),
+		FilterFlags:          computeFilterFlags(filters),
+		ActionFlags:          computeActionFlags(actions),
+		MinFileSize:          uint32(policy.MinFileSize),
+		MaxPathDepth:         uint32(policy.MaxPathDepth),
+		LogLevel:             uint32(policy.LogLevel),
+		MerkleHistoryMaxSize: 1000,
 	}
 }
 
@@ -166,6 +171,10 @@ func computeValue(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, a
 func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) error {
 	if policyMap == nil {
 		return fmt.Errorf("policy map is nil")
+	}
+	if policy.MinFileSize < 0 || policy.MinFileSize > math.MaxUint32 ||
+		policy.MaxPathDepth < 0 || policy.LogLevel < 0 || policy.LogLevel > 3 {
+		return fmt.Errorf("policy value exceeds the kernel ABI limits")
 	}
 
 	key := uint32(0) // Global policy key
@@ -187,6 +196,20 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 	}
 
 	maxEntries := int(info.MaxEntries)
+	enabledCount := 0
+	for _, entry := range patterns {
+		if !entry.Enabled {
+			continue
+		}
+		if entry.Pattern == "" || len(entry.Pattern) >= MaxPatternLen ||
+			entry.MatchType < 0 || entry.MatchType > 1 {
+			return fmt.Errorf("invalid cgroup/path pattern %q", entry.Pattern)
+		}
+		enabledCount++
+	}
+	if enabledCount > maxEntries {
+		return fmt.Errorf("too many enabled patterns: %d (max %d)", enabledCount, maxEntries)
+	}
 	i := 0
 
 	// Write current enabled patterns only
@@ -206,8 +229,7 @@ func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) err
 		}
 
 		// Copy pattern into byte array (truncate if too long)
-		patternLen := min(len(patternEntry.Pattern), MaxPatternLen-1)
-		copy(entry.Pattern[:], patternEntry.Pattern[:patternLen])
+		copy(entry.Pattern[:], patternEntry.Pattern)
 
 		key := uint32(i)
 		if err := patternsMap.Put(key, entry); err != nil {

@@ -5,11 +5,11 @@
 #include "bpfima_kfunc_types.h"
 
 /* Maximum number of ignore patterns */
-#define MAX_IGNORE_PATTERNS 32
+#define MAX_IGNORE_PATTERNS 8
 #define MAX_PATTERN_LEN 64
 
 /* Maximum number of path filters */
-#define MAX_PATH_FILTERS 64
+#define MAX_PATH_FILTERS 8
 
 /* Policy filter flags (what to filter/skip) */
 #define POLICY_FILTER_SYSTEM_CGROUPS    (1 << 0)  /* Filter system cgroups */
@@ -142,6 +142,7 @@ int bpfima_policy_init(void);
 void bpfima_policy_cleanup(void);
 int bpfima_policy_set_default(void);
 struct bpfima_policy_config *bpfima_policy_get(void);
+void bpfima_policy_get_config(struct bpfima_policy_config *config);
 int bpfima_policy_update(struct bpfima_policy_config *new_config);
 int bpfima_policy_add_cgroup_pattern(const char *pattern);
 int bpfima_policy_add_path_pattern(const char *pattern);

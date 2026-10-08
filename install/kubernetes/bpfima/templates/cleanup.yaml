@@ -27,9 +27,11 @@ rules:
   resources: ["pods"]
   verbs: ["list"]
 # Permissions to delete the CRD
+{{- if .Values.cleanup.deleteCRD }}
 - apiGroups: ["apiextensions.k8s.io"]
   resources: ["customresourcedefinitions"]
   verbs: ["delete"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -70,6 +72,7 @@ spec:
         command: ["/bin/bash", "-c"]
         args:
         - |
+          set -e
           cat <<EOF | kubectl apply -f -
           apiVersion: apps/v1
           kind: DaemonSet
@@ -120,7 +123,7 @@ spec:
                       RETRY_COUNT=$((RETRY_COUNT+1))
                       if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
                           echo "Failed to remove bpfima module after $MAX_RETRIES attempts"
-                          break
+                          exit 1
                       fi
 
                       echo "Module busy, retrying in 1s..."
@@ -151,4 +154,6 @@ spec:
           kubectl delete daemonset bpfima-temp-cleaner -n {{ .Release.Namespace }}
 
           # Remove CRD (not automatically deleted with helm-uninstall)
+          {{- if .Values.cleanup.deleteCRD }}
           kubectl delete crd policies.bpfima.polito.it --ignore-not-found=true
+          {{- end }}

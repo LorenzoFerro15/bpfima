@@ -13,8 +13,8 @@
 #include "../include/bpfima_policy_user.h"
 
 /* Maximum array sizes for parsing */
-#define MAX_CGROUP_PATTERNS 32
-#define MAX_PATH_PATTERNS 64
+#define MAX_CGROUP_PATTERNS MAX_IGNORE_PATTERNS
+#define MAX_PATH_PATTERNS MAX_PATH_FILTERS
 #define MAX_HOOK_CONFIGS 16
 
 /* Simplified structures for YAML parsing */

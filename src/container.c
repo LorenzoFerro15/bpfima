@@ -14,6 +14,22 @@
 LIST_HEAD(container_list);
 DEFINE_SPINLOCK(container_list_lock);
 atomic_t container_count = ATOMIC_INIT(0);
+static DEFINE_MUTEX(container_create_mutex);
+static struct workqueue_struct *container_cleanup_wq;
+
+int bpfima_container_init(void)
+{
+    container_cleanup_wq = alloc_workqueue("bpfima_cleanup", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+    return container_cleanup_wq ? 0 : -ENOMEM;
+}
+
+void bpfima_container_cleanup(void)
+{
+    /* RCU callbacks must enqueue their work before the queue is drained. */
+    rcu_barrier();
+    destroy_workqueue(container_cleanup_wq);
+    container_cleanup_wq = NULL;
+}
 
 /**
  * find_container_by_id_rcu - Find a container node by ID and acquire a reference
@@ -60,9 +76,9 @@ struct container_node *bpfima_get_container(struct container_node *container)
     return NULL;
 }
 
-static void container_node_free_rcu(struct rcu_head *head)
+static void container_node_free_work(struct work_struct *work)
 {
-    struct container_node *container = container_of(head, struct container_node, rcu);
+    struct container_node *container = container_of(to_rcu_work(work), struct container_node, free_work);
 
     cleanup_container_measurements(container);
     bpfima_policy_namespace_remove(container->id);
@@ -80,7 +96,7 @@ void bpfima_put_container(struct container_node *container)
 {
     if (container && refcount_dec_and_test(&container->refcnt))
     {
-        call_rcu(&container->rcu, container_node_free_rcu);
+        queue_rcu_work(container_cleanup_wq, &container->free_work);
     }
 }
 
@@ -90,7 +106,7 @@ void bpfima_put_container(struct container_node *container)
  *
  * Returns: Reference-counted pointer to container_node on success, ERR_PTR on failure
  */
-struct container_node *create_container_node(const char *container_id)
+static struct container_node *create_container_node_locked(const char *container_id)
 {
     struct container_node *container;
     struct container_node *existing_container;
@@ -121,6 +137,7 @@ struct container_node *create_container_node(const char *container_id)
     memset(container->leaf_hash, 0, MERKLE_HASH_SIZE);
     atomic_set(&container->measurement_count, 0);
     refcount_set(&container->refcnt, 1);
+    INIT_RCU_WORK(&container->free_work, container_node_free_work);
     container->securityfs_dir = NULL;
     container->securityfs_measurements_file = NULL;
 
@@ -177,6 +194,16 @@ struct container_node *create_container_node(const char *container_id)
     refcount_inc(&container->refcnt);
 
     pr_info("bpfima: Created container node for %s\n", container_id);
+    return container;
+}
+
+struct container_node *create_container_node(const char *container_id)
+{
+    struct container_node *container;
+
+    mutex_lock(&container_create_mutex);
+    container = create_container_node_locked(container_id);
+    mutex_unlock(&container_create_mutex);
     return container;
 }
 

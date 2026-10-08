@@ -1,8 +1,8 @@
 #include "bpfima_common.h"
 
 /* TPM PCR configuration */
-static int tpm_pcr_index = 23; /* Default PCR index for bpfima measurements */
-module_param(tpm_pcr_index, int, 0644);
+int bpfima_tpm_pcr_index = 23; /* Default PCR index for bpfima measurements */
+module_param_named(tpm_pcr_index, bpfima_tpm_pcr_index, int, 0444);
 MODULE_PARM_DESC(tpm_pcr_index, "TPM PCR index to use for measurements (default: 23)");
 
 #define IMA_DIGEST_SIZE SHA256_DIGEST_SIZE
@@ -49,9 +49,9 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         return -EAGAIN;
     }
 
-    if (tpm_pcr_index < 0 || tpm_pcr_index > 23)
+    if (bpfima_tpm_pcr_index < 0 || bpfima_tpm_pcr_index > 23)
     {
-        printk(KERN_ERR "bpfima: Invalid TPM PCR index %d (must be 0-23)\n", tpm_pcr_index);
+        printk(KERN_ERR "bpfima: Invalid TPM PCR index %d (must be 0-23)\n", bpfima_tpm_pcr_index);
         return -EINVAL;
     }
 
@@ -91,7 +91,7 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         }
     }
 
-    ret = tpm_pcr_extend(chip, tpm_pcr_index, digests);
+    ret = tpm_pcr_extend(chip, bpfima_tpm_pcr_index, digests);
 
     kfree(digests);
     put_device(&chip->dev);
@@ -101,12 +101,12 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
     if (ret != 0)
     {
         printk(KERN_ERR "bpfima: Failed to extend TPM PCR %d for event '%s': TPM RC %d\n",
-               tpm_pcr_index, event_name, ret);
+               bpfima_tpm_pcr_index, event_name, ret);
         return ret > 0 ? -EIO : ret;
     }
 
     printk(KERN_INFO "bpfima: Successfully extended TPM PCR %d for event: %s\n",
-           tpm_pcr_index, event_name);
+           bpfima_tpm_pcr_index, event_name);
     return 0;
 }
 

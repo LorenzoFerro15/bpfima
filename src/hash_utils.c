@@ -164,6 +164,7 @@ bool hash_exists(const u8 *hash_value, const char *namespace_id)
 int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep)
 {
     struct hash_entry *new_entry;
+    struct hash_entry *entry;
     u32 hash_key;
     unsigned long flags;
     const char *ns_to_store = namespace_id ? namespace_id : "";
@@ -179,6 +180,14 @@ int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_s
     hash_key = get_unaligned_le32(hash_value);
     
     spin_lock_irqsave(&hash_table_lock, flags);
+    hash_for_each_possible(sha256_hash_table, entry, hash_node, hash_key) {
+        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0 &&
+            strcmp(entry->namespace_id, ns_to_store) == 0) {
+            spin_unlock_irqrestore(&hash_table_lock, flags);
+            kfree(new_entry);
+            return 1;
+        }
+    }
     hash_add(sha256_hash_table, &new_entry->hash_node, hash_key);
     spin_unlock_irqrestore(&hash_table_lock, flags);
     

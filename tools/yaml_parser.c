@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
 #include <yaml.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -28,15 +29,26 @@ static int parse_bool(const char *value, void *ctx)
     if (strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0 ||
         strcmp(value, "1") == 0)
         *res = 1;
-    else
+    else if (strcasecmp(value, "false") == 0 || strcasecmp(value, "no") == 0 ||
+             strcmp(value, "0") == 0)
         *res = 0;
+    else
+        return -1;
     return 0;
 }
 
 static int parse_int(const char *value, void *ctx)
 {
-    int *res = (int *)ctx;
-    *res = atoi(value);
+    char *end;
+    unsigned long result;
+
+    if (!value || value[0] == '-' || value[0] == '\0')
+        return -1;
+    errno = 0;
+    result = strtoul(value, &end, 10);
+    if (errno || *end || result > 3)
+        return -1;
+    *(u32 *)ctx = result;
     return 0;
 }
 
@@ -90,7 +102,9 @@ static int parse_generic_map(yaml_parser_t *parser, void *ctx,
                 snprintf(key, sizeof(key), "%s", (char *)event.data.scalar.value);
             } else {
                 if (dispatcher(key, (char *)event.data.scalar.value, ctx) < 0) {
-                    fprintf(stderr, "Warning: Unknown or invalid key '%s'\n", key);
+                    fprintf(stderr, "Error: Unknown or invalid key '%s'\n", key);
+                    yaml_event_delete(&event);
+                    return -1;
                 }
                 key[0] = '\0';
             }
@@ -176,6 +190,10 @@ static int parse_string_sequence(yaml_parser_t *parser, char patterns[][256], in
 
         switch (event.type) {
         case YAML_SCALAR_EVENT:
+            if (count >= max_patterns || event.data.scalar.length >= MAX_PATTERN_LEN) {
+                yaml_event_delete(&event);
+                return -1;
+            }
             if (count < max_patterns) {
                 snprintf(patterns[count], 255, "%s", (char *)event.data.scalar.value);
                 patterns[count][255] = '\0';
@@ -213,9 +231,15 @@ int parse_filters_section(yaml_parser_t *parser,
             break;
         case YAML_SEQUENCE_START_EVENT:
             if (strcmp(key, "cgroup_patterns") == 0) {
-                parse_string_sequence(parser, cgroup_filters, max_cgroups);
+                if (parse_string_sequence(parser, cgroup_filters, max_cgroups) < 0) {
+                    yaml_event_delete(&event);
+                    return -1;
+                }
             } else if (strcmp(key, "path_patterns") == 0) {
-                parse_string_sequence(parser, path_filters, max_paths);
+                if (parse_string_sequence(parser, path_filters, max_paths) < 0) {
+                    yaml_event_delete(&event);
+                    return -1;
+                }
             }
             key[0] = '\0';
             break;
@@ -289,7 +313,7 @@ int parse_yaml_policy(const char *config_file,
     memset(policy, 0, sizeof(*policy));
     memset(cgroup_filters, 0, max_cgroups * 256);
     memset(path_filters, 0, max_paths * 256);
-    memset(hook_configs, 0, max_hooks * sizeof(struct bpfima_hook_config));
+    memset(hook_configs, 0, max_hooks * sizeof(*hook_configs));
 
     while (!done) {
         if (!yaml_parser_parse(&parser, &event)) {
@@ -334,7 +358,20 @@ cleanup:
     return ret;
 }
 
-/* --- Map Updater (Unchanged) --- */
+/* --- Map Updater --- */
+static int get_hook_id(const char *name)
+{
+    const char *names[] = {"lsm_bprm_check_security", "lsm_file_open", "lsm_file_post_open",
+                           "lsm_mmap_file", "lsm_socket_connect", "lsm_container_events",
+                           "kprobe_file_open"};
+
+    for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (!strcmp(name, names[i]))
+            return i;
+    }
+    return -1;
+}
+
 int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_fd,
                             const struct yaml_policy *policy,
                             char cgroup_filters[][256], int num_cgroups,
@@ -344,21 +381,18 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
     int ret = 0;
     __u32 key = 0;
 
+    for (int i = 0; i < num_hooks; i++) {
+        if (hook_configs[i].hook_name[0] && get_hook_id(hook_configs[i].hook_name) < 0) {
+            fprintf(stderr, "Error: Unknown hook '%s'\n", hook_configs[i].hook_name);
+            return -1;
+        }
+    }
+
     struct bpfima_policy_config bpf_policy = {0};
     
-    /* We can't use the simple struct copy because bpfima_policy_config isn't identical 
-       to yaml_policy (one has flags, one has bools).
-       However, we can reuse the DEFAULT init helper here?
-       Actually, yaml_policy is an intermediate parsing struct. We manually map it here.
-    */
     bpf_policy.enabled = policy->enabled;
     bpf_policy.log_level = policy->log_level;
     bpf_policy.max_path_depth = 10; 
-    
-    // ... logic continues ...
-    // Since the instruction was to Rewrite the PARSING logic, I will preserve this function largely as is
-    // but just fix the struct initialization if anything was missed. Or simply copy paste the old logic back?
-    // I will assume the old logic was fine, just duplicating it here for completeness of the file replacement.
     
     if (policy->measure_enabled) bpf_policy.action_flags |= POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS;
     if (policy->appraise_enabled) bpf_policy.action_flags |= POLICY_ACTION_ALERT_SUSPICIOUS;
@@ -372,37 +406,32 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
     }
     printf("  Updated global policy configuration\n");
 
-    /* Cgroups */
+    /* Replace every pattern slot, including entries omitted by the new policy. */
     for (int i = 0; i < num_cgroups; i++) {
-        if (strlen(cgroup_filters[i]) > 0) {
-            struct bpfima_pattern_entry entry = {0};
+        struct bpfima_pattern_entry entry = {0};
+        if (cgroup_filters[i][0]) {
             snprintf(entry.pattern, MAX_PATTERN_LEN, "%s", cgroup_filters[i]);
             entry.enabled = 1;
             entry.match_type = 1;
-
-            __u32 idx = i;
-            if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update cgroup filter %d: %s\n", i, strerror(errno));
-            } else {
-                printf("  Added cgroup filter: %s\n", cgroup_filters[i]);
-            }
+        }
+        __u32 idx = i;
+        if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0) {
+            fprintf(stderr, "Error: Failed to update cgroup filter %d: %s\n", i, strerror(errno));
+            return -1;
         }
     }
 
-    /* Paths */
     for (int i = 0; i < num_paths; i++) {
-        if (strlen(path_filters[i]) > 0) {
-            struct bpfima_pattern_entry entry = {0};
+        struct bpfima_pattern_entry entry = {0};
+        if (path_filters[i][0]) {
             snprintf(entry.pattern, MAX_PATTERN_LEN, "%s", path_filters[i]);
             entry.enabled = 1;
             entry.match_type = 1;
-
-            __u32 idx = i;
-            if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update path filter %d: %s\n", i, strerror(errno));
-            } else {
-                printf("  Added path filter: %s\n", path_filters[i]);
-            }
+        }
+        __u32 idx = i;
+        if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0) {
+            fprintf(stderr, "Error: Failed to update path filter %d: %s\n", i, strerror(errno));
+            return -1;
         }
     }
 
@@ -413,9 +442,10 @@ int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_
             if (hook_configs[i].enabled) bpf_hook.flags |= HOOK_FLAG_ENABLED;
             if (hook_configs[i].measure) bpf_hook.flags |= HOOK_FLAG_MEASURE_HASH;
             
-            __u32 idx = i;
+            __u32 idx = get_hook_id(hook_configs[i].hook_name);
             if (bpf_map_update_elem(hook_fd, &idx, &bpf_hook, BPF_ANY) < 0) {
                 fprintf(stderr, "Warning: Failed to update hook config %d: %s\n", i, strerror(errno));
+                return -1;
             } else {
                 printf("  Configured hook: %s (enabled=%d, measure=%d)\n",
                        hook_configs[i].hook_name, hook_configs[i].enabled, hook_configs[i].measure);

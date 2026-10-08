@@ -350,7 +350,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char *namespace_id)
 {
     struct bpfima_policy_namespace *policy_ns;
-    struct bpfima_policy_config *global_policy;
+    struct bpfima_policy_config global_policy;
     int ret;
 
     if (!namespace_id || strlen(namespace_id) == 0)
@@ -372,8 +372,8 @@ struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char
 
     strscpy(policy_ns->namespace_id, namespace_id, CONTAINER_ID_MAX_LEN);
 
-    global_policy = bpfima_policy_get();
-    memcpy(&policy_ns->policy, global_policy, sizeof(policy_ns->policy));
+    bpfima_policy_get_config(&global_policy);
+    memcpy(&policy_ns->policy, &global_policy, sizeof(policy_ns->policy));
 
     INIT_LIST_HEAD(&policy_ns->change_history);
     spin_lock_init(&policy_ns->change_history_lock);
@@ -491,6 +491,9 @@ int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_l
 {
     struct bpfima_policy_namespace *policy_ns;
     int ret;
+
+    if (new_level > 3)
+        return -EINVAL;
 
     policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
     if (IS_ERR(policy_ns))

@@ -27,6 +27,9 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
     if (previous_ret != 0)
         return previous_ret;
 
+    if (!bpfima_should_process(HOOK_LSM_FILE_POST_OPEN))
+        return 0;
+
     if (!(mask & 0x00000004))
         return 0;
     if (!file)
@@ -59,7 +62,9 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
         return 0;
 
     loff_t i_size = BPF_CORE_READ(inode, i_size);
-    if (i_size < 4096 || i_size > 10485)
+    struct bpfima_policy_config *policy = bpfima_get_policy();
+    if (policy && (policy->filter_flags & POLICY_FILTER_SMALL_FILES) &&
+        i_size < policy->min_file_size)
         return 0;
 
     u8 digest[32] = {0};

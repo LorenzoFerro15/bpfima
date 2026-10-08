@@ -14,6 +14,39 @@ static char test_pid_file[128];
 
 static char verifier_log[1024 * 1024];
 
+static int test_pid_file_security(void)
+{
+    struct stat st;
+    mode_t previous_mask = umask(0);
+    int ret = 1;
+    char target[256];
+
+    snprintf(target, sizeof(target), "%s-target", test_pid_file);
+    if (write_pid_file() || stat(test_pid_file, &st) || (st.st_mode & 0777) != 0600 ||
+        read_pid_file() != getpid())
+        goto cleanup;
+    if (chmod(test_pid_file, 0666) || read_pid_file() >= 0 || errno != EPERM || cmd_unload() == 0)
+        goto cleanup;
+    if (write_pid_file() || stat(test_pid_file, &st) || (st.st_mode & 0777) != 0600)
+        goto cleanup;
+    unlink(test_pid_file);
+    int fd = open(target, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (fd < 0)
+        goto cleanup;
+    close(fd);
+    if (symlink(target, test_pid_file) || write_pid_file() == 0 ||
+        read_pid_file() >= 0 || errno != ELOOP || cmd_unload() == 0)
+        goto cleanup;
+    ret = 0;
+    puts("PASS: PID files are private, unsafe modes are rejected, and symlinks are not followed");
+
+cleanup:
+    umask(previous_mask);
+    unlink(test_pid_file);
+    unlink(target);
+    return ret;
+}
+
 static int create_fixture(const char *fixture, __u32 *program_id)
 {
     struct bpf_object *obj = NULL;
@@ -207,6 +240,8 @@ int main(int argc, char **argv)
         goto cleanup;
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    if (test_pid_file_security())
+        goto cleanup;
     setenv("BPFIMA_PERSIST_STATE", "1", 1);
     if (kill(INT_MAX, 0) == 0 || errno != ESRCH)
         goto cleanup;

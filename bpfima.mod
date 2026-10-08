@@ -1,0 +1,13 @@
+./src/bpfima_main.o
+./src/container.o
+./src/hash_utils.o
+./src/kfuncs_container.o
+./src/kfuncs_measure.o
+./src/kfuncs_policy.o
+./src/measurements.o
+./src/merkle.o
+./src/policy_manager.o
+./src/policy_namespace.o
+./src/policy_securityfs.o
+./src/securityfs_utils.o
+./src/tpm_ops.o

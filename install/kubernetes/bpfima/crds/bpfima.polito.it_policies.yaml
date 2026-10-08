@@ -87,7 +87,7 @@ spec:
                       type: integer
                     pattern:
                       description: Pattern the pattern string to match
-                      maxLength: 256
+                      maxLength: 63
                       minLength: 1
                       type: string
                   required:
@@ -357,7 +357,7 @@ spec:
                       type: integer
                     pattern:
                       description: Pattern the pattern string to match
-                      maxLength: 256
+                      maxLength: 63
                       minLength: 1
                       type: string
                   required:
@@ -388,6 +388,7 @@ spec:
                   min_file_size:
                     description: MinFileSize minimum file size to track
                     format: int64
+                    maximum: 4294967295
                     minimum: 0
                     type: integer
                 required:

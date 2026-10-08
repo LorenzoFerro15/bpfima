@@ -89,8 +89,12 @@ clean:
 $(BUILD_DIR)/kfunc-buffer-test: tests/security/kfunc_buffer_test.c include/bpfima_kfunc_buffer.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
 	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude $< -o $@
 
-test-security: $(BUILD_DIR)/kfunc-buffer-test
+$(BUILD_DIR)/yaml-policy-test: tests/security/yaml_policy_test.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h | $(BUILD_DIR)
+	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $< tools/yaml_parser.c -o $@ -lyaml
+
+test-security: $(BUILD_DIR)/kfunc-buffer-test $(BUILD_DIR)/yaml-policy-test
 	./$(BUILD_DIR)/kfunc-buffer-test
+	./$(BUILD_DIR)/yaml-policy-test
 
 $(BUILD_DIR)/security-regression.bpf.o: tests/security/security_regression.bpf.c utils/headers_bpf.h utils/utils.h utils/bpf_kfunc_defs.h include/bpfima_kfunc_types.h $(VMLINUX_H) | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@

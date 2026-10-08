@@ -27,6 +27,7 @@
 
 /* Module parameter to control policy write access */
 static int securityfs_policy_writable = 1;
+static DEFINE_MUTEX(global_policy_write_mutex);
 module_param(securityfs_policy_writable, int, 0444);
 MODULE_PARM_DESC(securityfs_policy_writable,
                  "Allow runtime policy modifications via securityfs (0=read-only, 1=writable). "
@@ -122,7 +123,7 @@ static struct dentry *global_policy_file = NULL;
 static int parse_and_update_policy(const char *buf, const char *namespace_id)
 {
     char *field, *value_str, *buf_copy;
-    unsigned long value;
+    u32 value;
     int ret = -EINVAL;
     size_t i;
 
@@ -141,7 +142,7 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
     *value_str = '\0';
     value_str++;
 
-    ret = kstrtoul(value_str, 0, &value);
+    ret = kstrtou32(value_str, 0, &value);
     if (ret) {
         pr_err("bpfima: Invalid value: %s\n", value_str);
         kfree(buf_copy);
@@ -154,6 +155,12 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
         if (strcmp(field, pf->name) != 0)
             continue;
 
+        if ((strcmp(field, "enabled") == 0 && value > 1) ||
+            (strcmp(field, "log_level") == 0 && value > 3)) {
+            ret = -EINVAL;
+            goto out;
+        }
+
         if (namespace_id && !pf->supports_namespace) {
             pr_err("bpfima: Field '%s' does not support namespace-specific updates\n", field);
             ret = -ENOTSUPP;
@@ -163,9 +170,12 @@ static int parse_and_update_policy(const char *buf, const char *namespace_id)
         if (namespace_id) {
             ret = pf->ns_update(namespace_id, (u32)value);
         } else {
-            struct bpfima_policy_config new_config = *bpfima_policy_get();
+            struct bpfima_policy_config new_config;
+            mutex_lock(&global_policy_write_mutex);
+            bpfima_policy_get_config(&new_config);
             pf->global_update(&new_config, (u32)value);
             ret = bpfima_policy_update(&new_config);
+            mutex_unlock(&global_policy_write_mutex);
         }
 
         if (ret == 0) {
@@ -318,7 +328,9 @@ static int policy_show(struct seq_file *s, void *v)
  */
 static int global_policy_show(struct seq_file *s, void *v)
 {
-    struct bpfima_policy_config *policy = bpfima_policy_get();
+    struct bpfima_policy_config config;
+    struct bpfima_policy_config *policy = &config;
+    bpfima_policy_get_config(policy);
  
     seq_printf(s, "enabled=%u\n", policy->enabled);
     seq_printf(s, "filter_flags=0x%x\n", policy->filter_flags);

@@ -251,7 +251,8 @@ u32 get_merkle_root_history_count(void)
 int add_merkle_root_history_entry(const u8 *value, const char *container_id)
 {
     struct merkle_root_entry *entry;
-    struct bpfima_policy_config *policy;
+    struct bpfima_policy_config config;
+    struct bpfima_policy_config *policy = &config;
     unsigned long flags;
     u32 current_count;
     bool should_check_limit = true;
@@ -272,7 +273,7 @@ int add_merkle_root_history_entry(const u8 *value, const char *container_id)
     entry->aggregated_count = 0;
 
     /* Check policy scope */
-    policy = bpfima_policy_get();
+    bpfima_policy_get_config(policy);
     if (policy && policy->merkle_history_scope == MERKLE_HISTORY_SCOPE_ROOT_ONLY) {
         /* Only apply circular buffer to root/global entries (empty container_id) */
         if (container_id && container_id[0] != '\0') {

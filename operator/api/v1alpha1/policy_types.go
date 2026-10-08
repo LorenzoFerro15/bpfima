@@ -34,13 +34,13 @@ type PolicySpec struct {
 	// Cgroup ignore patterns
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:MaxItems=8
 	CgroupPatterns []PatternEntry `json:"cgroup_patterns,omitempty"`
 
 	// Path ignore patterns
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:MaxItems=8
 	PathPatterns []PatternEntry `json:"path_patterns,omitempty"`
 
 	// Hook-specific configuration
@@ -65,6 +65,7 @@ type PolicyConfig struct {
 	// MinFileSize minimum file size to track
 	//
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
 	// +kubebuilder:validation:Optional
 	MinFileSize int64 `json:"min_file_size,omitempty"`
 
@@ -162,7 +163,7 @@ type PatternEntry struct {
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:MaxLength=63
 	Pattern string `json:"pattern"`
 
 	// Enabled whether this pattern is active

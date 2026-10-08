@@ -85,7 +85,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
     if (!can_sleep)
     {
         snprintf(pcr_buf, pcr_buf__sz, "PCR%d_ATOMIC_CONTEXT",
-                 TPM_PCR_INDEX);
+                 bpfima_tpm_pcr_index);
         printk(KERN_INFO "Called from atomic context, using simulation\n");
         return 0;
     }
@@ -97,7 +97,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
     {
         mutex_unlock(&bpfima_tpm_mutex);
         snprintf(pcr_buf, pcr_buf__sz, "PCR%d_HASH_SIMULATION",
-                 TPM_PCR_INDEX);
+                 bpfima_tpm_pcr_index);
         printk(KERN_INFO "TPM not available, using simulation\n");
         return 0;
     }
@@ -105,7 +105,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
     memset(digest, 0, sizeof(digest));
     digest[0].alg_id = TPM_ALG_SHA256;
 
-    ret = tpm_pcr_read(chip, TPM_PCR_INDEX, digest);
+    ret = tpm_pcr_read(chip, bpfima_tpm_pcr_index, digest);
     put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);
@@ -113,12 +113,12 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
     if (ret != 0)
     {
         snprintf(pcr_buf, pcr_buf__sz, "PCR%d_HASH_SIMULATION",
-                 TPM_PCR_INDEX);
+                 bpfima_tpm_pcr_index);
         printk(KERN_WARNING "TPM PCR read failed (%d), using simulation\n", ret);
         return ret > 0 ? -EIO : ret;
     }
 
-    snprintf(pcr_buf, pcr_buf__sz, "PCR%d_REAL:", TPM_PCR_INDEX);
+    snprintf(pcr_buf, pcr_buf__sz, "PCR%d_REAL:", bpfima_tpm_pcr_index);
     for (int i = 0; i < SHA256_DIGEST_SIZE && strlen(pcr_buf) < pcr_buf__sz - 3; i++)
     {
         snprintf(pcr_buf + strlen(pcr_buf), pcr_buf__sz - strlen(pcr_buf),

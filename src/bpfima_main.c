@@ -164,6 +164,9 @@ static int __init bpfima_init(void)
 
     printk(KERN_INFO "BPF-IMA module initializing...\n");
 
+    if (bpfima_tpm_pcr_index < 0 || bpfima_tpm_pcr_index > 23)
+        return -EINVAL;
+
     ret = bpfima_policy_init();
     if (ret)
     {
@@ -185,6 +188,10 @@ static int __init bpfima_init(void)
         goto err_hash;
     }
 
+    ret = bpfima_container_init();
+    if (ret)
+        goto err_policy_ns;
+
     memset(&system_merkle_root, 0, sizeof(system_merkle_root));
     spin_lock_init(&system_merkle_root.lock);
     
@@ -194,7 +201,7 @@ static int __init bpfima_init(void)
         ret = PTR_ERR(system_merkle_root.tfm);
         system_merkle_root.tfm = NULL;
         pr_err("bpfima: Failed to allocate tfm for system merkle root: %d\n", ret);
-        goto err_policy_ns;
+        goto err_containers;
     }
     pr_info("bpfima: Merkle tree root initialized\n");
 
@@ -228,6 +235,8 @@ err_merkle_tfm:
         crypto_free_shash(system_merkle_root.tfm);
         system_merkle_root.tfm = NULL;
     }
+err_containers:
+    bpfima_container_cleanup();
 err_policy_ns:
     bpfima_policy_namespace_cleanup();
 err_hash:
@@ -256,6 +265,7 @@ static void __exit bpfima_exit(void)
 
     /* Clean up container tracking structures FIRST (includes per-container securityfs) */
     cleanup_all_containers();
+    bpfima_container_cleanup();
     cleanup_merkle_root_history();
 
     if (system_merkle_root.tfm)
