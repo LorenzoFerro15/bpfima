@@ -220,3 +220,46 @@ The pin test uses private directories and leaves production pins untouched. A
 filesystem-only smoke check of the same cleanup code is available without root
 or a loaded module: `./build/pinned-unload --filesystem`. It cannot verify BPF
 program lifetime or module reference release.
+
+## Small audit fixes, October 2026
+
+Container destruction now runs in a dedicated workqueue after an RCU grace
+period. Module shutdown drains queued RCU callbacks and destruction work before
+tearing down policy state. Namespace creation is serialized, and duplicate hash
+insertion checks uniqueness under the table lock. The existing lifecycle and
+`--stress` checks exercise these paths; run them with KASAN/lockdep when available.
+
+The PCR parameter is validated on load and read-only thereafter. Status and PCR
+reads use the configured index, and the test suite checks the corresponding
+hardware/simulation prefix. SecurityFS invalid-write tests now include numeric
+overflow and invalid log levels. Socket payload lengths exclude the formatter's
+terminating NUL. Post-open/mmap respect hook enablement, setattr respects global
+enablement, and post-open's fixed size window is replaced by the configured
+small-file threshold.
+
+The private unload fixture also checks PID file permissions, rejection of unsafe
+modes, and symlink handling. Old group/world-writable PID files are now refused;
+verify the owning process before replacing an unsafe file. PID reuse and atomic
+singleton ownership still need a separate process-lifecycle change.
+
+Userspace parser regressions run separately, without kernel mutations:
+
+```bash
+make test-security CC=clang
+go test ./verifier/...
+(cd operator && go test ./internal/...)
+```
+
+The sanitizer tests cover initialization of the complete YAML hook array, named
+hook IDs, pattern clearing, invalid values, capacity limits, and update errors.
+The bundled userspace YAML examples now use the parser's supported schema.
+Operator tests check the 36-byte policy ABI and field offsets; CRD limits match
+the eight-slot, 63-byte pattern contract. Kubernetes cleanup preserves shared
+CRDs by default (`cleanup.deleteCRD=false`) and fails if the module remains loaded.
+
+These changes do not solve transaction ordering across history/root/TPM, rollback
+after allocation or hardware failures, resource quotas, authoritative policy
+synchronization, target-log completeness/identity, authenticated history trimming,
+or the missing Kubernetes policy-audit endpoint. Error handling and the daemon's
+absolute output directory/health reporting also require further work. Local
+module compilation succeeds, but live kernel results require matching module BTF.

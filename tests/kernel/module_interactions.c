@@ -257,6 +257,12 @@ static int test_namespaces(struct test_context *ctx)
 
 static int read_pcr(struct test_context *ctx, struct module_test_state *state)
 {
+    char parameter[32];
+    char expected[32];
+    if (read_text("/sys/module/bpfima/parameters/tpm_pcr_index", parameter, sizeof(parameter)))
+        return 1;
+    int pcr_index = atoi(parameter);
+    REQUIRE(pcr_index >= 0 && pcr_index <= 23, "invalid configured PCR index");
     init_state(ctx, state, TEST_PCR, "measure");
     if (submit(ctx, state))
         return 1;
@@ -265,10 +271,13 @@ static int read_pcr(struct test_context *ctx, struct module_test_state *state)
     if (state->tpm_available)
     {
         unsigned char digest[TEST_HASH_SIZE];
-        REQUIRE(strncmp(state->pcr, "PCR23_REAL:", 11) == 0, "unexpected hardware PCR output: %s", state->pcr);
-        return decode_hash(state->pcr + 11, digest);
+        snprintf(expected, sizeof(expected), "PCR%d_REAL:", pcr_index);
+        REQUIRE(strncmp(state->pcr, expected, strlen(expected)) == 0,
+                "unexpected hardware PCR output: %s", state->pcr);
+        return decode_hash(state->pcr + strlen(expected), digest);
     }
-    REQUIRE(strcmp(state->pcr, "PCR23_HASH_SIMULATION") == 0,
+    snprintf(expected, sizeof(expected), "PCR%d_HASH_SIMULATION", pcr_index);
+    REQUIRE(strcmp(state->pcr, expected) == 0,
             "unexpected no-TPM simulation output: %s", state->pcr);
     return 0;
 }
@@ -459,12 +468,16 @@ static int test_policy(struct test_context *ctx)
     memcpy(previous_root, state.root, TEST_HASH_SIZE);
     memcpy(previous_changes, state.changes, TEST_HASH_SIZE);
     memcpy(&previous_policy, &state.policy, sizeof(previous_policy));
-    fd = open(path, O_WRONLY | O_CLOEXEC);
-    REQUIRE(fd >= 0, "open namespace policy for invalid write: %s", strerror(errno));
-    written = write(fd, "unknown_field=1\n", sizeof("unknown_field=1\n") - 1);
-    saved_errno = errno;
-    close(fd);
-    REQUIRE(written == -1 && saved_errno == EINVAL, "unknown SecurityFS field was accepted");
+    const char *invalid_writes[] = {"unknown_field=1\n", "log_level=4\n", "min_file_size=4294967296\n"};
+    for (size_t i = 0; i < sizeof(invalid_writes) / sizeof(invalid_writes[0]); i++) {
+        fd = open(path, O_WRONLY | O_CLOEXEC);
+        REQUIRE(fd >= 0, "open namespace policy for invalid write: %s", strerror(errno));
+        written = write(fd, invalid_writes[i], strlen(invalid_writes[i]));
+        saved_errno = errno;
+        close(fd);
+        REQUIRE(written == -1 && saved_errno == (i == 2 ? ERANGE : EINVAL),
+                "invalid SecurityFS field/value was accepted: %s", invalid_writes[i]);
+    }
     init_state(ctx, &state, TEST_SNAPSHOT, "policy");
     if (submit(ctx, &state))
         return 1;

@@ -73,7 +73,7 @@ spec:
         args:
         - |
           set -e
-          cat <<EOF | kubectl apply -f -
+          cat <<'EOF' | kubectl apply -f -
           apiVersion: apps/v1
           kind: DaemonSet
           metadata:

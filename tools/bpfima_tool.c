@@ -162,7 +162,9 @@ static int read_pid_file(void)
     }
     FILE *fp = fdopen(fd, "r");
     if (!fp) {
+        int saved_errno = errno;
         close(fd);
+        errno = saved_errno;
         return -1;
     }
     char text[64];

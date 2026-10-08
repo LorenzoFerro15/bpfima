@@ -4,6 +4,8 @@ build/
 *.ko
 *.mod.c
 *.mod.o
+*.o
+*.mod
 
 # Kernel build system files (in case they end up in root)
 *.cmd
