@@ -115,4 +115,10 @@ $(BUILD_DIR)/pinned-unload: tests/kernel/pinned_unload.c tools/bpfima_tool.c too
 
 kernel-tests: security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o $(BUILD_DIR)/pinned-unload
 
-.PHONY: all modules clean bpf-only test-security security-regression kernel-tests
+$(BUILD_DIR)/merkle-test: tests/kernel/merkle_test.c tests/kernel/merkle_test.h src/merkle.c include/bpfima_merkle.h include/bpfima_policy.h | $(BUILD_DIR)
+	$(CC) -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -include tests/kernel/merkle_test.h tests/kernel/merkle_test.c src/merkle.c -o $@ -lcrypto
+
+test-commit: $(BUILD_DIR)/merkle-test
+	./$(BUILD_DIR)/merkle-test
+
+.PHONY: all modules clean bpf-only test-security security-regression kernel-tests test-commit

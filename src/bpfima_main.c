@@ -166,6 +166,7 @@ static int __init bpfima_init(void)
 
     if (bpfima_tpm_pcr_index < 0 || bpfima_tpm_pcr_index > 23)
         return -EINVAL;
+    bpfima_commit_init();
 
     ret = bpfima_policy_init();
     if (ret)

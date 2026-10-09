@@ -157,9 +157,6 @@ static int update_changes_string(struct bpfima_policy_namespace *policy_ns,
         return ret;
     }
 
-    pr_info("bpfima: Updated policy for namespace %s: %s\n",
-            policy_ns->namespace_id, temp);
-
     return 0;
 }
 
@@ -175,7 +172,8 @@ static int update_changes_string(struct bpfima_policy_namespace *policy_ns,
  * Returns: 0 on success, negative error code on failure
  */
 static int record_policy_change_and_extend(struct bpfima_policy_namespace *policy_ns,
-                                           const char *namespace_id)
+                                           const char *namespace_id,
+                                           const struct bpfima_policy_namespace *candidate)
 {
     struct policy_change_entry *change_entry;
     struct container_node *container;
@@ -183,7 +181,7 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
     int ret;
     char policy_string[MAX_POLICY_STRING_SIZE];
 
-    if (!policy_ns) {
+    if (!policy_ns || !candidate) {
         pr_err("bpfima: record_policy_change_and_extend: NULL policy_ns\n");
         return -EINVAL;
     }
@@ -195,19 +193,19 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
 
     ret = snprintf(policy_string, sizeof(policy_string),
                    "enabled=%u,filter_flags=0x%x,action_flags=0x%x,min_file_size=%u,max_path_depth=%u,log_level=%u",
-                   policy_ns->policy.enabled,
-                   policy_ns->policy.filter_flags,
-                   policy_ns->policy.action_flags,
-                   policy_ns->policy.min_file_size,
-                   policy_ns->policy.max_path_depth,
-                   policy_ns->policy.log_level);
+                   candidate->policy.enabled,
+                   candidate->policy.filter_flags,
+                   candidate->policy.action_flags,
+                   candidate->policy.min_file_size,
+                   candidate->policy.max_path_depth,
+                   candidate->policy.log_level);
     
     if (ret < 0 || ret >= sizeof(policy_string)) {
         pr_err("bpfima: Failed to format policy string\n");
         return -EINVAL;
     }
 
-    change_entry = kzalloc(sizeof(*change_entry), GFP_ATOMIC);
+    change_entry = kzalloc(sizeof(*change_entry), GFP_KERNEL);
     if (!change_entry)
         return -ENOMEM;
 
@@ -221,120 +219,48 @@ static int record_policy_change_and_extend(struct bpfima_policy_namespace *polic
         return ret;
     }
 
-    spin_lock_irqsave(&policy_ns->change_history_lock, flags);
-    list_add_tail(&change_entry->list, &policy_ns->change_history);
-    spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+    char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
+    u8 measurement_digest[MERKLE_HASH_SIZE];
+    char measurement_data[512];
+    struct measurement_entry *meas_entry = NULL;
 
-    pr_info("bpfima: Recorded policy change for namespace %s\n", namespace_id);
+    for (int i = 0; i < MERKLE_HASH_SIZE; i++)
+        snprintf(&policy_hash_hex[i * 2], 3, "%02x", change_entry->change_hash[i]);
+    policy_hash_hex[MERKLE_HASH_SIZE * 2] = '\0';
+    snprintf(measurement_data, sizeof(measurement_data), "policy_update %s", policy_hash_hex);
+    ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
+    if (ret) {
+        kfree(change_entry);
+        return ret;
+    }
 
     container = find_container_by_id(namespace_id);
-    
     if (container) {
-        char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
-        struct measurement_entry *meas_entry;
-        int i;
-        
-        for (i = 0; i < MERKLE_HASH_SIZE; i++) {
-            snprintf(&policy_hash_hex[i * 2], 3, "%02x", change_entry->change_hash[i]);
-        }
-        policy_hash_hex[MERKLE_HASH_SIZE * 2] = '\0';
-        
-        u8 measurement_digest[MERKLE_HASH_SIZE];
-        char measurement_data[512];
-        
-        snprintf(measurement_data, sizeof(measurement_data), "policy_update %s", policy_hash_hex);
-        
-        ret = calculate_sha256_hash(measurement_data, strlen(measurement_data), measurement_digest);
-        if (ret < 0) {
-            pr_err("bpfima: Failed to calculate measurement hash for policy update: %d\n", ret);
-            
-            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
-            list_del(&change_entry->list);
-            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
-            
-            kfree(change_entry);
-            bpfima_put_container(container);
-            return ret;
-        }
-        
         meas_entry = create_measurement_entry("policy_update", policy_hash_hex, "", measurement_digest, GFP_KERNEL);
         if (!meas_entry) {
-            pr_err("bpfima: Failed to create measurement entry for policy update\n");
-            
-            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
-            list_del(&change_entry->list);
-            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
-            
             kfree(change_entry);
             bpfima_put_container(container);
             return -ENOMEM;
         }
-        
-        u8 local_leaf_hash[MERKLE_HASH_SIZE];
-
-        spin_lock_irqsave(&container->measurement_lock, flags);
-        list_add_tail(&meas_entry->list, &container->measurement_list);
-        atomic_inc(&container->measurement_count);
-        
-        ret = extend_container_leaf_hash(container, measurement_digest);
-        if (ret < 0) {
-            list_del(&meas_entry->list);
-            atomic_dec(&container->measurement_count);
-            spin_unlock_irqrestore(&container->measurement_lock, flags);
-            
-            pr_err("bpfima: Failed to extend container leaf hash: %d\n", ret);
-            kfree(meas_entry);
-            
-            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
-            list_del(&change_entry->list);
-            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
-            
-            kfree(change_entry);
-            bpfima_put_container(container);
-            return ret;
-        }
-
-        memcpy(local_leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
-        spin_unlock_irqrestore(&container->measurement_lock, flags);
-
-        pr_info("bpfima: Extended leaf hash for namespace %s\n", namespace_id);
-
-        ret = add_merkle_root_history_entry(local_leaf_hash, container->id);
-        if (ret < 0) {
-            pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
-        }
-        
-        ret = extend_merkle_root(local_leaf_hash);
-        if (ret < 0) {
-            pr_err("bpfima: Failed to extend Merkle root: %d\n", ret);
-            
-            spin_lock_irqsave(&container->measurement_lock, flags);
-            list_del(&meas_entry->list);
-            spin_unlock_irqrestore(&container->measurement_lock, flags);
-            
-            atomic_dec(&container->measurement_count);
-            kfree(meas_entry);
-            
-            spin_lock_irqsave(&policy_ns->change_history_lock, flags);
-            list_del(&change_entry->list);
-            spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
-            
-            kfree(change_entry);
-            
-            pr_warn("bpfima: Merkle root extension failed. Container %s leaf hash is now inconsistent.\n",
-                    container->id);
-            bpfima_put_container(container);
-            return ret;
-        }
-
-        pr_info("bpfima: Extended Merkle root for policy change in namespace %s\n", namespace_id);
-        bpfima_put_container(container);
-    } else {
-        pr_warn("bpfima: Container not found for namespace %s, policy change recorded but not extended\n",
-                namespace_id);
     }
-
-    return 0;
+    mutex_lock(&bpfima_commit_mutex);
+    ret = container ? bpfima_commit_measurement_locked(container, meas_entry, false) :
+                      bpfima_commit_root_locked(measurement_digest, namespace_id);
+    if (!ret) {
+        memcpy(&policy_ns->policy, &candidate->policy, sizeof(policy_ns->policy));
+        memcpy(policy_ns->changes_str, candidate->changes_str, sizeof(policy_ns->changes_str));
+        memcpy(policy_ns->changes_hash, candidate->changes_hash, sizeof(policy_ns->changes_hash));
+        spin_lock_irqsave(&policy_ns->change_history_lock, flags);
+        list_add_tail(&change_entry->list, &policy_ns->change_history);
+        spin_unlock_irqrestore(&policy_ns->change_history_lock, flags);
+    }
+    mutex_unlock(&bpfima_commit_mutex);
+    if (ret) {
+        kfree(meas_entry);
+        kfree(change_entry);
+    }
+    bpfima_put_container(container);
+    return ret;
 }
 
 /**
@@ -399,115 +325,59 @@ struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char
     return policy_ns;
 }
 
-/**
- * bpfima_policy_namespace_update_filter_flags - Update filter flags for namespace
- * @namespace_id: Namespace identifier
- * @new_flags: New filter flags value
- *
- * Returns: 0 on success, negative error code on failure
- */
+/* Stage configuration and audit bytes before the synchronous commit point. */
+static int update_namespace_value(const char *namespace_id, const char *field,
+                                  size_t offset, u32 value)
+{
+    struct bpfima_policy_namespace *policy_ns;
+    struct bpfima_policy_namespace *candidate;
+    int ret;
+
+    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
+    if (IS_ERR(policy_ns))
+        return PTR_ERR(policy_ns);
+    candidate = kzalloc(sizeof(*candidate), GFP_KERNEL);
+    if (!candidate)
+        return -ENOMEM;
+
+    mutex_lock(&bpfima_policy_namespace_mutex);
+    strscpy(candidate->namespace_id, policy_ns->namespace_id, sizeof(candidate->namespace_id));
+    memcpy(&candidate->policy, &policy_ns->policy, sizeof(candidate->policy));
+    memcpy(candidate->changes_str, policy_ns->changes_str, sizeof(candidate->changes_str));
+    memcpy(candidate->changes_hash, policy_ns->changes_hash, sizeof(candidate->changes_hash));
+    *(u32 *)((u8 *)&candidate->policy + offset) = value;
+    ret = update_changes_string(candidate, field, value);
+    if (!ret)
+        ret = record_policy_change_and_extend(policy_ns, namespace_id, candidate);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
+    kfree(candidate);
+    return ret;
+}
+
 int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 new_flags)
 {
-    struct bpfima_policy_namespace *policy_ns;
-    int ret;
-
-    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
-    if (IS_ERR(policy_ns))
-        return PTR_ERR(policy_ns);
-
-    mutex_lock(&bpfima_policy_namespace_mutex);
-    policy_ns->policy.filter_flags = new_flags;
-    ret = update_changes_string(policy_ns, "filter_flags", new_flags);
-    if (ret == 0) {
-        ret = record_policy_change_and_extend(policy_ns, namespace_id);
-    }
-    mutex_unlock(&bpfima_policy_namespace_mutex);
-
-    return ret;
+    return update_namespace_value(namespace_id, "filter_flags",
+                                   offsetof(struct bpfima_policy_config, filter_flags), new_flags);
 }
 
-/**
- * bpfima_policy_namespace_update_action_flags - Update action flags for namespace
- * @namespace_id: Namespace identifier
- * @new_flags: New action flags value
- *
- * Returns: 0 on success, negative error code on failure
- */
 int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 new_flags)
 {
-    struct bpfima_policy_namespace *policy_ns;
-    int ret;
-
-    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
-    if (IS_ERR(policy_ns))
-        return PTR_ERR(policy_ns);
-
-    mutex_lock(&bpfima_policy_namespace_mutex);
-    policy_ns->policy.action_flags = new_flags;
-    ret = update_changes_string(policy_ns, "action_flags", new_flags);
-    if (ret == 0) {
-        ret = record_policy_change_and_extend(policy_ns, namespace_id);
-    }
-    mutex_unlock(&bpfima_policy_namespace_mutex);
-
-    return ret;
+    return update_namespace_value(namespace_id, "action_flags",
+                                   offsetof(struct bpfima_policy_config, action_flags), new_flags);
 }
 
-/**
- * bpfima_policy_namespace_update_min_file_size - Update min file size for namespace
- * @namespace_id: Namespace identifier
- * @new_size: New minimum file size value
- *
- * Returns: 0 on success, negative error code on failure
- */
 int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size)
 {
-    struct bpfima_policy_namespace *policy_ns;
-    int ret;
-
-    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
-    if (IS_ERR(policy_ns))
-        return PTR_ERR(policy_ns);
-
-    mutex_lock(&bpfima_policy_namespace_mutex);
-    policy_ns->policy.min_file_size = new_size;
-    ret = update_changes_string(policy_ns, "min_file_size", new_size);
-    if (ret == 0) {
-        ret = record_policy_change_and_extend(policy_ns, namespace_id);
-    }
-    mutex_unlock(&bpfima_policy_namespace_mutex);
-
-    return ret;
+    return update_namespace_value(namespace_id, "min_file_size",
+                                   offsetof(struct bpfima_policy_config, min_file_size), new_size);
 }
 
-/**
- * bpfima_policy_namespace_update_log_level - Update log level for namespace
- * @namespace_id: Namespace identifier
- * @new_level: New log level value
- *
- * Returns: 0 on success, negative error code on failure
- */
 int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level)
 {
-    struct bpfima_policy_namespace *policy_ns;
-    int ret;
-
     if (new_level > 3)
         return -EINVAL;
-
-    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
-    if (IS_ERR(policy_ns))
-        return PTR_ERR(policy_ns);
-
-    mutex_lock(&bpfima_policy_namespace_mutex);
-    policy_ns->policy.log_level = new_level;
-    ret = update_changes_string(policy_ns, "log_level", new_level);
-    if (ret == 0) {
-        ret = record_policy_change_and_extend(policy_ns, namespace_id);
-    }
-    mutex_unlock(&bpfima_policy_namespace_mutex);
-
-    return ret;
+    return update_namespace_value(namespace_id, "log_level",
+                                   offsetof(struct bpfima_policy_config, log_level), new_level);
 }
 
 /**

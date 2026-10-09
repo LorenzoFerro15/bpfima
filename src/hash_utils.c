@@ -9,13 +9,14 @@
  */
 
 #include "bpfima_common.h"
+#include "bpfima_merkle.h"
 #include <linux/percpu.h>
 #include <crypto/hash.h>
 #include <linux/unaligned.h>
 
 #define HASH_TABLE_BITS 8
 
-/* Global hash table for duplicate detection */
+/* Only committed events enter this table; publication holds the commit mutex. */
 static DEFINE_HASHTABLE(sha256_hash_table, HASH_TABLE_BITS);
 static DEFINE_SPINLOCK(hash_table_lock);
 
@@ -146,52 +147,27 @@ bool hash_exists(const u8 *hash_value, const char *namespace_id)
     return found;
 }
 
-/**
- * add_hash_to_table - Add a new SHA256 hash to the hash table for a namespace
- * @hash_value: SHA256 digest to add (must be SHA256_DIGEST_SIZE bytes)
- * @namespace_id: Namespace identifier (NULL for host/global namespace)
- * @can_sleep: Whether the current context allows sleeping for memory allocation
- *
- * Adds a new hash entry to the hash table to track that this file has been
- * accessed by the specified namespace. The same file accessed by different
- * namespaces will have separate entries. If the same namespace re-accesses
- * the file, it should be checked with hash_exists() first to avoid duplicates.
- * Uses appropriate memory allocation flags based on the calling context.
- * The function is thread-safe using spinlock protection.
- *
- * Returns: 0 on success, negative error code on failure
- */
-int add_hash_to_table(const u8 *hash_value, const char *namespace_id, bool can_sleep)
+/* A prepared digest is invisible to duplicate callers until its event commits. */
+struct hash_entry *bpfima_alloc_hash_entry(const u8 *hash_value, const char *namespace_id)
 {
-    struct hash_entry *new_entry;
-    struct hash_entry *entry;
-    u32 hash_key;
+    struct hash_entry *entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+
+    if (!entry)
+        return NULL;
+    memcpy(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
+    strscpy(entry->namespace_id, namespace_id ? namespace_id : "", CONTAINER_ID_MAX_LEN);
+    return entry;
+}
+
+void bpfima_publish_hash_entry_locked(struct hash_entry *entry)
+{
     unsigned long flags;
-    const char *ns_to_store = namespace_id ? namespace_id : "";
-    
-    new_entry = kzalloc(sizeof(*new_entry), can_sleep ? GFP_KERNEL : GFP_ATOMIC);
-    if (!new_entry)
-        return -ENOMEM;
-    
-    memcpy(new_entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE);
-    strscpy(new_entry->namespace_id, ns_to_store, CONTAINER_ID_MAX_LEN);
-    
-    /* Use first 4 bytes of SHA256 as hash key */
-    hash_key = get_unaligned_le32(hash_value);
-    
+    u32 hash_key = get_unaligned_le32(entry->sha256_hash);
+
+    lockdep_assert_held(&bpfima_commit_mutex);
     spin_lock_irqsave(&hash_table_lock, flags);
-    hash_for_each_possible(sha256_hash_table, entry, hash_node, hash_key) {
-        if (memcmp(entry->sha256_hash, hash_value, SHA256_DIGEST_SIZE) == 0 &&
-            strcmp(entry->namespace_id, ns_to_store) == 0) {
-            spin_unlock_irqrestore(&hash_table_lock, flags);
-            kfree(new_entry);
-            return 1;
-        }
-    }
-    hash_add(sha256_hash_table, &new_entry->hash_node, hash_key);
+    hash_add(sha256_hash_table, &entry->hash_node, hash_key);
     spin_unlock_irqrestore(&hash_table_lock, flags);
-    
-    return 0;
 }
 
 /**

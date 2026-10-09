@@ -79,6 +79,7 @@ int status_show(struct seq_file *s, void *unused)
     seq_printf(s, "pcr_index=%d\n", bpfima_tpm_pcr_index);
     seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
     seq_printf(s, "digest_algorithm=sha256\n");
+    seq_printf(s, "commit_error=%d\n", bpfima_commit_get_error());
 
     return 0;
 }

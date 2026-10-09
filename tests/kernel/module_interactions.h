@@ -21,6 +21,7 @@ enum module_test_command
     TEST_UPDATE_LOG_LEVEL,
     TEST_FILTERS,
     TEST_PCR,
+    TEST_GLOBAL_POLICY, /* Userspace stress worker writes the SecurityFS policy. */
 };
 
 /* The hash-map key is a thread ID, so concurrent callers have private state. */

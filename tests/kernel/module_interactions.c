@@ -540,6 +540,21 @@ struct stress_worker
     int result;
 };
 
+static int write_global_log_level(struct test_context *ctx, unsigned int level)
+{
+    char path[PATH_MAX];
+    char value[32];
+    snprintf(path, sizeof(path), "%s/policy", ctx->securityfs);
+    int length = snprintf(value, sizeof(value), "log_level=%u\n", level);
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    REQUIRE(fd >= 0, "open global policy: %s", strerror(errno));
+    ssize_t written = write(fd, value, length);
+    int saved_errno = errno;
+    close(fd);
+    REQUIRE(written == length, "write global policy: %s", strerror(saved_errno));
+    return 0;
+}
+
 static void *stress_thread(void *data)
 {
     struct stress_worker *worker = data;
@@ -554,6 +569,13 @@ static void *stress_thread(void *data)
         return NULL;
     for (unsigned int i = 0; i < (worker->command == TEST_CREATE || worker->duplicate ? 1U : TEST_STRESS_EVENTS); i++)
     {
+        if (worker->command == TEST_GLOBAL_POLICY) {
+            if (write_global_log_level(worker->ctx, (worker->index + i) % 4)) {
+                worker->result = 1;
+                break;
+            }
+            continue;
+        }
         init_state(worker->ctx, &state, worker->command, worker->suffix);
         if (worker->command == TEST_MEASURE)
         {
@@ -561,6 +583,8 @@ static void *stress_thread(void *data)
                      worker->duplicate ? 0 : worker->index, i);
             state.request.additional_data_len = strlen(state.request.additional_data);
         }
+        if (worker->command == TEST_UPDATE_MIN_SIZE)
+            state.policy.min_file_size = 10000 + worker->index * TEST_STRESS_EVENTS + i;
         if (submit(worker->ctx, &state) || state.result != 0)
         {
             fprintf(stderr, "FAIL: concurrent command %u for worker %u returned %d\n",
@@ -573,7 +597,7 @@ static void *stress_thread(void *data)
 }
 
 static int parallel_calls(struct test_context *ctx, const char *suffix,
-                          enum module_test_command command, bool duplicate)
+                          enum module_test_command command, bool duplicate, bool mixed)
 {
     struct stress_worker workers[TEST_MAX_WORKERS];
     pthread_t threads[TEST_MAX_WORKERS];
@@ -592,7 +616,9 @@ static int parallel_calls(struct test_context *ctx, const char *suffix,
     {
         workers[started] = (struct stress_worker){
             .ctx = ctx, .gate = &gate, .suffix = suffix, .index = started,
-            .command = command, .duplicate = duplicate,
+            .command = mixed ? (started % 3 == 2 ? TEST_GLOBAL_POLICY :
+                                  started % 3 == 1 ? TEST_UPDATE_MIN_SIZE : TEST_MEASURE) : command,
+            .duplicate = duplicate,
         };
         int error = pthread_create(&threads[started], NULL, stress_thread, &workers[started]);
         if (error)
@@ -617,6 +643,58 @@ static int parallel_calls(struct test_context *ctx, const char *suffix,
     return ret;
 }
 
+/* Replay only the new physical extensions, using the PCR captured before workers start. */
+static int check_concurrent_pcr(struct test_context *ctx, const struct module_test_state *before,
+                                unsigned int initial_history_count)
+{
+    struct module_test_state after;
+    unsigned char root[TEST_HASH_SIZE] = {0};
+    unsigned char expected[TEST_HASH_SIZE];
+    unsigned char actual[TEST_HASH_SIZE];
+    unsigned int count = 0;
+    char path[PATH_MAX];
+    char *line = NULL;
+    size_t capacity = 0;
+    int ret = 0;
+
+    if (!before->tpm_available || strncmp(before->pcr, "PCR23_REAL:", 11)) {
+        puts("SKIP: concurrent physical PCR replay requires TPM SHA-256 PCR23");
+        return 0;
+    }
+    if (decode_hash(before->pcr + 11, expected))
+        return 1;
+    snprintf(path, sizeof(path), "%s/merkle_root_history", ctx->securityfs);
+    FILE *file = fopen(path, "r");
+    REQUIRE(file, "open concurrent history: %s", strerror(errno));
+    ssize_t length;
+    while ((length = getline(&line, &capacity, file)) >= 0) {
+        unsigned char value[TEST_HASH_SIZE];
+        if (length != 65 || line[64] != '\n') {
+            ret = 1;
+            break;
+        }
+        line[64] = '\0';
+        if (decode_hash(line, value) || extend_hash(root, value, root) ||
+            (count >= initial_history_count && extend_hash(expected, root, expected))) {
+            ret = 1;
+            break;
+        }
+        count++;
+    }
+    if (ferror(file) || count < initial_history_count)
+        ret = 1;
+    free(line);
+    fclose(file);
+    if (ret || read_pcr(ctx, &after))
+        return 1;
+    REQUIRE(after.tpm_available && !strncmp(after.pcr, "PCR23_REAL:", 11), "TPM availability changed during stress");
+    if (decode_hash(after.pcr + 11, actual))
+        return 1;
+    REQUIRE(!memcmp(expected, actual, TEST_HASH_SIZE), "concurrent history order does not reproduce physical PCR23");
+    puts("PASS: concurrent history/root order reproduces physical TPM PCR23");
+    return 0;
+}
+
 static int test_concurrency(struct test_context *ctx)
 {
     struct module_test_state state;
@@ -627,7 +705,7 @@ static int test_concurrency(struct test_context *ctx)
     if (submit(ctx, &state))
         return 1;
     before_count = state.container_count;
-    if (parallel_calls(ctx, "race-create", TEST_CREATE, false))
+    if (parallel_calls(ctx, "race-create", TEST_CREATE, false, false))
         ret = 1;
     init_state(ctx, &state, TEST_SNAPSHOT, "race-create");
     if (submit(ctx, &state))
@@ -643,7 +721,7 @@ static int test_concurrency(struct test_context *ctx)
     if (submit(ctx, &state))
         return 1;
     REQUIRE(state.result == 0, "create unique-race namespace returned %d", state.result);
-    if (parallel_calls(ctx, "race-unique", TEST_MEASURE, false) ||
+    if (parallel_calls(ctx, "race-unique", TEST_MEASURE, false, false) ||
         check_replay(ctx, "race-unique", TEST_MAX_WORKERS * TEST_STRESS_EVENTS))
         ret = 1;
     else
@@ -652,10 +730,38 @@ static int test_concurrency(struct test_context *ctx)
     if (submit(ctx, &state))
         return 1;
     REQUIRE(state.result == 0, "create duplicate-race namespace returned %d", state.result);
-    if (parallel_calls(ctx, "race-duplicate", TEST_MEASURE, true) || check_replay(ctx, "race-duplicate", 1))
+    if (parallel_calls(ctx, "race-duplicate", TEST_MEASURE, true, false) || check_replay(ctx, "race-duplicate", 1))
         ret = 1;
     else
         puts("PASS: concurrent duplicate measurements commit exactly once");
+
+    init_state(ctx, &state, TEST_CREATE, "race-mixed");
+    if (submit(ctx, &state))
+        return 1;
+    REQUIRE(state.result == 0, "create mixed-race namespace returned %d", state.result);
+    char path[PATH_MAX], policy[8192];
+    unsigned char initial_root[TEST_HASH_SIZE];
+    unsigned int initial_history_count;
+    struct module_test_state pcr_before;
+    snprintf(path, sizeof(path), "%s/policy", ctx->securityfs);
+    if (read_text(path, policy, sizeof(policy)))
+        return 1;
+    const char *level = strstr(policy, "log_level=");
+    REQUIRE(level, "global policy has no log level");
+    unsigned int original_level = strtoul(level + strlen("log_level="), NULL, 10);
+    snprintf(path, sizeof(path), "%s/merkle_root_history", ctx->securityfs);
+    if (replay_log(path, true, initial_root, &initial_history_count) || read_pcr(ctx, &pcr_before))
+        return 1;
+    int mixed_result = parallel_calls(ctx, "race-mixed", TEST_MEASURE, false, true);
+    /* Restore the global setting even when a worker fails. The restoration is an event too. */
+    if (write_global_log_level(ctx, original_level))
+        return 1;
+    if (mixed_result || check_replay(ctx, "race-mixed",
+                                   (TEST_MAX_WORKERS - TEST_MAX_WORKERS / 3) * TEST_STRESS_EVENTS) ||
+        check_concurrent_pcr(ctx, &pcr_before, initial_history_count))
+        ret = 1;
+    else
+        puts("PASS: mixed measurement/namespace-policy/global-policy commits preserve replay order");
     return ret;
 }
 

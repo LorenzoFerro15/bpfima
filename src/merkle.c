@@ -10,11 +10,7 @@
 #include "bpfima_merkle.h"
 #include "bpfima_container.h"
 #include "bpfima_measurements.h"
-#include "bpfima_securityfs.h"
 #include "bpfima_policy.h"
-#include <linux/fs.h>
-#include <linux/uaccess.h>
-#include <linux/namei.h>
 
 /* Global state */
 LIST_HEAD(merkle_root_history);
@@ -25,211 +21,222 @@ struct merkle_tree_root system_merkle_root = {.root_hash = {0}};
 /* Counter for merkle_root_history entries (for circular buffer management) */
 static atomic_t merkle_root_history_count = ATOMIC_INIT(0);
 
+static struct merkle_root_entry *bpfima_alloc_history_entry(const char *source_id);
+static void bpfima_publish_history_entry_locked(struct merkle_root_entry *entry);
+static void bpfima_trim_history_locked(const char *source_id);
 
-/**
- * try_extend_tpm_with_root - Attempt to extend TPM with merkle root
- * @new_root: The root hash to extend
- * @can_sleep: Whether we're in a context that can sleep
- *
- * Helper function to avoid code duplication in merkle root operations.
- * Extends TPM PCR if possible, but doesn't fail on TPM errors since
- * TPM extension is optional.
- */
-static inline void try_extend_tpm_with_root(const u8 *new_root, bool can_sleep)
+/* Synchronous measurement and extension transaction. */
+DEFINE_MUTEX(bpfima_commit_mutex);
+static int bpfima_commit_error;
+static bool hardware_anchored;
+static bool software_committed;
+
+void __init bpfima_commit_init(void)
+{
+    mutex_lock(&bpfima_commit_mutex);
+    bpfima_commit_error = 0;
+    hardware_anchored = false;
+    software_committed = false;
+    mutex_unlock(&bpfima_commit_mutex);
+}
+
+int bpfima_commit_get_error(void)
 {
     int ret;
 
-    if (!can_sleep)
-    {
-        pr_info("bpfima: Called from atomic context, TPM extension deferred for merkle_root_update\n");
-        return;
-    }
-
-    ret = extend_tpm_pcr_with_root(new_root, "merkle_root_update");
-    if (ret < 0 && ret != -ENODEV)
-    {
-        /* Log error but don't fail - TPM extension is optional */
-        pr_warn("bpfima: Failed to extend TPM PCR with Merkle root: %d\n", ret);
-    }
-}
-
-/**
- * extend_container_leaf_hash - Extend container leaf hash with new measurement
- * @container: Container node to extend
- * @new_digest: New measurement digest to extend into the leaf hash
- *
- * Extends the container's leaf hash using PCR-style extend operation:
- * new_leaf = hash(old_leaf || new_digest)
- *
- * Uses pre-allocated tfm and atomic allocations to be safe in spinlock context.
- *
- * Returns: 0 on success, negative error code on failure
- */
-int extend_container_leaf_hash(struct container_node *container, const u8 *new_digest)
-{
-    int ret = 0;
-    u8 old_leaf[MERKLE_HASH_SIZE];
-    u8 new_leaf[MERKLE_HASH_SIZE];
-
-    if (!container || !container->tfm) {
-        pr_err("bpfima: extend_container_leaf_hash: NULL container or tfm\n");
-        return -EINVAL;
-    }
-
-    if (!new_digest) {
-        pr_err("bpfima: extend_container_leaf_hash: NULL digest\n");
-        return -EINVAL;
-    }
-
-    memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
-
-    ret = bpfima_extend_hash(container->tfm, old_leaf, new_digest, new_leaf);
-    if (ret < 0) {
-        pr_err("bpfima: bpfima_extend_hash failed: %d\n", ret);
-        goto cleanup;
-    }
-
-    memcpy(container->leaf_hash, new_leaf, MERKLE_HASH_SIZE);
-
-    pr_debug("bpfima: Container %s leaf hash extended\n", container->id);
-
-cleanup:
-    memzero_explicit(old_leaf, sizeof(old_leaf));
-    memzero_explicit(new_leaf, sizeof(new_leaf));
-    /* No manual desc cleanup needed with helper */
+    mutex_lock(&bpfima_commit_mutex);
+    ret = bpfima_commit_check_locked();
+    mutex_unlock(&bpfima_commit_mutex);
     return ret;
 }
 
-/**
- * extend_merkle_root - Extend the Merkle tree root with a new container leaf hash
- * @container_leaf_hash: The new container leaf hash to extend into the root
- *
- * Computes the new Merkle root using pre-allocated tfm and atomic operations.
- * Protected by system_merkle_root.lock.
- *
- * Returns: 0 on success, negative error code on failure
- */
-int extend_merkle_root(const u8 *container_leaf_hash)
+bool bpfima_commit_hardware_allowed_locked(void)
 {
-    unsigned long flags;
-    int ret = 0;
+    lockdep_assert_held(&bpfima_commit_mutex);
+    return !software_committed || hardware_anchored;
+}
+
+bool bpfima_commit_requires_hardware_locked(void)
+{
+    lockdep_assert_held(&bpfima_commit_mutex);
+    return hardware_anchored;
+}
+
+int bpfima_commit_check_locked(void)
+{
+    lockdep_assert_held(&bpfima_commit_mutex);
+    if (!bpfima_commit_error) {
+        bool available = bpfima_tpm_available();
+        if (hardware_anchored && !available)
+            bpfima_commit_error = -ENODEV;
+        else if (!bpfima_commit_hardware_allowed_locked() && available)
+            bpfima_commit_error = -EIO;
+    }
+    return bpfima_commit_error;
+}
+
+int bpfima_commit_fail_locked(int error)
+{
+    lockdep_assert_held(&bpfima_commit_mutex);
+    if (!bpfima_commit_error)
+        bpfima_commit_error = error < 0 ? error : -EIO;
+    return bpfima_commit_error;
+}
+
+/* Prepare every fallible software operation before publishing an event. */
+static int commit_event_locked(struct container_node *container,
+                               struct measurement_entry *entry, const u8 *value,
+                               const char *source_id, bool deduplicate)
+{
+    struct merkle_root_entry *history;
+    struct hash_entry *hash = NULL;
+    u8 old_leaf[MERKLE_HASH_SIZE];
+    u8 new_leaf[MERKLE_HASH_SIZE];
     u8 old_root[MERKLE_HASH_SIZE];
     u8 new_root[MERKLE_HASH_SIZE];
-    bool can_sleep = !in_atomic() && !irqs_disabled();
+    unsigned long flags;
+    bool command_started = false;
+    int ret;
 
-    if (!container_leaf_hash) {
-        pr_err("bpfima: extend_merkle_root: NULL container_leaf_hash\n");
+    lockdep_assert_held(&bpfima_commit_mutex);
+    ret = bpfima_commit_check_locked();
+    if (ret)
+        return ret;
+    if (!value || !system_merkle_root.tfm ||
+        (container && (!entry || !container->tfm)))
         return -EINVAL;
+
+    if (deduplicate) {
+        if (!container)
+            return -EINVAL;
+        if (hash_exists(entry->digest, container->id))
+            return 1;
+        hash = bpfima_alloc_hash_entry(entry->digest, container->id);
+        if (!hash)
+            return -ENOMEM;
     }
 
-    if (!system_merkle_root.tfm) {
-        pr_err("bpfima: extend_merkle_root: System tfm not allocated\n");
-        return -EINVAL;
+    history = bpfima_alloc_history_entry(source_id);
+    if (!history) {
+        ret = -ENOMEM;
+        goto free_hash;
     }
 
-    /* desc allocation removed - bpfima_extend_hash handles it */
+    if (container) {
+        spin_lock_irqsave(&container->measurement_lock, flags);
+        memcpy(old_leaf, container->leaf_hash, MERKLE_HASH_SIZE);
+        spin_unlock_irqrestore(&container->measurement_lock, flags);
+        ret = bpfima_extend_hash(container->tfm, old_leaf, entry->digest, new_leaf);
+        if (ret)
+            goto free_history;
+        value = new_leaf;
+    }
 
     spin_lock_irqsave(&system_merkle_root.lock, flags);
     memcpy(old_root, system_merkle_root.root_hash, MERKLE_HASH_SIZE);
-    
-    /* Extend: new_root = hash(old_root || container_leaf_hash) */
-    /* Note: Calling these inside spinlock is why we need simple crypto ops */
-    ret = bpfima_extend_hash(system_merkle_root.tfm, old_root, container_leaf_hash, new_root);
-    
-    if (ret == 0) {
-        memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
+    spin_unlock_irqrestore(&system_merkle_root.lock, flags);
+    ret = bpfima_extend_hash(system_merkle_root.tfm, old_root, value, new_root);
+    if (ret)
+        goto free_history;
+    memcpy(history->value, value, MERKLE_HASH_SIZE);
+
+    /* Hardware comes first: all software publication below is infallible. */
+    ret = extend_tpm_pcr_with_root(new_root, "merkle_root_update",
+                                   bpfima_commit_hardware_allowed_locked(), &command_started);
+    if (ret && (command_started || ret != -ENODEV || hardware_anchored)) {
+        /* A failed TPM command may have changed the PCR; automatic retry is unsafe. */
+        if (command_started || ret != -ENOMEM) {
+            ret = bpfima_commit_fail_locked(ret);
+            pr_warn("bpfima: TPM commit failed (%d); recover the PCR and reload before further measurements\n", ret);
+        }
+        goto free_history;
     }
-    
+    if (!ret)
+        hardware_anchored = true;
+
+    /* Nothing below can fail a software commit. Root readers wait for publication. */
+    spin_lock_irqsave(&system_merkle_root.lock, flags);
+    if (container) {
+        spin_lock(&container->measurement_lock);
+        list_add_tail(&entry->list, &container->measurement_list);
+        atomic_inc(&container->measurement_count);
+        memcpy(container->leaf_hash, new_leaf, MERKLE_HASH_SIZE);
+    }
+    bpfima_publish_history_entry_locked(history);
+    memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
+    if (container)
+        spin_unlock(&container->measurement_lock);
     spin_unlock_irqrestore(&system_merkle_root.lock, flags);
 
-    if (ret < 0) {
-        pr_err("bpfima: crypto sha256 failed for merkle root: %d\n", ret);
-        goto cleanup;
-    }
-
-    pr_debug("bpfima: Merkle root extended with container leaf hash\n");
-
-    try_extend_tpm_with_root(new_root, can_sleep);
-
+    /* Concurrent duplicate callers remain blocked until this commit completes. */
+    if (hash)
+        bpfima_publish_hash_entry_locked(hash);
+    software_committed = true;
+    bpfima_trim_history_locked(source_id);
     ret = 0;
+    goto clear_hashes;
 
-cleanup:
+free_history:
+    if (ret > 0)
+        ret = -EIO;
+    kfree(history);
+free_hash:
+    kfree(hash);
+clear_hashes:
+    memzero_explicit(old_leaf, sizeof(old_leaf));
+    memzero_explicit(new_leaf, sizeof(new_leaf));
     memzero_explicit(old_root, sizeof(old_root));
     memzero_explicit(new_root, sizeof(new_root));
-    /* Helper handles desc cleanup internally */
     return ret;
 }
 
-/**
- * recalculate_merkle_root - Recalculate the Merkle tree root hash from scratch
- *
- * Computes the Merkle root by hashing together all container leaf hashes.
- * This is used for initialization or when the tree needs to be rebuilt.
- * For normal operations, use extend_merkle_root() instead.
- *
- * Uses mutex to serialize the entire operation including TPM extension,
- * preventing race conditions.
- *
- * Returns: 0 on success, negative error code on failure
- */
-int recalculate_merkle_root(void)
+int bpfima_commit_measurement_locked(struct container_node *container,
+                                     struct measurement_entry *entry, bool deduplicate)
 {
-    struct container_node *container;
-    struct shash_desc *desc;
-    unsigned long flags;
-    int ret = 0;
-    u32 leaf_count = 0;
-    u8 new_root[MERKLE_HASH_SIZE];
-    bool can_sleep = !in_atomic() && !irqs_disabled();
-
-    if (!system_merkle_root.tfm)
+    if (!container || !entry)
         return -EINVAL;
+    return commit_event_locked(container, entry, entry->digest, container->id, deduplicate);
+}
 
-    desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(system_merkle_root.tfm), GFP_ATOMIC);
-    if (!desc)
-        return -ENOMEM;
+int bpfima_commit_root_locked(const u8 *value, const char *source_id)
+{
+    return commit_event_locked(NULL, NULL, value, source_id, false);
+}
 
-    desc->tfm = system_merkle_root.tfm;
-    ret = crypto_shash_init(desc);
-    if (ret < 0)
-        goto cleanup;
+int add_container_measurement(struct container_node *container,
+                              const char *event_name, const char *event_data,
+                              const char *dependencies, const u8 *digest, gfp_t flags)
+{
+    struct measurement_entry *entry;
+    int ret;
 
-    spin_lock_irqsave(&container_list_lock, flags);
-    list_for_each_entry(container, &container_list, list)
-    {
-        /* Fix inconsistent read: acquire container lock before reading leaf_hash */
-        spin_lock(&container->measurement_lock);
-        ret = crypto_shash_update(desc, container->leaf_hash, MERKLE_HASH_SIZE);
-        spin_unlock(&container->measurement_lock);
-        
-        if (ret < 0)
-        {
-            spin_unlock_irqrestore(&container_list_lock, flags);
-            goto cleanup;
-        }
-        leaf_count++;
+    if (!container || !event_name || !digest)
+        return -EINVAL;
+    if (in_atomic() || irqs_disabled())
+        return -EWOULDBLOCK;
+
+    mutex_lock(&bpfima_commit_mutex);
+    ret = bpfima_commit_check_locked();
+    if (ret)
+        goto unlock;
+    if (hash_exists(digest, container->id)) {
+        ret = 1;
+        goto unlock;
     }
-    spin_unlock_irqrestore(&container_list_lock, flags);
-
-    ret = crypto_shash_final(desc, new_root);
-    if (ret < 0)
-        goto cleanup;
-
-    spin_lock_irqsave(&system_merkle_root.lock, flags);
-    memcpy(system_merkle_root.root_hash, new_root, MERKLE_HASH_SIZE);
-    system_merkle_root.leaf_count = leaf_count;
-    spin_unlock_irqrestore(&system_merkle_root.lock, flags);
-
-    pr_debug("bpfima: Merkle root recalculated with %u leaves\n", leaf_count);
-
-    try_extend_tpm_with_root(new_root, can_sleep);
-
-    ret = 0;
-
-cleanup:
-    kfree(desc);
+    entry = create_measurement_entry(event_name, event_data, dependencies, digest, flags);
+    if (!entry) {
+        ret = -ENOMEM;
+        goto unlock;
+    }
+    ret = bpfima_commit_measurement_locked(container, entry, true);
+    if (ret)
+        kfree(entry);
+unlock:
+    mutex_unlock(&bpfima_commit_mutex);
     return ret;
 }
+
+
 
 /**
  * get_merkle_root_history_count - Get current count of merkle root history entries
@@ -241,147 +248,42 @@ u32 get_merkle_root_history_count(void)
     return atomic_read(&merkle_root_history_count);
 }
 
-/**
- * add_merkle_root_history_entry - Record a value being added to Merkle root
- * @value: Hash value being incorporated into the root
- * @container_id: ID of source container (NULL or empty for host events)
- *
- * Returns: 0 on success, negative error code on failure
- */
-int add_merkle_root_history_entry(const u8 *value, const char *container_id)
+static int trim_merkle_root_history_locked(u32 max_size);
+
+static struct merkle_root_entry *bpfima_alloc_history_entry(const char *source_id)
 {
-    struct merkle_root_entry *entry;
-    struct bpfima_policy_config config;
-    struct bpfima_policy_config *policy = &config;
-    unsigned long flags;
-    u32 current_count;
-    bool should_check_limit = true;
+    struct merkle_root_entry *entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 
-    entry = kzalloc(sizeof(*entry), GFP_KERNEL);
     if (!entry)
-        return -ENOMEM;
-
-    memcpy(entry->value, value, MERKLE_HASH_SIZE);
-
-    if (container_id && container_id[0] != '\0')
-        strscpy(entry->source_container_id, container_id, CONTAINER_ID_MAX_LEN);
-    else
-        entry->source_container_id[0] = '\0';
-
-    /* Initialize aggregate fields */
-    entry->is_aggregate = false;
-    entry->aggregated_count = 0;
-
-    /* Check policy scope */
-    bpfima_policy_get_config(policy);
-    if (policy && policy->merkle_history_scope == MERKLE_HISTORY_SCOPE_ROOT_ONLY) {
-        /* Only apply circular buffer to root/global entries (empty container_id) */
-        if (container_id && container_id[0] != '\0') {
-            should_check_limit = false;
-        }
-    }
-
-    spin_lock_irqsave(&merkle_root_history_lock, flags);
-    list_add_tail(&entry->list, &merkle_root_history);
-    spin_unlock_irqrestore(&merkle_root_history_lock, flags);
-
-    /* File writing removed - userspace now dumps securityfs periodically */
-
-    /* Increment counter and check if we need to trim */
-    current_count = atomic_inc_return(&merkle_root_history_count);
-
-    if (should_check_limit && policy && policy->merkle_history_max_size > 0) {
-        if (current_count > policy->merkle_history_max_size) {
-            pr_info("bpfima: Merkle history reached max size (%u), trimming...\n",
-                    policy->merkle_history_max_size);
-            trim_merkle_root_history(policy->merkle_history_max_size);
-        }
-    }
-
-    return 0;
+        return NULL;
+    if (source_id)
+        strscpy(entry->source_container_id, source_id, CONTAINER_ID_MAX_LEN);
+    return entry;
 }
 
-/**
- * add_container_measurement - Add a measurement to a container's list
- * @container: Container node to add measurement to
- * @event_name: Name of the event
- * @event_data: Event data string
- * @dependencies: Dependencies string
- * @digest: SHA256 hash of the measurement
- * @flags: Allocation flags (GFP_KERNEL or GFP_ATOMIC)
- *
- * Uses spinlocks for safe atomic context execution.
- */
-int add_container_measurement(struct container_node *container,
-                              const char *event_name,
-                              const char *event_data,
-                              const char *dependencies,
-                              const u8 *digest,
-                              gfp_t flags)
+static void bpfima_publish_history_entry_locked(struct merkle_root_entry *entry)
 {
-    struct measurement_entry *entry;
-    unsigned long irq_flags;
-    int ret;
-    bool can_sleep = (flags & __GFP_DIRECT_RECLAIM);
+    unsigned long flags;
 
-    if (hash_exists(digest, container->id))
-    {
-        pr_info("bpfima: Duplicate file access for namespace %s, digest=%*ph (skipped)\n",
-                 container->id, SHA256_DIGEST_SIZE, digest);
-        return 1;
-    }
+    lockdep_assert_held(&bpfima_commit_mutex);
+    spin_lock_irqsave(&merkle_root_history_lock, flags);
+    list_add_tail(&entry->list, &merkle_root_history);
+    atomic_inc(&merkle_root_history_count);
+    spin_unlock_irqrestore(&merkle_root_history_lock, flags);
+}
 
-    ret = add_hash_to_table(digest, container->id, can_sleep);
-    if (ret)
-    {
-        pr_err("bpfima: Failed to add hash to tracking table for namespace %s: %d\n",
-               container->id, ret);
-        return ret;
-    }
+static void bpfima_trim_history_locked(const char *source_id)
+{
+    struct bpfima_policy_config policy;
 
-    entry = create_measurement_entry(event_name, event_data, dependencies, digest, flags);
-    if (!entry)
-        return -ENOMEM;
-
-    u8 local_leaf_hash[MERKLE_HASH_SIZE];
-
-    /* Critical section: lock container, add entry, extend leaf */
-    spin_lock_irqsave(&container->measurement_lock, irq_flags);
-    
-    list_add_tail(&entry->list, &container->measurement_list);
-    atomic_inc(&container->measurement_count);
-
-    ret = extend_container_leaf_hash(container, digest);
-    if (ret < 0)
-    {
-        list_del(&entry->list);
-        atomic_dec(&container->measurement_count);
-        spin_unlock_irqrestore(&container->measurement_lock, irq_flags);
-        
-        kfree(entry);
-        return ret;
-    }
-
-    memcpy(local_leaf_hash, container->leaf_hash, MERKLE_HASH_SIZE);
-    spin_unlock_irqrestore(&container->measurement_lock, irq_flags);
-
-    ret = add_merkle_root_history_entry(local_leaf_hash, container->id);
-    if (ret < 0)
-    {
-        pr_warn("bpfima: Failed to add merkle root history entry: %d\n", ret);
-    }
-
-    ret = extend_merkle_root(local_leaf_hash);
-    if (ret < 0)
-    {
-        /* Rollback is hard because we already released lock, but typical usage allows log warning */
-        pr_err("bpfima: Failed to extend merkle root: %d\n", ret);
-        return ret;
-    }
-
-    pr_debug("bpfima: Added measurement to container %s\n", container->id);
-
-    return 0;
+    lockdep_assert_held(&bpfima_commit_mutex);
+    bpfima_policy_get_config(&policy);
+    if (policy.merkle_history_scope == MERKLE_HISTORY_SCOPE_ROOT_ONLY &&
+        source_id && source_id[0])
+        return;
+    if (policy.merkle_history_max_size &&
+        get_merkle_root_history_count() > policy.merkle_history_max_size)
+        trim_merkle_root_history_locked(policy.merkle_history_max_size);
 }
 
 /**
@@ -501,7 +403,7 @@ cleanup:
  *
  * Returns: 0 on success, negative error code on failure
  */
-int trim_merkle_root_history(u32 max_size)
+static int trim_merkle_root_history_locked(u32 max_size)
 {
     struct merkle_root_entry *entry, *tmp, *aggregate_entry;
     LIST_HEAD(entries_to_delete);
@@ -511,6 +413,7 @@ int trim_merkle_root_history(u32 max_size)
     u32 aggregated_count = 0;
     int ret;
 
+    lockdep_assert_held(&bpfima_commit_mutex);
     current_count = atomic_read(&merkle_root_history_count);
     
     if (current_count <= max_size) {

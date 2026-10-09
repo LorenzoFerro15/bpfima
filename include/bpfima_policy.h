@@ -169,7 +169,6 @@ int bpfima_policy_namespace_get_config(const char *namespace_id, u32 namespace_i
 /* Global policy change history management */
 int bpfima_global_policy_init_history(void);
 void bpfima_global_policy_cleanup_history(void);
-int bpfima_global_policy_record_change(struct bpfima_policy_config *policy);
 struct list_head *bpfima_global_policy_get_history(void);
 spinlock_t *bpfima_global_policy_get_history_lock(void);
 

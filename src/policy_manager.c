@@ -116,21 +116,23 @@ spinlock_t *bpfima_global_policy_get_history_lock(void)
 }
 
 /**
- * bpfima_global_policy_record_change - Record global policy change and extend Merkle root
+ * record_global_policy_change_locked - Record global policy change and extend Merkle root
  * @policy: Current policy configuration
  *
  * Creates a policy change entry with full policy string, hashes it,
  * and extends the Merkle root directly (global policy has no container leaf).
+ * Caller holds bpfima_commit_mutex until the candidate configuration is published.
  *
  * Returns: 0 on success, negative error code on failure
  */
-int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
+static int record_global_policy_change_locked(struct bpfima_policy_config *policy)
 {
     struct policy_change_entry *change_entry;
     unsigned long flags;
     int ret;
     char policy_string[MAX_POLICY_STRING_SIZE];
 
+    lockdep_assert_held(&bpfima_commit_mutex);
     if (!policy)
         return -EINVAL;
 
@@ -163,12 +165,6 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
         goto cleanup_free;
     }
 
-    spin_lock_irqsave(&global_policy_history_lock, flags);
-    list_add_tail(&change_entry->list, &global_policy_change_history);
-    spin_unlock_irqrestore(&global_policy_history_lock, flags);
-
-    pr_info("bpfima: Recorded global policy change\n");
-
     char policy_hash_hex[MERKLE_HASH_SIZE * 2 + 1];
     u8 measurement_digest[MERKLE_HASH_SIZE];
     char measurement_data[512];
@@ -186,30 +182,19 @@ int bpfima_global_policy_record_change(struct bpfima_policy_config *policy)
     if (ret < 0)
     {
         pr_err("bpfima: Failed to calculate measurement hash for global policy update: %d\n", ret);
-        goto cleanup_list;
+        goto cleanup_free;
     }
 
-    ret = add_merkle_root_history_entry(measurement_digest, "global_policy");
-    if (ret < 0)
-    {
-        pr_warn("bpfima: Failed to add merkle root history entry for global policy: %d\n", ret);
+    ret = bpfima_commit_root_locked(measurement_digest, "global_policy");
+    if (ret) {
+        goto cleanup_free;
     }
-
-    ret = extend_merkle_root(measurement_digest);
-    if (ret < 0)
-    {
-        pr_err("bpfima: Failed to extend Merkle root with global policy change: %d\n", ret);
-        goto cleanup_list;
-    }
+    spin_lock_irqsave(&global_policy_history_lock, flags);
+    list_add_tail(&change_entry->list, &global_policy_change_history);
+    spin_unlock_irqrestore(&global_policy_history_lock, flags);
 
     pr_info("bpfima: Global policy change recorded and Merkle root extended\n");
-
     return 0;
-
-cleanup_list:
-    spin_lock_irqsave(&global_policy_history_lock, flags);
-    list_del(&change_entry->list);
-    spin_unlock_irqrestore(&global_policy_history_lock, flags);
 
 cleanup_free:
     kfree(change_entry);
@@ -275,19 +260,16 @@ int bpfima_policy_update(struct bpfima_policy_config *new_config)
     if (!new_config)
         return -EINVAL;
 
-    spin_lock_irqsave(&policy_lock, flags);
-    memcpy(&global_policy, new_config, sizeof(global_policy));
-    spin_unlock_irqrestore(&policy_lock, flags);
-
-    pr_info("bpfima: Policy configuration updated\n");
-
-    ret = bpfima_global_policy_record_change(new_config);
-    if (ret < 0)
-    {
-        pr_warn("bpfima: Failed to record global policy change: %d\n", ret);
+    mutex_lock(&bpfima_commit_mutex);
+    ret = record_global_policy_change_locked(new_config);
+    if (!ret) {
+        spin_lock_irqsave(&policy_lock, flags);
+        memcpy(&global_policy, new_config, sizeof(global_policy));
+        spin_unlock_irqrestore(&policy_lock, flags);
+        pr_info("bpfima: Policy configuration updated\n");
     }
-
-    return 0;
+    mutex_unlock(&bpfima_commit_mutex);
+    return ret;
 }
 
 /**

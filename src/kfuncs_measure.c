@@ -35,6 +35,9 @@ __bpf_kfunc int bpfima_measurement_extend(const void *data, u32 data__sz)
         return ret;
 
     effective_ns = request.namespace_id[0] != '\0' ? request.namespace_id : "default";
+    ret = bpfima_commit_get_error();
+    if (ret)
+        return ret;
     container = find_container_by_id(effective_ns);
     if (!container)
     {
@@ -90,16 +93,36 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
         return 0;
     }
 
+    mutex_lock(&bpfima_commit_mutex);
+    ret = bpfima_commit_check_locked();
+    if (ret) {
+        mutex_unlock(&bpfima_commit_mutex);
+        return ret;
+    }
     mutex_lock(&bpfima_tpm_mutex);
 
     chip = tpm_default_chip();
     if (!chip)
     {
+        if (bpfima_commit_requires_hardware_locked()) {
+            bpfima_commit_fail_locked(-ENODEV);
+            mutex_unlock(&bpfima_tpm_mutex);
+            mutex_unlock(&bpfima_commit_mutex);
+            return -ENODEV;
+        }
         mutex_unlock(&bpfima_tpm_mutex);
+        mutex_unlock(&bpfima_commit_mutex);
         snprintf(pcr_buf, pcr_buf__sz, "PCR%d_HASH_SIMULATION",
                  bpfima_tpm_pcr_index);
         printk(KERN_INFO "TPM not available, using simulation\n");
         return 0;
+    }
+    if (!bpfima_commit_hardware_allowed_locked()) {
+        bpfima_commit_fail_locked(-EIO);
+        put_device(&chip->dev);
+        mutex_unlock(&bpfima_tpm_mutex);
+        mutex_unlock(&bpfima_commit_mutex);
+        return -EIO;
     }
 
     memset(digest, 0, sizeof(digest));
@@ -109,6 +132,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
     put_device(&chip->dev);
 
     mutex_unlock(&bpfima_tpm_mutex);
+    mutex_unlock(&bpfima_commit_mutex);
 
     if (ret != 0)
     {
@@ -141,14 +165,7 @@ __bpf_kfunc int bpfima_tpm_get_pcr_value(char *pcr_buf, u32 pcr_buf__sz)
  */
 __bpf_kfunc int bpfima_tpm_is_available(void)
 {
-    struct tpm_chip *chip;
-
-    chip = tpm_default_chip();
-    if (!chip)
-        return 0;
-
-    put_device(&chip->dev);
-    return 1;
+    return bpfima_tpm_available();
 }
 
 __bpf_kfunc_end_defs();

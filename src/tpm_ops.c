@@ -9,6 +9,16 @@ MODULE_PARM_DESC(tpm_pcr_index, "TPM PCR index to use for measurements (default:
 
 DEFINE_MUTEX(bpfima_tpm_mutex);
 
+bool bpfima_tpm_available(void)
+{
+    struct tpm_chip *chip = tpm_default_chip();
+
+    if (!chip)
+        return false;
+    put_device(&chip->dev);
+    return true;
+}
+
 #ifndef TPM_MAX_DIGEST_SIZE
 #define TPM_MAX_DIGEST_SIZE 64
 #endif
@@ -29,18 +39,21 @@ DEFINE_MUTEX(bpfima_tpm_mutex);
  *
  * Returns: 0 on successful PCR extension, negative error code on failure
  */
-int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
+int extend_tpm_pcr(const u8 *hash_value, const char *event_name, bool hardware_allowed,
+                   bool *command_started)
 {
     struct tpm_chip *chip;
     struct tpm_digest *digests;
     int ret;
     int i;
+    bool sha256_bank = false;
 
-    if (!hash_value || !event_name)
+    if (!hash_value || !event_name || !command_started)
     {
         printk(KERN_ERR "bpfima: Invalid parameters to extend_tpm_pcr\n");
         return -EINVAL;
     }
+    *command_started = false;
 
     if (in_atomic() || irqs_disabled())
     {
@@ -63,6 +76,20 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         mutex_unlock(&bpfima_tpm_mutex);
         printk(KERN_WARNING "bpfima: TPM not available, measurement added to list only\n");
         return -ENODEV;
+    }
+    if (!hardware_allowed) {
+        put_device(&chip->dev);
+        mutex_unlock(&bpfima_tpm_mutex);
+        return -EIO;
+    }
+    for (i = 0; i < chip->nr_allocated_banks; i++) {
+        if (chip->allocated_banks[i].alg_id == TPM_ALG_SHA256)
+            sha256_bank = true;
+    }
+    if (!sha256_bank) {
+        put_device(&chip->dev);
+        mutex_unlock(&bpfima_tpm_mutex);
+        return -EOPNOTSUPP;
     }
 
     /* Allocate digests array for all allocated banks */
@@ -91,6 +118,7 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
         }
     }
 
+    *command_started = true;
     ret = tpm_pcr_extend(chip, bpfima_tpm_pcr_index, digests);
 
     kfree(digests);
@@ -114,6 +142,8 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
  * extend_tpm_pcr_with_root - Extend TPM PCR with the Merkle root hash
  * @root_hash: The Merkle root hash to extend into the TPM PCR
  * @event_name: Event name for logging purposes
+ * @hardware_allowed: False after a software-only epoch has committed events
+ * @command_started: Set before entering the TPM command API
  *
  * This is a convenience wrapper around extend_tpm_pcr() specifically for
  * Merkle root hash extensions. It provides the same functionality but with
@@ -121,7 +151,8 @@ int extend_tpm_pcr(const u8 *hash_value, const char *event_name)
  *
  * Returns: 0 on successful PCR extension, negative error code on failure
  */
-int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name)
+int extend_tpm_pcr_with_root(const u8 *root_hash, const char *event_name, bool hardware_allowed,
+                             bool *command_started)
 {
-    return extend_tpm_pcr(root_hash, event_name);
+    return extend_tpm_pcr(root_hash, event_name, hardware_allowed, command_started);
 }

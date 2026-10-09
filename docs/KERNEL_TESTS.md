@@ -138,9 +138,11 @@ entry for each thread. It checks:
 3. Concurrent submissions of the same measurement commit exactly once.
 
 These are regression checks for the creation, deduplication, and ordering races
-identified in the review. The earlier two security fixes did not resolve all of
-those races; a stress failure is reported as a failure. Passing one run does not
-establish the absence of a race. For more visibility, also run on kernels built
+identified in the review. The stress suite also mixes raw measurements,
+namespace-policy updates and global SecurityFS policy writes, restores the global
+log level, and replays the physical PCR23 extensions when a TPM is present.
+A stress failure is reported as a failure. Passing one run does not establish
+the absence of a race. For more visibility, also run on kernels built
 with KASAN, KCSAN, or lockdep support; the suite collects their reports when those
 facilities are enabled.
 
@@ -257,9 +259,59 @@ Operator tests check the 36-byte policy ABI and field offsets; CRD limits match
 the eight-slot, 63-byte pattern contract. Kubernetes cleanup preserves shared
 CRDs by default (`cleanup.deleteCRD=false`) and fails if the module remains loaded.
 
-These changes do not solve transaction ordering across history/root/TPM, rollback
-after allocation or hardware failures, resource quotas, authoritative policy
+Remaining audit work includes resource quotas, authoritative policy
 synchronization, target-log completeness/identity, authenticated history trimming,
-or the missing Kubernetes policy-audit endpoint. Error handling and the daemon's
+and the missing Kubernetes policy-audit endpoint. Error handling and the daemon's
 absolute output directory/health reporting also require further work. Local
 module compilation succeeds, but live kernel results require matching module BTF.
+
+## Synchronous measurement commits
+
+Measurement, namespace-policy and global-policy events use one sleepable commit
+mutex in the calling thread. They prepare their allocations and hashes first,
+extend the TPM, and only then publish measurement/history entries, leaf/root
+hashes, counts and deduplication state. Policy configuration and its audit bytes
+are staged too. No background worker performs measurement commits or extensions.
+The existing destruction workqueue is solely for safe container teardown.
+
+Concurrent callers for the same digest wait for the earlier call. A duplicate
+means a completed commit; failed preparation does not poison the digest and a
+later caller can retry. Spinlocks protect the brief software-publication step;
+the TPM operation runs outside spinlocks while the commit mutex remains held.
+PCR reads use the same commit mutex, so they do not observe an in-flight commit.
+Atomicity applies to module producers and coordinated readers; collecting
+multiple SecurityFS files is still not a single snapshot operation.
+
+TPM command failures are returned rather than treated as a successful record.
+Measurement and policy commit state remains unchanged on failure; creating a
+namespace can still leave an initialized empty namespace. Hardware anchoring
+requires an allocated SHA-256 bank. Errors after a command may have
+reached hardware latch `commit_error` in SecurityFS status and block subsequent
+commits/PCR reads, preventing an unsafe automatic retry. Recover the physical PCR
+state through a trusted recovery procedure before starting a fresh module epoch;
+module reload alone does not reset a physical PCR. Failures allocating TPM command
+buffers before submitting a command remain retryable. The existing no-TPM
+software-only mode is supported, but an epoch cannot switch between software-only
+and hardware anchoring without recovery/reload.
+
+Native regression tests execute the production `src/merkle.c` with
+mocked kernel allocation/hash/TPM primitives and pthread locks, under sanitizers:
+
+```bash
+make test-commit CC=clang
+```
+
+They cover every software allocation/hash preparation failure, TPM preparation
+failure, successful retry, duplicate callers blocked during both successful and
+failed commits, ambiguous hardware errors, device/mode changes, and mixed producer
+history/root/PCR replay. These are control-flow/concurrency tests, not live TPM or
+kernel scheduler/lockdep validation. Hardware tests require the fresh updated
+module with BTF on a quiet disposable host:
+
+```bash
+make modules kernel-tests
+sudo ./scripts/test_kernel.sh --load-module --stress
+```
+
+The stress suite requires untrimmed history. Checkpoint/replay-preserving history
+aggregation remains separate audit work.
