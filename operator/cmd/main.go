@@ -162,11 +162,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.PolicyReconciler{
+	policyReconciler := &controller.PolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("policy-reconciler"),
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := policyReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Policy")
 		os.Exit(1)
 	}
@@ -176,7 +177,8 @@ func main() {
 		setupLog.Error(err, "Failed to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	// Ready only once the policy selected for the node is applied and measured
+	if err := mgr.AddReadyzCheck("readyz", policyReconciler.ReadyCheck); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}

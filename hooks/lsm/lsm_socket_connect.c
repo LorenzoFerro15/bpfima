@@ -76,9 +76,12 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     };
     long len = build_socket_additional_data(&addr_info);
 
+    /* bpf_snprintf returns the length including the trailing NUL, which is not
+     * part of the measured data: the verifiers recompute the template hash from
+     * the measurement line, where the NUL does not appear */
     int buffer_len = 0;
     if (len > 0) {
-        buffer_len = (len > MAX_DATA_BUF_SIZE) ? (MAX_DATA_BUF_SIZE - 1) : len - 1;
+        buffer_len = (len > MAX_DATA_BUF_SIZE) ? (MAX_DATA_BUF_SIZE - 1) : (int)(len - 1);
         additional_data[buffer_len] = '\0';
     }
 
