@@ -1,5 +1,6 @@
 #include "bpfima_securityfs.h"
 #include "bpfima_merkle.h"
+#include "bpfima_policy.h"
 
 const struct file_operations status_fops = {
     .owner = THIS_MODULE,
@@ -80,6 +81,8 @@ int status_show(struct seq_file *s, void *unused)
     seq_printf(s, "tpm_available=%s\n", tpm_available ? "yes" : "no");
     seq_printf(s, "digest_algorithm=sha256\n");
     seq_printf(s, "commit_error=%d\n", bpfima_commit_get_error());
+    seq_printf(s, "policy_generation=%llu\n", bpfima_policy_generation());
+    seq_printf(s, "policy_map_id=%u\n", bpfima_policy_map_id());
 
     return 0;
 }

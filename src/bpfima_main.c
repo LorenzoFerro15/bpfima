@@ -139,8 +139,8 @@ BTF_ID_FLAGS(func, bpfima_policy_update_min_file_size, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_update_log_level, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_get_changes_hash, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_namespace_get_config, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpfima_policy_should_ignore_cgroup)
-BTF_ID_FLAGS(func, bpfima_policy_should_ignore_path)
+BTF_ID_FLAGS(func, bpfima_policy_should_ignore_cgroup, KF_SLEEPABLE)
+BTF_ID_FLAGS(func, bpfima_policy_should_ignore_path, KF_SLEEPABLE)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
@@ -295,3 +295,5 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("TORSEC");
 MODULE_DESCRIPTION("BPF-IMA: eBPF-enhanced Integrity Measurement Architecture with TPM integration");
 MODULE_VERSION("1.0");
+
+MODULE_IMPORT_NS("BPF_INTERNAL");

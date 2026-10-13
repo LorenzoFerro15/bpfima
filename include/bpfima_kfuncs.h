@@ -37,4 +37,6 @@ __bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable,
 
 extern const struct btf_kfunc_id_set bpf_kfunc_example_set;
 
+__bpf_kfunc int bpfima_policy_resolve(const void *data, u32 data__sz, void *output, u32 output__sz);
+
 #endif /* BPFIMA_KFUNCS_H */

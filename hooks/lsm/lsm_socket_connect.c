@@ -25,9 +25,6 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
         return 0;
     if (address->sa_family != AF_INET && address->sa_family != AF_UNIX)
         return 0;
-    if (!bpfima_should_process(HOOK_LSM_SOCKET_CONNECT))
-        return 0;
-
     /* Get the current task context */
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
     if (!task) {
@@ -60,11 +57,6 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     struct sock *sk = BPF_CORE_READ(sock, sk);
     if (!sk)
         return 0;
-
-    get_config_time =  bpf_ktime_get_ns();
-    struct bpfima_policy_config *policy = bpfima_get_policy();
-    struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_SOCKET_CONNECT);
-    get_config_time = bpf_ktime_get_ns() - get_config_time;
 
     u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
     u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -110,24 +102,14 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     }
 
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
-    char cgroup_name[64] = {0};
-    fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
-
-    bool is_container_context = false;
-    if (cgroup_name[0] != '\0') {
-        /* Check if this cgroup should be ignored based on policy */
-        filtering_time = bpf_ktime_get_ns();
-        if (bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy))
-            return 0;
-        filtering_time = bpf_ktime_get_ns() - filtering_time;
-
-        /* Check if this is actually a container, not just any cgroup */
-        if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
-            if (bpfima_is_container_cgroup(cgroup_name)) {
-                is_container_context = true;
-            }
-        }
-    }
+    get_config_time = bpf_ktime_get_ns();
+    int decision = bpfima_policy_for_hook(HOOK_LSM_SOCKET_CONNECT, socket_path, 0, 0);
+    if (decision)
+        return decision < 0 ? decision : 0;
+    struct bpfima_policy_config *policy = bpfima_get_policy();
+    const char *cgroup_name = bpfima_current_namespace();
+    bool is_container_context = true;
+    get_config_time = bpf_ktime_get_ns() - get_config_time;
 
     char *deps = scratch->buf;
     deps[0] = '\0';
@@ -136,7 +118,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
 
     if (!policy || (policy->action_flags & POLICY_ACTION_BUILD_DEPS)) {
         deps_time = bpf_ktime_get_ns();
-        deps_actual = build_dependencies(deps, deps_max, socket_path, cur);
+        deps_actual = build_dependencies(deps, deps_max, socket_path, cur, policy ? policy->max_path_depth : 32);
         deps_time = bpf_ktime_get_ns() - deps_time;
     }
 

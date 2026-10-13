@@ -33,4 +33,6 @@ extern bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable
 extern bool bpfima_policy_should_ignore_path(const char *path__nullable,
                                                u32 path__sz, u32 filter_flags) __ksym;
 
+extern int bpfima_policy_resolve(const void *data, u32 data__sz, void *output, u32 output__sz) __ksym;
+
 #endif /* BPF_KFUNC_DEFS_H */

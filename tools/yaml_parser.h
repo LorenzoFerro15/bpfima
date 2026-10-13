@@ -21,6 +21,9 @@
 struct yaml_policy {
     u8 enabled;
     u32 log_level;
+    u32 filter_flags;
+    u32 min_file_size;
+    u32 max_path_depth;
     u8 measure_enabled;
     u8 appraise_enabled;
     u8 enforce_enabled;
@@ -92,29 +95,11 @@ int parse_hooks_section(yaml_parser_t *parser,
                        struct yaml_hook_config *hook_configs,
                        int max_hooks);
 
-/**
- * @brief Update BPF maps with parsed policy data
- * 
- * Takes the parsed policy configuration and updates the corresponding
- * BPF maps using bpf_map_update_elem.
- * 
- * @param policy_fd File descriptor for the policy map
- * @param cgroup_fd File descriptor for the cgroup filter map
- * @param path_fd File descriptor for the path filter map
- * @param hook_fd File descriptor for the hook config map
- * @param policy Parsed policy structure
- * @param cgroup_filters Array of cgroup filter patterns
- * @param num_cgroups Number of cgroup filters
- * @param path_filters Array of path filter patterns
- * @param num_paths Number of path filters
- * @param hook_configs Array of hook configurations
- * @param num_hooks Number of hook configurations
- * @return 0 on success, negative error code on failure
- */
-int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_fd,
+int build_policy_from_yaml(struct bpfima_policy_snapshot *snapshot,
                             const struct yaml_policy *policy,
                             char cgroup_filters[][256], int num_cgroups,
                             char path_filters[][256], int num_paths,
-                            const struct yaml_hook_config *hook_configs, int num_hooks);
+                            const struct yaml_hook_config *hooks, int num_hooks);
+int apply_policy_snapshot(const char *namespace_id, const struct bpfima_policy_snapshot *snapshot);
 
 #endif /* YAML_PARSER_H */

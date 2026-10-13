@@ -69,9 +69,10 @@ type PolicyConfig struct {
 	// +kubebuilder:validation:Optional
 	MinFileSize int64 `json:"min_file_size,omitempty"`
 
-	// MaxPathDepth maximum depth of file paths to track
+	// MaxPathDepth bounds the dependency ancestry depth (legacy field name)
 	//
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=32
 	// +kubebuilder:validation:Optional
 	MaxPathDepth int32 `json:"max_path_depth,omitempty"`
 }
@@ -171,10 +172,10 @@ type PatternEntry struct {
 	// +kubebuilder:validation:Required
 	Enabled bool `json:"enabled"`
 
-	// MatchType 0=exact, 1=prefix
+	// MatchType 0=exact, 1=prefix, 2=suffix, 3=contains
 	//
 	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1
+	// +kubebuilder:validation:Maximum=3
 	// +kubebuilder:validation:Required
 	MatchType int32 `json:"match_type"`
 }
@@ -215,6 +216,9 @@ type HookConfigs struct {
 	//
 	// +kubebuilder:validation:Optional
 	KprobeFileOpen *HookConfig `json:"kprobe_file_open,omitempty"`
+	// LSMInodeSetattr controls attribute measurement through the root/namespace policy.
+	// +optional
+	LSMInodeSetattr *HookConfig `json:"lsm_inode_setattr,omitempty"`
 }
 
 // HookConfig defines the configuration for a single hook

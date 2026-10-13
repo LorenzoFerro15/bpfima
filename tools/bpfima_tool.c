@@ -16,7 +16,6 @@
 
 #include "include/bpfima_policy_user.h"
 #include "include/bpfima_policy_defaults.h"
-#include "include/bpfima_event.h"
 #include "yaml_parser.h"
 
 /* Global state */
@@ -34,9 +33,6 @@ static int g_link_count = 0;
 
 /* Map paths */
 #define POLICY_MAP_PATH "/sys/fs/bpf/bpfima_policy_map"
-#define CGROUP_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_cgroup_patterns_map"
-#define PATH_PATTERNS_MAP_PATH "/sys/fs/bpf/bpfima_path_patterns_map"
-#define HOOK_CONFIG_MAP_PATH "/sys/fs/bpf/bpfima_hook_config_map"
 
 #ifndef BPF_MAP_DIR
 #define BPF_MAP_DIR "/sys/fs/bpf"
@@ -205,64 +201,103 @@ static bool is_process_running(int pid)
  * Opens all policy-related BPF maps and stores their file descriptors.
  * On error, closes any successfully opened maps and returns -1.
  */
-static int open_policy_maps(int *policy_fd, int *cgroup_fd, int *path_fd, int *hook_fd)
+static bool is_policy_map(const struct bpf_map *map)
 {
-    *policy_fd = -1;
-    *cgroup_fd = -1;
-    *path_fd = -1;
-    *hook_fd = -1;
-
-    *policy_fd = bpf_obj_get(POLICY_MAP_PATH);
-    if (*policy_fd < 0)
-    {
-        fprintf(stderr, "Failed to open policy map: %s\n", strerror(errno));
-        fprintf(stderr, "Did you load the BPF program first?\n");
-        return -1;
-    }
-
-    *cgroup_fd = bpf_obj_get(CGROUP_PATTERNS_MAP_PATH);
-    if (*cgroup_fd < 0)
-    {
-        fprintf(stderr, "Failed to open cgroup patterns map: %s\n", strerror(errno));
-        close(*policy_fd);
-        return -1;
-    }
-
-    *path_fd = bpf_obj_get(PATH_PATTERNS_MAP_PATH);
-    if (*path_fd < 0)
-    {
-        fprintf(stderr, "Failed to open path patterns map: %s\n", strerror(errno));
-        close(*policy_fd);
-        close(*cgroup_fd);
-        return -1;
-    }
-
-    *hook_fd = bpf_obj_get(HOOK_CONFIG_MAP_PATH);
-    if (*hook_fd < 0)
-    {
-        fprintf(stderr, "Failed to open hook config map: %s\n", strerror(errno));
-        close(*policy_fd);
-        close(*cgroup_fd);
-        close(*path_fd);
-        return -1;
-    }
-
-    return 0;
+    return bpf_map__type(map) == BPF_MAP_TYPE_ARRAY && bpf_map__key_size(map) == sizeof(__u32) &&
+           bpf_map__value_size(map) == sizeof(struct bpfima_policy_state) &&
+           bpf_map__max_entries(map) == BPFIMA_POLICY_MAP_ENTRIES &&
+           bpf_map__map_flags(map) == BPFIMA_POLICY_MAP_FLAGS;
 }
 
-/**
- * @brief Close all policy map file descriptors
- */
-static void close_policy_maps(int policy_fd, int cgroup_fd, int path_fd, int hook_fd)
+/* The module owns its authority for the epoch; hook cleanup must not orphan it. */
+static bool preserve_policy_pin(const char *pin)
 {
-    if (policy_fd >= 0)
-        close(policy_fd);
-    if (cgroup_fd >= 0)
-        close(cgroup_fd);
-    if (path_fd >= 0)
-        close(path_fd);
-    if (hook_fd >= 0)
-        close(hook_fd);
+    struct bpf_map_info info = {0};
+    __u32 size = sizeof(info), bound_id = 0;
+    char path[PATH_MAX], line[256];
+    const char *directory = getenv("BPFIMA_SECURITYFS_DIR");
+    int fd = bpf_obj_get(pin);
+    if (fd < 0)
+        return false;
+    int ret = bpf_map_get_info_by_fd(fd, &info, &size);
+    close(fd);
+    if (ret || info.value_size != sizeof(struct bpfima_policy_state) || info.map_flags != BPFIMA_POLICY_MAP_FLAGS)
+        return false;
+    snprintf(path, sizeof(path), "%s/status", directory ? directory : "/sys/kernel/security/bpfima");
+    FILE *file = fopen(path, "r");
+    if (!file)
+        return false;
+    while (fgets(line, sizeof(line), file))
+        if (sscanf(line, "policy_map_id=%u", &bound_id) == 1)
+            break;
+    fclose(file);
+    return bound_id && bound_id == info.id;
+}
+
+/* Bind one protected map before any hook becomes active. */
+static int ensure_policy_map(void)
+{
+    char map_path[PATH_MAX];
+    snprintf(map_path, sizeof(map_path), "%s/bpfima_policy_map", BPF_MAP_DIR);
+    int fd = bpf_obj_get(map_path);
+    struct bpf_map_info info = {0};
+    __u32 size = sizeof(info);
+    char path[PATH_MAX], text[32];
+    const char *directory = getenv("BPFIMA_SECURITYFS_DIR");
+    int endpoint, ret = -1, error;
+
+    if (fd < 0 && errno == ENOENT) {
+        LIBBPF_OPTS(bpf_map_create_opts, options, .map_flags = BPFIMA_POLICY_MAP_FLAGS);
+        fd = bpf_map_create(BPF_MAP_TYPE_ARRAY, "bpfima_policy_m", sizeof(__u32),
+                             sizeof(struct bpfima_policy_state), BPFIMA_POLICY_MAP_ENTRIES, &options);
+        if (fd >= 0 && bpf_map_freeze(fd)) {
+            int error = errno;
+            close(fd);
+            errno = error;
+            return -1;
+        }
+        if (fd >= 0 && bpf_obj_pin(fd, map_path)) {
+            int error = errno;
+            close(fd);
+            if (error != EEXIST)
+                return -1;
+            fd = bpf_obj_get(map_path);
+        }
+    }
+    if (fd < 0)
+        return -1;
+    if (bpf_map_get_info_by_fd(fd, &info, &size) || info.type != BPF_MAP_TYPE_ARRAY ||
+        info.key_size != sizeof(__u32) || info.value_size != sizeof(struct bpfima_policy_state) ||
+        info.max_entries != BPFIMA_POLICY_MAP_ENTRIES || info.map_flags != BPFIMA_POLICY_MAP_FLAGS) {
+        errno = EINVAL;
+        fprintf(stderr, "Policy map ABI changed; unload old hooks/maps before loading this version.\n");
+        goto cleanup;
+    }
+    snprintf(path, sizeof(path), "%s/policy_map", directory ? directory : "/sys/kernel/security/bpfima");
+    endpoint = open(path, O_WRONLY | O_CLOEXEC);
+    if (endpoint < 0)
+        goto cleanup;
+    int length = snprintf(text, sizeof(text), "%d\n", fd);
+    ssize_t written = write(endpoint, text, length);
+    if (written == length)
+        ret = 0;
+    error = written < 0 ? errno : EIO;
+    close(endpoint);
+    if (ret)
+        errno = error;
+cleanup:
+    error = errno;
+    if (fd >= 0)
+        close(fd);
+    if (ret) {
+        fprintf(stderr, "Cannot bind the audited policy map: %s\n", strerror(error));
+        if (error == ESTALE)
+            fprintf(stderr, "The pinned policy map belongs to an earlier module epoch. Detach hooks with\n"
+                            "bpfima-tool unload, remove the module, then run bpfima-tool unload again\n"
+                            "before loading a fresh module and hooks.\n");
+    }
+    errno = error;
+    return ret;
 }
 
 /**
@@ -467,6 +502,8 @@ static void unpin_maps_from_loaded_objects(void)
             continue;
         }
         bpf_object__for_each_map(map, g_objs[i]) {
+            if (is_policy_map(map))
+                continue;
             const char *map_name = bpf_map__name(map);
             char pin_path[256];
             snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/%s", map_name);
@@ -564,6 +601,10 @@ static int cleanup_pinned_maps(void)
             ret = 1;
             continue;
         }
+        if (i == 0 && preserve_policy_pin(path)) {
+            printf("Preserving the module epoch policy authority: %s\n", path);
+            continue;
+        }
         ret |= remove_pin(path);
     }
     return ret;
@@ -625,6 +666,21 @@ static int load_and_attach_one_object(const char *filename)
         }
 
         char path[256];
+        if (!strcmp(bpf_map__name(map), "bpfima_policy_map")) {
+            if (!is_policy_map(map)) {
+                fprintf(stderr, "Hook has a legacy policy ABI; rebuild it before loading.\n");
+                return 1;
+            }
+            snprintf(path, sizeof(path), "%s/bpfima_policy_map", BPF_MAP_DIR);
+            int fd = bpf_obj_get(path);
+            if (fd < 0)
+                return 1;
+            int result = bpf_map__reuse_fd(map, fd);
+            close(fd);
+            if (result)
+                return 1;
+            continue;
+        }
         snprintf(path, sizeof(path), "/sys/fs/bpf/%s", bpf_map__name(map));
 
         if (access(path, F_OK) == 0) {
@@ -660,7 +716,7 @@ static int load_and_attach_one_object(const char *filename)
     // Pin newly created maps so policy tools can update them later.
     bpf_object__for_each_map(map, obj) {
         // Skip maps automatically generated by libbpf
-        if (bpf_map__is_internal(map)) {
+        if (bpf_map__is_internal(map) || is_policy_map(map)) {
             continue;
         }
 
@@ -815,7 +871,7 @@ static int cmd_load(const char **filenames, int file_count, bool daemon_mode)
     if (set_rlimit() < 0)
         return 1;
 
-    if (load_all_bpf_objects(filenames, file_count) < 0) {
+    if (ensure_policy_map() < 0 || load_all_bpf_objects(filenames, file_count) < 0) {
         err = 1;
         goto cleanup;
     }
@@ -921,142 +977,40 @@ static int cmd_unload(void)
  */
 static int cmd_policy_init(void)
 {
-    int policy_fd, cgroup_fd, path_fd, hook_fd;
-    int ret = 0;
-    u32 key;
+    struct bpfima_policy_snapshot snapshot;
+    int ret;
 
-    printf("Initializing policy maps with defaults...\n");
-
-    if (open_policy_maps(&policy_fd, &cgroup_fd, &path_fd, &hook_fd) < 0)
+    if (ensure_policy_map())
         return 1;
-
-    struct bpfima_policy_config policy = {0};
-    bpfima_init_default_config(&policy);
-
-    key = 0;
-    ret = bpf_map_update_elem(policy_fd, &key, &policy, BPF_ANY);
-    if (ret < 0)
-    {
-        fprintf(stderr, "Failed to update policy map: %s\n", strerror(errno));
-        goto cleanup;
-    }
-    printf("  Main policy configuration\n");
-
-    struct bpfima_pattern_entry cgroup_patterns[MAX_IGNORE_PATTERNS] = {0};
-    bpfima_init_default_cgroup_patterns(cgroup_patterns, MAX_IGNORE_PATTERNS);
-
-    for (int i = 0; i < MAX_IGNORE_PATTERNS; i++)
-    {
-        key = i;
-        if (bpf_map_update_elem(cgroup_fd, &key, &cgroup_patterns[i], BPF_ANY) < 0)
-        {
-             if (cgroup_patterns[i].enabled) {
-                 fprintf(stderr, "Failed to update cgroup pattern %d: %s\n", i, strerror(errno));
-                 goto cleanup;
-             }
-        }
-    }
-    printf("  Cgroup patterns (defaults set)\n");
-
-    struct bpfima_pattern_entry path_patterns[MAX_PATH_FILTERS] = {0};
-    bpfima_init_default_path_patterns(path_patterns, MAX_PATH_FILTERS);
-
-    for (int i = 0; i < MAX_PATH_FILTERS; i++)
-    {
-         key = i;
-         if (bpf_map_update_elem(path_fd, &key, &path_patterns[i], BPF_ANY) < 0)
-         {
-              if (path_patterns[i].enabled) {
-                  fprintf(stderr, "Failed to update path pattern %d: %s\n", i, strerror(errno));
-                  goto cleanup;
-              }
-         }
-    }
-    printf("  Path patterns (defaults set)\n");
-
-    for (int i = 0; i < HOOK_MAX; i++)
-    {
-        struct bpfima_hook_config hook_cfg = {
-            .flags = HOOK_FLAG_ENABLED | HOOK_FLAG_TRACK_CONTAINERS | HOOK_FLAG_MEASURE_HASH,
-            .filter_override = 0,
-            .action_override = 0,
-        };
-
-        if (i == HOOK_KPROBE_FILE_OPEN) // (i == HOOK_LSM_SOCKET_CONNECT)
-        {
-            hook_cfg.flags = 0;
-        }
-
-        key = i;
-        ret = bpf_map_update_elem(hook_fd, &key, &hook_cfg, BPF_ANY);
-        if (ret < 0)
-        {
-            fprintf(stderr, "Failed to update hook config: %s\n", strerror(errno));
-            goto cleanup;
-        }
-    }
-    printf("  Hook configurations (%d hooks)\n", HOOK_MAX);
-
-    printf("\n  Policy initialized successfully!\n");
-    printf("\nPolicy summary:\n");
-    printf("  - Enabled: Yes\n");
-    printf("  - Filter flags: 0x%x (no filtering)\n", policy.filter_flags);
-    printf("  - Action flags: 0x%x (TPM, logging, containers, deps)\n", policy.action_flags);
-    printf("  - Log level: %u (Info)\n", policy.log_level);
-    printf("\nTo customize policy, edit config/policy.yaml and run:\n");
-    printf("  sudo bpfima-tool policy-update config/policy.yaml\n");
-
-cleanup:
-    close_policy_maps(policy_fd, cgroup_fd, path_fd, hook_fd);
-    return ret;
+    bpfima_init_default_snapshot(&snapshot);
+    ret = apply_policy_snapshot(NULL, &snapshot);
+    if (ret)
+        fprintf(stderr, "Policy initialization failed: %s\n", strerror(-ret));
+    return ret ? 1 : 0;
 }
 
-/**
- * @brief Parse YAML policy file and update maps
- */
-static int cmd_policy_update(const char *config_file)
+static int cmd_policy_update(const char *config_file, const char *namespace_id)
 {
     struct yaml_policy policy;
-    char cgroup_filters[MAX_CGROUP_PATTERNS][256];
-    char path_filters[MAX_PATH_PATTERNS][256];
-    struct yaml_hook_config hook_configs[MAX_HOOK_CONFIGS];
-    int policy_fd, cgroup_fd, path_fd, hook_fd;
-    int ret = 1;
+    struct bpfima_policy_snapshot snapshot;
+    char cgroups[MAX_CGROUP_PATTERNS][256], paths[MAX_PATH_PATTERNS][256];
+    struct yaml_hook_config hooks[MAX_HOOK_CONFIGS];
+    int ret;
 
-    printf("Loading policy from '%s'...\n", config_file);
-
-    if (parse_yaml_policy(config_file, &policy,
-                          cgroup_filters, MAX_CGROUP_PATTERNS,
-                          path_filters, MAX_PATH_PATTERNS,
-                          hook_configs, MAX_HOOK_CONFIGS) < 0)
-    {
-        fprintf(stderr, "Error: Failed to parse YAML policy file\n");
+    ret = parse_yaml_policy(config_file, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                            paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS);
+    if (!ret)
+        ret = build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                                      paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS);
+    if (!ret && ensure_policy_map())
         return 1;
-    }
-
-    if (open_policy_maps(&policy_fd, &cgroup_fd, &path_fd, &hook_fd) < 0)
-    {
-        fprintf(stderr, "Is the BPF IMA module loaded? Try 'bpfima-tool load' first\n");
-        return 1;
-    }
-
-    printf("\nUpdating BPF maps...\n");
-    if (update_maps_from_policy(policy_fd, cgroup_fd, path_fd, hook_fd,
-                                &policy,
-                                cgroup_filters, MAX_CGROUP_PATTERNS,
-                                path_filters, MAX_PATH_PATTERNS,
-                                hook_configs, MAX_HOOK_CONFIGS) < 0)
-    {
-        fprintf(stderr, "Error: Failed to update BPF maps\n");
-        goto cleanup;
-    }
-
-    printf("\n  Policy successfully updated from '%s'\n", config_file);
-    ret = 0;
-
-cleanup:
-    close_policy_maps(policy_fd, cgroup_fd, path_fd, hook_fd);
-    return ret;
+    if (!ret)
+        ret = apply_policy_snapshot(namespace_id, &snapshot);
+    if (ret)
+        fprintf(stderr, "Policy update failed: %s\n", strerror(ret < 0 ? -ret : EINVAL));
+    else
+        printf("Policy configuration recorded and activated atomically.\n");
+    return ret ? 1 : 0;
 }
 
 /**
@@ -1085,12 +1039,9 @@ static int cmd_status(void)
 
     printf("\nBPF Maps:\n");
     const char *maps[] = {
-        POLICY_MAP_PATH,
-        CGROUP_PATTERNS_MAP_PATH,
-        PATH_PATTERNS_MAP_PATH,
-        HOOK_CONFIG_MAP_PATH};
+        POLICY_MAP_PATH};
 
-    for (int i = 0; i < 4; i++)
+    for (size_t i = 0; i < sizeof(maps) / sizeof(maps[0]); i++)
     {
         int fd = bpf_obj_get(maps[i]);
         if (fd >= 0)
@@ -1154,7 +1105,7 @@ static void usage(const char *prog)
     printf("                       -d: Run as daemon (background)\n");
     printf("  unload               Unload currently running program\n");
     printf("  policy-init          Initialize policy maps with defaults\n");
-    printf("  policy-update <file> Update policy from YAML configuration file\n");
+    printf("  policy-update <file> [namespace] Apply a complete audited policy\n");
     printf("  status               Show system status\n");
     printf("  help                 Show this help message\n\n");
     printf("Examples:\n");
@@ -1233,7 +1184,7 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 1;
         }
-        return cmd_policy_update(argv[2]);
+        return cmd_policy_update(argv[2], argc > 3 ? argv[3] : NULL);
     }
     else if (strcmp(cmd, "status") == 0)
     {

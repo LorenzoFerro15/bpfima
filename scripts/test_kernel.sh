@@ -12,6 +12,7 @@ STRESS=0
 TIMEOUT_SECONDS=300
 OUTPUT_DIR=""
 OWN_MODULE=0
+OWN_POLICY_MAP=0
 TEMPORARY_DIR=""
 PIN_TEST_DIR=""
 CHILD_PID=""
@@ -65,11 +66,11 @@ done
 for command in timeout dmesg readelf mktemp stat; do
     command -v "$command" >/dev/null || error "Missing command: $command"
 done
-for artifact in security-regression security-regression.bpf.o module-interactions module-interactions.bpf.o pinned-unload \
+for artifact in bpfima-tool security-regression security-regression.bpf.o module-interactions module-interactions.bpf.o pinned-unload \
                 lsm_bprm_check_security.o lsm_file_post_open.o lsm_inode_setattr.o lsm_mmap_file.o lsm_socket_connect.o; do
     [[ -r "$BUILD_DIR/$artifact" ]] || error "Missing build/$artifact; run make modules kernel-tests"
 done
-[[ -x "$BUILD_DIR/security-regression" && -x "$BUILD_DIR/module-interactions" && -x "$BUILD_DIR/pinned-unload" ]] || error "Test executables are not executable"
+[[ -x "$BUILD_DIR/security-regression" && -x "$BUILD_DIR/module-interactions" && -x "$BUILD_DIR/pinned-unload" && -x "$BUILD_DIR/bpfima-tool" ]] || error "Test executables are not executable"
 [[ "$(stat -f -c %t /sys/fs/bpf 2>/dev/null)" == cafe4a11 ]] || error "BPF filesystem unavailable; mount it with sudo mount -t bpf bpf /sys/fs/bpf"
 [[ -r /sys/kernel/btf/vmlinux ]] || error "Kernel BTF unavailable at /sys/kernel/btf/vmlinux"
 [[ -r /sys/kernel/security/lsm ]] || error "SecurityFS unavailable; mount it with sudo mount -t securityfs securityfs /sys/kernel/security"
@@ -158,6 +159,9 @@ cleanup() {
             cleanup_failed=1
         fi
     fi
+    if [[ $OWN_MODULE -eq 1 && $OWN_POLICY_MAP -eq 1 && $unloaded -eq 1 ]]; then
+        rm -f /sys/fs/bpf/bpfima_policy_map || cleanup_failed=1
+    fi
     # Include delayed RCU/cleanup diagnostics in the captured kernel log.
     sleep 1
     if ! dmesg --since "$STARTED_AT" >"$OUTPUT_DIR/dmesg-run.log"; then
@@ -204,6 +208,13 @@ if [[ ! -d /sys/module/bpfima ]]; then
 else
     echo "Using existing module; it will remain loaded after the tests"
 fi
+
+if [[ ! -e /sys/fs/bpf/bpfima_policy_map ]]; then
+    OWN_POLICY_MAP=1
+fi
+BPFIMA_SECURITYFS_DIR="$SECURITYFS_DIR" "$BUILD_DIR/bpfima-tool" policy-init \
+    >"$OUTPUT_DIR/policy-init.log" 2>&1 || error "Policy map initialization failed; see $OUTPUT_DIR/policy-init.log"
+echo "PASS: audited policy map initialized"
 
 run_suite() {
     local name="$1"

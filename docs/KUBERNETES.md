@@ -318,3 +318,13 @@ Because modern Helm fully supports OCI registries, the compiled chart can be pus
 ```bash
 helm push bpfima-0.1.0.tgz oci://registry-1.docker.io/<username>
 ```
+## Policy transaction ABI version 2
+
+The operator now submits a complete root policy to
+`/sys/kernel/security/bpfima/policy_apply`. Configuration, patterns and hook settings
+are validated, audited and extended synchronously before activation. Independent
+map writes and the former `measure_policy` hash endpoint are no longer used.
+Identical normalized policies are idempotent; unsupported overrides and appraisal
+settings return errors rather than appearing applied. The node tool must bind the
+protected map before hooks attach. Rebuild/reload old nodes and replace legacy
+maps for this ABI change. See `POLICY_MANAGEMENT.md` and `KERNEL_TESTS.md`.

@@ -89,7 +89,7 @@ clean:
 $(BUILD_DIR)/kfunc-buffer-test: tests/security/kfunc_buffer_test.c include/bpfima_kfunc_buffer.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
 	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude $< -o $@
 
-$(BUILD_DIR)/yaml-policy-test: tests/security/yaml_policy_test.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h | $(BUILD_DIR)
+$(BUILD_DIR)/yaml-policy-test: tests/security/yaml_policy_test.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
 	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $< tools/yaml_parser.c -o $@ -lyaml
 
 test-security: $(BUILD_DIR)/kfunc-buffer-test $(BUILD_DIR)/yaml-policy-test
@@ -113,7 +113,7 @@ $(BUILD_DIR)/module-interactions: tests/kernel/module_interactions.c tests/kerne
 $(BUILD_DIR)/pinned-unload: tests/kernel/pinned_unload.c tools/bpfima_tool.c tools/yaml_parser.c tools/yaml_parser.h include/bpfima_policy_user.h include/bpfima_policy_defaults.h include/bpfima_kfunc_types.h include/bpfima_event.h | $(BUILD_DIR)
 	$(CC) $(USER_CFLAGS) -Werror -I. $< tools/yaml_parser.c -o $@ $(LIBS)
 
-kernel-tests: security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o $(BUILD_DIR)/pinned-unload
+kernel-tests: $(BPFIMA_TOOL) security-regression $(BUILD_DIR)/module-interactions $(BUILD_DIR)/module-interactions.bpf.o $(BUILD_DIR)/pinned-unload
 
 $(BUILD_DIR)/merkle-test: tests/kernel/merkle_test.c tests/kernel/merkle_test.h src/merkle.c include/bpfima_merkle.h include/bpfima_policy.h | $(BUILD_DIR)
 	$(CC) -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -include tests/kernel/merkle_test.h tests/kernel/merkle_test.c src/merkle.c -o $@ -lcrypto
@@ -121,4 +121,13 @@ $(BUILD_DIR)/merkle-test: tests/kernel/merkle_test.c tests/kernel/merkle_test.h 
 test-commit: $(BUILD_DIR)/merkle-test
 	./$(BUILD_DIR)/merkle-test
 
-.PHONY: all modules clean bpf-only test-security security-regression kernel-tests test-commit
+$(BUILD_DIR)/policy-test: tests/kernel/policy_test.c tests/kernel/policy_test.h tests/kernel/merkle_test.h src/merkle.c src/policy_manager.c src/policy_namespace.c include/bpfima_policy.h include/bpfima_policy_defaults.h include/bpfima_kfunc_types.h | $(BUILD_DIR)
+	$(CC) -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -include tests/kernel/policy_test.h tests/kernel/policy_test.c src/merkle.c src/policy_manager.c src/policy_namespace.c -o $@ -lcrypto
+
+test-policy: $(BUILD_DIR)/policy-test
+	./$(BUILD_DIR)/policy-test
+
+test-lifecycle:
+	bash tests/kernel/module_lifecycle_test.sh
+
+.PHONY: all modules clean bpf-only test-security security-regression kernel-tests test-commit test-policy test-lifecycle

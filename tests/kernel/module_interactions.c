@@ -1,3 +1,4 @@
+#include "../../include/bpfima_policy_user.h"
 #include <errno.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -235,7 +236,7 @@ static int test_namespaces(struct test_context *ctx)
     if (submit(ctx, &state))
         return 1;
     REQUIRE(state.exists == 0 && state.measurement_count == -ENOENT && state.leaf_result == -ENOENT &&
-            state.policy_result == -ENOENT && state.changes_result == -ENOENT && state.root_result == 0,
+            state.policy_result == 0 && state.changes_result == -ENOENT && state.root_result == 0,
             "missing namespace results do not match the API");
     initial_count = state.container_count;
     memcpy(initial_root, state.root, sizeof(initial_root));
@@ -398,99 +399,153 @@ static int test_measurements(struct test_context *ctx)
     return 0;
 }
 
+static int root_snapshot(struct bpfima_policy_snapshot *snapshot)
+{
+    const char *path = getenv("BPFIMA_POLICY_MAP_PATH");
+    struct bpfima_policy_state *state = calloc(1, sizeof(*state));
+    int fd = bpf_obj_get(path ? path : "/sys/fs/bpf/bpfima_policy_map");
+    __u32 key = 0;
+    int ret = 1;
+
+    if (!state || fd < 0)
+        goto cleanup;
+    struct bpf_map_info info = {0};
+    __u32 size = sizeof(info);
+    if (bpf_map_get_info_by_fd(fd, &info, &size) || info.value_size != sizeof(*state) ||
+        info.key_size != sizeof(key) || info.max_entries != BPFIMA_POLICY_MAP_ENTRIES ||
+        info.map_flags != BPFIMA_POLICY_MAP_FLAGS)
+        goto cleanup;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        key = 0;
+        if (bpf_map_lookup_elem(fd, &key, state))
+            goto cleanup;
+        __u64 generation = state->generation;
+        key = 1 + (generation & 1);
+        if (!generation || bpf_map_lookup_elem(fd, &key, state))
+            goto cleanup;
+        *snapshot = state->records[0].snapshot;
+        key = 0;
+        if (bpf_map_lookup_elem(fd, &key, state))
+            goto cleanup;
+        if (generation == state->generation) {
+            errno = 0;
+            REQUIRE(bpf_map_update_elem(fd, &key, state, BPF_ANY) == -1 && errno == EPERM,
+                    "direct policy map writes bypass the audit transaction");
+            ret = 0;
+            break;
+        }
+    }
+cleanup:
+    if (fd >= 0)
+        close(fd);
+    free(state);
+    return ret;
+}
+
+static int apply_root_snapshot(struct test_context *ctx, const struct bpfima_policy_snapshot *snapshot)
+{
+    struct bpfima_policy_request request = {.version = BPFIMA_POLICY_VERSION};
+    char path[PATH_MAX];
+
+    request.record.snapshot = *snapshot;
+    bpfima_policy_encode_request(&request);
+    snprintf(path, sizeof(path), "%s/policy_apply", ctx->securityfs);
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    REQUIRE(fd >= 0, "open policy transaction: %s", strerror(errno));
+    ssize_t count = write(fd, &request, sizeof(request));
+    close(fd);
+    REQUIRE(count == sizeof(request), "root snapshot transaction failed");
+    return 0;
+}
+
+static int check_policy_hash(struct test_context *ctx, const char *suffix, const unsigned char *actual)
+{
+    char path[PATH_MAX], *line = NULL;
+    unsigned char aggregate[TEST_HASH_SIZE] = {0};
+    size_t capacity = 0;
+    int ret = 0;
+
+    if (namespace_path(ctx, suffix, "policy_changes", path, sizeof(path)))
+        return 1;
+    FILE *file = fopen(path, "r");
+    REQUIRE(file, "open policy audit log");
+    while (getline(&line, &capacity, file) >= 0) {
+        unsigned char digest[TEST_HASH_SIZE], calculated[TEST_HASH_SIZE];
+        if (strlen(line) < 66 || line[64] != ' ') { ret = 1; break; }
+        line[64] = '\0';
+        char *record = line + 65;
+        record[strcspn(record, "\n")] = '\0';
+        if (decode_hash(line, digest) || sha256(record, strlen(record), calculated) ||
+            memcmp(digest, calculated, TEST_HASH_SIZE) || extend_hash(aggregate, digest, aggregate)) {
+            ret = 1;
+            break;
+        }
+    }
+    free(line);
+    fclose(file);
+    REQUIRE(!ret && !memcmp(aggregate, actual, TEST_HASH_SIZE), "policy audit hash does not replay");
+    return 0;
+}
+
 static int test_policy(struct test_context *ctx)
 {
     struct module_test_state state;
+    struct bpfima_policy_snapshot original, root, after;
+    char path[PATH_MAX], text[8192];
     const enum module_test_command commands[] = {
         TEST_UPDATE_FILTER, TEST_UPDATE_ACTION, TEST_UPDATE_MIN_SIZE, TEST_UPDATE_LOG_LEVEL,
     };
-    const char *changes = "initialized,filter_flags=0x2,action_flags=0x40,min_file_size=0x1000,log_level=0x3,";
-    char global_before[8192];
-    char global_after[8192];
-    char text[8192];
-    char path[PATH_MAX];
-    unsigned char expected_hash[TEST_HASH_SIZE];
-    unsigned char previous_leaf[TEST_HASH_SIZE];
-    unsigned char previous_root[TEST_HASH_SIZE];
-    unsigned char previous_changes[TEST_HASH_SIZE];
-    struct bpfima_policy_config previous_policy;
-    int fd;
-    ssize_t written;
-    int saved_errno;
-
-    snprintf(path, sizeof(path), "%s/policy", ctx->securityfs);
-    if (read_text(path, global_before, sizeof(global_before)))
+    if (root_snapshot(&original))
+        return 1;
+    root = original;
+    root.config.filter_flags = POLICY_FILTER_SMALL_FILES | POLICY_FILTER_PROC_SYS;
+    root.config.min_file_size = 8192;
+    root.config.action_flags &= ~POLICY_ACTION_LOG_KERNEL;
+    root.config.log_level = 2;
+    if (apply_root_snapshot(ctx, &root))
         return 1;
     init_state(ctx, &state, TEST_CREATE, "policy");
     if (submit(ctx, &state))
         return 1;
-    REQUIRE(state.result == 0, "create policy namespace returned %d", state.result);
-    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
-    {
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         init_state(ctx, &state, commands[i], "policy");
-        state.policy.filter_flags = 2;
-        state.policy.action_flags = 64;
+        state.policy.filter_flags = 0;
+        state.policy.action_flags = root.config.action_flags | POLICY_ACTION_LOG_KERNEL;
         state.policy.min_file_size = 4096;
         state.policy.log_level = 3;
         if (submit(ctx, &state))
             return 1;
         REQUIRE(state.result == 0 && state.policy_result == 0 && state.changes_result == 0 &&
-                state.measurement_count == (int)i + 1, "policy command %u failed (result=%d)", commands[i], state.result);
+                state.measurement_count == 0, "namespace extension failed: %d", state.result);
     }
-    REQUIRE(state.policy.filter_flags == 2 && state.policy.action_flags == 64 &&
-            state.policy.min_file_size == 4096 && state.policy.log_level == 3, "policy ABI round-trip lost fields");
-    if (sha256(changes, strlen(changes), expected_hash))
+    REQUIRE(state.policy.filter_flags == 0 && state.policy.min_file_size == 4096 && state.policy.log_level == 3,
+            "effective namespace configuration is inconsistent");
+    if (check_policy_hash(ctx, "policy", state.changes))
         return 1;
-    REQUIRE(!memcmp(expected_hash, state.changes, TEST_HASH_SIZE), "policy changes hash does not match the update log");
-    if (namespace_path(ctx, "policy", "policy", path, sizeof(path)) || read_text(path, text, sizeof(text)))
+    if (namespace_path(ctx, "policy", "policy", path, sizeof(path)))
         return 1;
-    REQUIRE(strstr(text, "filter_flags=0x2\n") && strstr(text, "action_flags=0x40\n") &&
-            strstr(text, "min_file_size=4096\n") && strstr(text, "log_level=3\n") && strstr(text, changes),
-            "SecurityFS does not reflect kfunc policy updates");
-    fd = open(path, O_WRONLY | O_CLOEXEC);
-    REQUIRE(fd >= 0, "open namespace policy for write: %s", strerror(errno));
-    written = write(fd, "min_file_size=8192\n", sizeof("min_file_size=8192\n") - 1);
-    saved_errno = errno;
-    close(fd);
-    REQUIRE(written == (ssize_t)sizeof("min_file_size=8192\n") - 1,
-            "SecurityFS policy write failed: %s", strerror(saved_errno));
-    init_state(ctx, &state, TEST_SNAPSHOT, "policy");
-    if (submit(ctx, &state))
-        return 1;
-    REQUIRE(state.policy_result == 0 && state.policy.min_file_size == 8192 && state.measurement_count == 5,
-            "kfunc did not observe the SecurityFS policy update");
-    snprintf(text, sizeof(text), "%smin_file_size=0x2000,", changes);
-    if (sha256(text, strlen(text), expected_hash))
-        return 1;
-    REQUIRE(state.changes_result == 0 && !memcmp(expected_hash, state.changes, TEST_HASH_SIZE),
-            "SecurityFS write did not update the policy changes hash");
-    memcpy(previous_leaf, state.leaf, TEST_HASH_SIZE);
-    memcpy(previous_root, state.root, TEST_HASH_SIZE);
-    memcpy(previous_changes, state.changes, TEST_HASH_SIZE);
-    memcpy(&previous_policy, &state.policy, sizeof(previous_policy));
-    const char *invalid_writes[] = {"unknown_field=1\n", "log_level=4\n", "min_file_size=4294967296\n"};
-    for (size_t i = 0; i < sizeof(invalid_writes) / sizeof(invalid_writes[0]); i++) {
-        fd = open(path, O_WRONLY | O_CLOEXEC);
-        REQUIRE(fd >= 0, "open namespace policy for invalid write: %s", strerror(errno));
-        written = write(fd, invalid_writes[i], strlen(invalid_writes[i]));
-        saved_errno = errno;
+    const char *invalid[] = {"filter_flags=128\n", "action_flags=3\n", "min_file_size=16384\n",
+                              "log_level=1\n", "log_level=4\n", "unknown=1\n"};
+    unsigned char changes[TEST_HASH_SIZE], previous_root[TEST_HASH_SIZE];
+    memcpy(changes, state.changes, sizeof(changes));
+    memcpy(previous_root, state.root, sizeof(previous_root));
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        int fd = open(path, O_WRONLY | O_CLOEXEC);
+        REQUIRE(fd >= 0, "open namespace policy");
+        ssize_t count = write(fd, invalid[i], strlen(invalid[i]));
         close(fd);
-        REQUIRE(written == -1 && saved_errno == (i == 2 ? ERANGE : EINVAL),
-                "invalid SecurityFS field/value was accepted: %s", invalid_writes[i]);
+        REQUIRE(count == -1, "weaker or invalid namespace policy was accepted: %s", invalid[i]);
     }
     init_state(ctx, &state, TEST_SNAPSHOT, "policy");
-    if (submit(ctx, &state))
+    if (submit(ctx, &state) || read_text(path, text, sizeof(text)))
         return 1;
-    REQUIRE(state.policy_result == 0 && state.changes_result == 0 && state.measurement_count == 5 &&
-            !memcmp(&previous_policy, &state.policy, sizeof(previous_policy)) &&
-            !memcmp(previous_changes, state.changes, TEST_HASH_SIZE) &&
-            !memcmp(previous_leaf, state.leaf, TEST_HASH_SIZE) && !memcmp(previous_root, state.root, TEST_HASH_SIZE),
-            "rejected policy write modified committed state");
-    snprintf(path, sizeof(path), "%s/policy", ctx->securityfs);
-    if (read_text(path, global_after, sizeof(global_after)) || check_replay(ctx, "policy", 5))
+    REQUIRE(strstr(text, "min_file_size=4096\n") && strstr(text, "log_level=3\n") &&
+            !memcmp(changes, state.changes, sizeof(changes)) &&
+            !memcmp(previous_root, state.root, sizeof(previous_root)), "rejected update modified active/audit state");
+    if (root_snapshot(&after) || memcmp(&root, &after, sizeof(root)) || check_replay(ctx, "policy", 0) ||
+        apply_root_snapshot(ctx, &original))
         return 1;
-    REQUIRE(!strcmp(global_before, global_after), "namespace policy update changed the global policy");
-    puts("PASS: all policy setters, change hash, SecurityFS round-trip, invalid writes, and namespace isolation");
+    puts("PASS: protected policy map, root inheritance, stricter namespace rules, policy audit replay and invalid-write isolation");
     return 0;
 }
 
@@ -739,6 +794,13 @@ static int test_concurrency(struct test_context *ctx)
     if (submit(ctx, &state))
         return 1;
     REQUIRE(state.result == 0, "create mixed-race namespace returned %d", state.result);
+    struct bpfima_policy_snapshot saved_root, mixed_root;
+    if (root_snapshot(&saved_root))
+        return 1;
+    mixed_root = saved_root;
+    mixed_root.config.min_file_size = 1000000;
+    if (apply_root_snapshot(ctx, &mixed_root))
+        return 1;
     char path[PATH_MAX], policy[8192];
     unsigned char initial_root[TEST_HASH_SIZE];
     unsigned int initial_history_count;
@@ -754,7 +816,7 @@ static int test_concurrency(struct test_context *ctx)
         return 1;
     int mixed_result = parallel_calls(ctx, "race-mixed", TEST_MEASURE, false, true);
     /* Restore the global setting even when a worker fails. The restoration is an event too. */
-    if (write_global_log_level(ctx, original_level))
+    if (write_global_log_level(ctx, original_level) || apply_root_snapshot(ctx, &saved_root))
         return 1;
     if (mixed_result || check_replay(ctx, "race-mixed",
                                    (TEST_MAX_WORKERS - TEST_MAX_WORKERS / 3) * TEST_STRESS_EVENTS) ||

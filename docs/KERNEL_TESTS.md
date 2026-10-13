@@ -60,8 +60,22 @@ first; the runner does not compile programs as root.
 
 On Fedora, install the extra test dependencies with
 `sudo dnf install openssl-devel libyaml-devel`. The `modules kernel-tests` build
-does not require Go or build the management tool executable. The unload fixture
+includes the management tool and does not require Go. The unload fixture
 compiles its production cleanup implementation directly into the test.
+
+For interactive hook monitoring, run
+`sudo bash ./scripts/test.sh -v lsm_bprm_check_security`. This script replaces
+the module: it detaches old hooks, removes the old module, cleans the retired
+policy pin, then loads a fresh module and hooks. Cleanup performs the same
+sequence and preserves the authority pin if module removal fails. A populated
+pin from an earlier module epoch is rejected with `ESTALE` ("Stale file handle");
+the script must clean it before loading the fresh module, rather than reset
+an active policy map. Module reload does not reset a physical TPM PCR.
+
+`make test-lifecycle` checks this cleanup ordering with mocked module/tool
+commands. It needs neither root nor a TPM. `make test-policy CC=clang` also
+checks that the production policy manager rejects populated map slots without
+changing their contents or extending the TPM.
 
 A successful module compilation that prints
 `Skipping BTF generation ... due to unavailability of vmlinux` is insufficient.
@@ -315,3 +329,32 @@ sudo ./scripts/test_kernel.sh --load-module --stress
 
 The stress suite requires untrimmed history. Checkpoint/replay-preserving history
 aggregation remains separate audit work.
+
+## Authoritative policy map and atomic updates
+
+Policy ABI version 2 replaces the four independently writable policy maps with
+one frozen, BPF-read-only, double-buffered map. All production hooks resolve root and
+namespace settings from its committed generation. Namespace rules can strengthen
+root measurement coverage but cannot add exclusions that weaken it. See
+`docs/POLICY_MANAGEMENT.md` for composition, migration and the complete request ABI.
+
+The runner uses the rebuilt `bpfima-tool` to bind/initialize this map before its
+BPF fixtures run. It can reset root policy on an existing module, so continue to
+use an isolated test host. A map newly created for a module owned by the runner
+is unpinned during cleanup. Namespace policy events now extend root history
+rather than changing the namespace measurement list. Live policy checks verify
+that direct map writes fail, weaker overlays are rejected, audit hashes replay,
+and rejected writes preserve the active policy/root. Mixed stress still compares
+physical PCR order with global history on a quiet host with untrimmed history.
+
+```bash
+make test-policy CC=clang
+```
+
+This test links the production policy manager, namespace wrappers and Merkle
+engine together. Kernel/map/TPM boundaries are mocked; the transaction and history
+logic are production code. Tests cover immutable root inheritance, stricter
+namespace composition across later root changes, normalization/idempotence,
+allocation/hash failures, activation blocked during a TPM call, concurrent reads,
+latched command errors, and exact history/root/TPM extension order. The operator
+and C tests also assert the same independent canonical default-policy digest.

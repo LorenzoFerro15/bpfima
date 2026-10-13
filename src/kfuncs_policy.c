@@ -126,91 +126,31 @@ __bpf_kfunc int bpfima_policy_get_changes_hash(const char *namespace_id, u32 nam
     return bpfima_policy_namespace_get_changes_hash(id, hash_out, hash_out__sz);
 }
 
-/**
- * bpfima_policy_should_ignore_cgroup - Check if a cgroup should be ignored based on policy
- */
+/* Compatibility filters read the same authoritative map as production resolution. */
 __bpf_kfunc bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable,
-                                                 u32 cgroup_name__sz, u32 filter_flags)
+                                                   u32 cgroup_name__sz, u32 filter_flags)
 {
-    char cgroup_name[BPFIMA_NAMESPACE_SIZE];
-
-    if (bpfima_copy_kfunc_string(cgroup_name, sizeof(cgroup_name),
-                                 cgroup_name__nullable, cgroup_name__sz, false))
+    char name[BPFIMA_NAMESPACE_SIZE];
+    if (bpfima_copy_kfunc_string(name, sizeof(name), cgroup_name__nullable, cgroup_name__sz, false))
         return false;
-
-    if (cgroup_name[0] == '/' && cgroup_name[1] == '\0')
-        return true;
-    if (strncmp(cgroup_name, "init.scope", 10) == 0)
-        return true;
-
-    if (!(filter_flags & POLICY_FILTER_SYSTEM_CGROUPS))
-        return false;
-
-    struct bpfima_pattern_entry *p = bpfima_policy_get_cgroup_patterns();
-    if (!p)
-        return false;
-
-    for (int i = 0; i < MAX_IGNORE_PATTERNS; i++) {
-        if (!p[i].enabled)
-            continue;
-        if (p[i].match_type == 0 && strcmp(cgroup_name, p[i].pattern) == 0)
-            return true;
-        if (p[i].match_type == 1 && strncmp(cgroup_name, p[i].pattern, strlen(p[i].pattern)) == 0)
-            return true;
-        if (p[i].match_type == 2) {
-            size_t len_name = strlen(cgroup_name);
-            size_t len_p = strlen(p[i].pattern);
-            if (len_name >= len_p && strcmp(cgroup_name + len_name - len_p, p[i].pattern) == 0)
-                return true;
-        }
-        if (p[i].match_type == 3 && strstr(cgroup_name, p[i].pattern) != NULL)
-            return true;
-    }
-    return false;
+    return bpfima_policy_match_root(name, filter_flags, false);
 }
 
-/**
- * bpfima_policy_should_ignore_path - Check if a file path should be ignored based on policy
- */
 __bpf_kfunc bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 path__sz, u32 filter_flags)
 {
     char path[BPFIMA_PATH_SIZE];
-
     if (bpfima_copy_kfunc_string(path, sizeof(path), path__nullable, path__sz, false))
         return false;
+    return bpfima_policy_match_root(path, filter_flags, true);
+}
 
-    if ((filter_flags & POLICY_FILTER_PROC_SYS)) {
-        if (strncmp(path, "/proc/", 6) == 0 || strncmp(path, "/sys/", 5) == 0)
-            return true;
-    }
-    if ((filter_flags & POLICY_FILTER_DEV)) {
-        if (strncmp(path, "/dev/", 5) == 0)
-            return true;
-    }
-    if ((filter_flags & POLICY_FILTER_TMP_FILES)) {
-        if (strncmp(path, "/tmp/", 5) == 0)
-            return true;
-    }
+__bpf_kfunc int bpfima_policy_resolve(const void *data, u32 data__sz, void *output, u32 output__sz)
+{
+    struct bpfima_policy_context context;
 
-    struct bpfima_pattern_entry *p = bpfima_policy_get_path_patterns();
-    if (!p)
-        return false;
-
-    for (int i = 0; i < MAX_PATH_FILTERS; i++) {
-        if (!p[i].enabled)
-            continue;
-        if (p[i].match_type == 0 && strcmp(path, p[i].pattern) == 0)
-            return true;
-        if (p[i].match_type == 1 && strncmp(path, p[i].pattern, strlen(p[i].pattern)) == 0)
-            return true;
-        if (p[i].match_type == 2) {
-            size_t len_name = strlen(path);
-            size_t len_p = strlen(p[i].pattern);
-            if (len_name >= len_p && strcmp(path + len_name - len_p, p[i].pattern) == 0)
-                return true;
-        }
-        if (p[i].match_type == 3 && strstr(path, p[i].pattern) != NULL)
-            return true;
-    }
-    return false;
+    if (!data || data__sz != sizeof(context) || !output ||
+        output__sz != sizeof(struct bpfima_policy_result))
+        return -EINVAL;
+    memcpy(&context, data, sizeof(context));
+    return bpfima_policy_resolve_context(&context, output);
 }

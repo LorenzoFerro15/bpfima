@@ -16,9 +16,9 @@ char LICENSE[] SEC("license") = "GPL";
  *   - int mask: The file access mask/permissions used to open the file
  *
  * The mask parameter contains flags like:
- *   - MAY_READ (0x00000001)
+ *   - MAY_READ (0x00000004)
  *   - MAY_WRITE (0x00000002)
- *   - MAY_EXEC (0x00000004)
+ *   - MAY_EXEC (0x00000001)
  *   - MAY_APPEND (0x00000008)
  */
 SEC("lsm.s/file_post_open")
@@ -26,9 +26,6 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
 {
     if (previous_ret != 0)
         return previous_ret;
-
-    if (!bpfima_should_process(HOOK_LSM_FILE_POST_OPEN))
-        return 0;
 
     if (!(mask & 0x00000004))
         return 0;
@@ -62,10 +59,11 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
         return 0;
 
     loff_t i_size = BPF_CORE_READ(inode, i_size);
-    struct bpfima_policy_config *policy = bpfima_get_policy();
-    if (policy && (policy->filter_flags & POLICY_FILTER_SMALL_FILES) &&
-        i_size < policy->min_file_size)
-        return 0;
+    int decision = bpfima_policy_for_hook(HOOK_LSM_FILE_POST_OPEN, filepath, i_size,
+                                         BPFIMA_POLICY_FILE | BPFIMA_POLICY_READONLY |
+                                         ((mask & 1) ? BPFIMA_POLICY_EXECUTABLE : 0));
+    if (decision)
+        return decision < 0 ? decision : 0;
 
     u8 digest[32] = {0};
     char comm[16] = {0};
@@ -77,10 +75,12 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
     uid_t i_uid_val = BPF_CORE_READ(inode, i_uid.val);
     gid_t i_gid_val = BPF_CORE_READ(inode, i_gid.val);
 
-    bpf_printk("Process: %s (PID: %u, TID: %u)\n", comm, pid, tid);
-    bpf_printk("File: %s\n", filepath);
-    bpf_printk("File ptr: %p, inode: %lu\n", file, i_ino);
-    bpf_printk("Owner UID: %u, GID: %u, Size: %lld bytes\n", i_uid_val, i_gid_val, i_size);
+    if (bpfima_logging_enabled(2)) {
+        bpf_printk("Process: %s (PID: %u, TID: %u)\n", comm, pid, tid);
+        bpf_printk("File: %s\n", filepath);
+        bpf_printk("File ptr: %p, inode: %lu\n", file, i_ino);
+        bpf_printk("Owner UID: %u, GID: %u, Size: %lld bytes\n", i_uid_val, i_gid_val, i_size);
+    }
     long hash_algo = bpf_ima_file_hash(file, digest, sizeof(digest));
     if (hash_algo != HASH_ALGO_SHA256) {
         bpf_printk("  IMA hash failed or is not SHA-256: %ld\n", hash_algo);
@@ -109,15 +109,16 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
     char event_name[] = "file_post_open";
     struct measurement_ctx measurement = {
         .event_name = event_name,
+        .namespace_id = bpfima_current_namespace(),
         .additional_data = digest_hex,
         .additional_data_len = 64,
     };
     int extend_ret = bpfima_submit_measurement(&measurement);
-    if (extend_ret >= 0) {
+    if (extend_ret >= 0 && bpfima_logging_enabled(2)) {
         bpf_printk("  IMA measurement extension SUCCESS for event: %s\n", event_name);
-    } else {
+    } else if (extend_ret < 0) {
         bpf_printk("  IMA measurement extension FAILED for event: %s (ret=%d)\n", event_name, extend_ret);
     }
 
-    return 0;
+    return extend_ret;
 }

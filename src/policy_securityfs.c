@@ -24,177 +24,109 @@
 #include "bpfima_common.h"
 #include "bpfima_policy.h"
 #include "bpfima_securityfs.h"
+#include <linux/capability.h>
 
 /* Module parameter to control policy write access */
 static int securityfs_policy_writable = 1;
-static DEFINE_MUTEX(global_policy_write_mutex);
 module_param(securityfs_policy_writable, int, 0444);
 MODULE_PARM_DESC(securityfs_policy_writable,
                  "Allow runtime policy modifications via securityfs (0=read-only, 1=writable). "
                  "SECURITY: Set to 0 in production to prevent policy tampering.");
 
-typedef int (*namespace_update_fn)(const char *namespace_id, u32 value);
-typedef void (*global_update_fn)(struct bpfima_policy_config *config, u32 value);
+static struct dentry *global_policy_file;
+static struct dentry *policy_map_file;
+static struct dentry *policy_apply_file;
 
-struct policy_field {
-    const char *name;
-    namespace_update_fn ns_update;
-    global_update_fn global_update;
-    bool supports_namespace;
-};
+ssize_t global_policy_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos);
+ssize_t policy_update_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos);
 
-ssize_t global_policy_write(struct file *file, const char __user *user_buf,
-                                    size_t count, loff_t *ppos);
-
-ssize_t policy_update_write(struct file *file, const char __user *user_buf,
-                                   size_t count, loff_t *ppos);
-
-static void update_filter_flags(struct bpfima_policy_config *config, u32 value)
-{
-    config->filter_flags = value;
-}
-
-static void update_action_flags(struct bpfima_policy_config *config, u32 value)
-{
-    config->action_flags = value;
-}
-
-static void update_min_file_size(struct bpfima_policy_config *config, u32 value)
-{
-    config->min_file_size = value;
-}
-
-static void update_log_level(struct bpfima_policy_config *config, u32 value)
-{
-    config->log_level = value;
-}
-
-static void update_enabled(struct bpfima_policy_config *config, u32 value)
-{
-    config->enabled = (u8)value;
-}
-
-/* Table of policy fields and their update functions */
-static const struct policy_field policy_fields[] = {
-    {
-        .name = "filter_flags",
-        .ns_update = bpfima_policy_namespace_update_filter_flags,
-        .global_update = update_filter_flags,
-        .supports_namespace = true,
-    },
-    {
-        .name = "action_flags",
-        .ns_update = bpfima_policy_namespace_update_action_flags,
-        .global_update = update_action_flags,
-        .supports_namespace = true,
-    },
-    {
-        .name = "min_file_size",
-        .ns_update = bpfima_policy_namespace_update_min_file_size,
-        .global_update = update_min_file_size,
-        .supports_namespace = true,
-    },
-    {
-        .name = "log_level",
-        .ns_update = bpfima_policy_namespace_update_log_level,
-        .global_update = update_log_level,
-        .supports_namespace = true,
-    },
-    {
-        .name = "enabled",
-        .ns_update = NULL,
-        .global_update = update_enabled,
-        .supports_namespace = false,
-    },
-};
-
-#define NUM_POLICY_FIELDS (sizeof(policy_fields) / sizeof(policy_fields[0]))
-
-/* Global policy file dentry */
-static struct dentry *global_policy_file = NULL;
-
-/**
- * parse_and_update_policy - Common function to parse and update policy
- * @buf: Buffer containing "field=value"
- * @namespace_id: Namespace ID (NULL for global policy)
- *
- * Returns: 0 on success, negative error code on failure
- */
 static int parse_and_update_policy(const char *buf, const char *namespace_id)
 {
-    char *field, *value_str, *buf_copy;
-    u32 value;
-    int ret = -EINVAL;
-    size_t i;
+    char *copy = kstrdup(buf, GFP_KERNEL), *value;
+    u32 number;
+    int ret;
 
-    buf_copy = kstrdup(buf, GFP_KERNEL);
-    if (!buf_copy)
+    if (!copy)
         return -ENOMEM;
-
-    field = buf_copy;
-    value_str = strchr(buf_copy, '=');
-    if (!value_str) {
-        pr_err("bpfima: Invalid format. Use: field=value\n");
-        kfree(buf_copy);
+    value = strchr(copy, '=');
+    if (!value) {
+        kfree(copy);
         return -EINVAL;
     }
-
-    *value_str = '\0';
-    value_str++;
-
-    ret = kstrtou32(value_str, 0, &value);
-    if (ret) {
-        pr_err("bpfima: Invalid value: %s\n", value_str);
-        kfree(buf_copy);
-        return ret;
-    }
-
-    for (i = 0; i < NUM_POLICY_FIELDS; i++) {
-        const struct policy_field *pf = &policy_fields[i];
-        
-        if (strcmp(field, pf->name) != 0)
-            continue;
-
-        if ((strcmp(field, "enabled") == 0 && value > 1) ||
-            (strcmp(field, "log_level") == 0 && value > 3)) {
-            ret = -EINVAL;
-            goto out;
-        }
-
-        if (namespace_id && !pf->supports_namespace) {
-            pr_err("bpfima: Field '%s' does not support namespace-specific updates\n", field);
-            ret = -ENOTSUPP;
-            break;
-        }
-
-        if (namespace_id) {
-            ret = pf->ns_update(namespace_id, (u32)value);
-        } else {
-            struct bpfima_policy_config new_config;
-            mutex_lock(&global_policy_write_mutex);
-            bpfima_policy_get_config(&new_config);
-            pf->global_update(&new_config, (u32)value);
-            ret = bpfima_policy_update(&new_config);
-            mutex_unlock(&global_policy_write_mutex);
-        }
-
-        if (ret == 0) {
-            pr_info("bpfima: Updated %s=%u (0x%x) for %s\n",
-                    pf->name, (u32)value, (u32)value,
-                    namespace_id ? namespace_id : "global");
-        }
-        goto out;
-    }
-
-    if (i == NUM_POLICY_FIELDS) {
-        pr_err("bpfima: Unknown field: %s\n", field);
-        ret = -EINVAL;
-    }
-
-out:
-    kfree(buf_copy);
+    *value++ = '\0';
+    ret = kstrtou32(value, 0, &number);
+    if (!ret)
+        ret = bpfima_policy_update_field(namespace_id, copy, number);
+    kfree(copy);
     return ret;
 }
+
+static ssize_t policy_map_write(struct file *file, const char __user *buffer, size_t count, loff_t *pos)
+{
+    char text[32];
+    u32 fd;
+    int ret;
+
+    if (!capable(CAP_SYS_ADMIN))
+        return -EPERM;
+    if (!count || count >= sizeof(text))
+        return -EINVAL;
+    if (copy_from_user(text, buffer, count))
+        return -EFAULT;
+    text[count] = '\0';
+    if (memchr(text, '\0', count))
+        return -EINVAL;
+    ret = kstrtou32(text, 0, &fd);
+    if (!ret)
+        ret = bpfima_policy_bind_map(fd);
+    return ret ? ret : count;
+}
+
+static ssize_t policy_apply_write(struct file *file, const char __user *buffer, size_t count, loff_t *pos)
+{
+    struct bpfima_policy_request *request;
+    struct bpfima_policy_config *config;
+    int ret;
+
+    if (!securityfs_policy_writable || !capable(CAP_SYS_ADMIN))
+        return -EPERM;
+    if (count != sizeof(*request))
+        return -EINVAL;
+    request = memdup_user(buffer, count);
+    if (IS_ERR(request))
+        return PTR_ERR(request);
+    request->version = le32_to_cpu(request->version);
+    request->reserved = le32_to_cpu(request->reserved);
+    request->expected_generation = le64_to_cpu(request->expected_generation);
+    config = &request->record.snapshot.config;
+    config->filter_flags = le32_to_cpu(config->filter_flags);
+    config->action_flags = le32_to_cpu(config->action_flags);
+    config->min_file_size = le32_to_cpu(config->min_file_size);
+    config->max_path_depth = le32_to_cpu(config->max_path_depth);
+    config->log_level = le32_to_cpu(config->log_level);
+    config->merkle_history_max_size = le32_to_cpu(config->merkle_history_max_size);
+    for (int i = 0; i < HOOK_MAX; i++) {
+        struct bpfima_hook_config *hook = &request->record.snapshot.hooks[i];
+        hook->flags = le32_to_cpu(hook->flags);
+        hook->filter_override = le32_to_cpu(hook->filter_override);
+        hook->action_override = le32_to_cpu(hook->action_override);
+    }
+    ret = bpfima_policy_apply(request);
+    kfree(request);
+    return ret ? ret : count;
+}
+
+static const struct file_operations policy_map_fops = {
+    .owner = THIS_MODULE,
+    .write = policy_map_write,
+    .open = nonseekable_open,
+};
+
+static const struct file_operations policy_apply_fops = {
+    .owner = THIS_MODULE,
+    .write = policy_apply_write,
+    .open = nonseekable_open,
+};
 
 /**
  * policy_update_write - Handle writes to policy file (namespace-specific)
@@ -215,6 +147,8 @@ ssize_t policy_update_write(struct file *file, const char __user *user_buf,
     char *namespace_id;
     int ret;
 
+    if (!securityfs_policy_writable)
+        return -EPERM;
     if (count > 256)
         return -EINVAL;
 
@@ -261,6 +195,8 @@ ssize_t global_policy_write(struct file *file, const char __user *user_buf,
     char *buf;
     int ret;
 
+    if (!securityfs_policy_writable)
+        return -EPERM;
     if (count > 256)
         return -EINVAL;
 
@@ -292,31 +228,31 @@ ssize_t global_policy_write(struct file *file, const char __user *user_buf,
  */
 static int policy_show(struct seq_file *s, void *v)
 {
-    char *namespace_id = s->private;
-    struct bpfima_policy_namespace *policy_ns;
-    int i;
+    const char *id = s->private;
+    struct bpfima_policy_config config;
+    struct bpfima_policy_namespace *metadata;
+    u64 generation;
+    int ret;
 
-    if (!namespace_id)
+    if (!id)
         return -EINVAL;
-
-    policy_ns = bpfima_policy_namespace_get_or_create(namespace_id);
-    if (IS_ERR(policy_ns))
-        return PTR_ERR(policy_ns);
-
-    seq_printf(s, "namespace_id=%s\n", policy_ns->namespace_id);
-    seq_printf(s, "filter_flags=0x%x\n", policy_ns->policy.filter_flags);
-    seq_printf(s, "action_flags=0x%x\n", policy_ns->policy.action_flags);
-    seq_printf(s, "min_file_size=%u\n", policy_ns->policy.min_file_size);
-    seq_printf(s, "log_level=%u\n", policy_ns->policy.log_level);
-    seq_printf(s, "enabled=%u\n", policy_ns->policy.enabled);
-    seq_printf(s, "\nchanges=%s\n", policy_ns->changes_str);
-    
-    seq_printf(s, "changes_hash=");
-    for (i = 0; i < MERKLE_HASH_SIZE; i++)
-        seq_printf(s, "%02x", policy_ns->changes_hash[i]);
-    seq_printf(s, "\n");
-
-    return 0;
+    mutex_lock(&bpfima_policy_namespace_mutex);
+    ret = bpfima_policy_read_locked(id, &config, &generation);
+    if (ret)
+        goto unlock;
+    metadata = bpfima_policy_namespace_get_locked(id);
+    if (IS_ERR(metadata)) {
+        ret = PTR_ERR(metadata);
+        goto unlock;
+    }
+    seq_printf(s, "namespace_id=%s\ngeneration=%llu\n", id, generation);
+    seq_printf(s, "filter_flags=0x%x\naction_flags=0x%x\n", config.filter_flags, config.action_flags);
+    seq_printf(s, "min_file_size=%u\nlog_level=%u\nenabled=%u\n", config.min_file_size, config.log_level, config.enabled);
+    seq_printf(s, "changes=%s\nchanges_hash=%*phN\n", metadata->changes_str,
+               MERKLE_HASH_SIZE, metadata->changes_hash);
+unlock:
+    mutex_unlock(&bpfima_policy_namespace_mutex);
+    return ret;
 }
 
 /**
@@ -330,8 +266,13 @@ static int global_policy_show(struct seq_file *s, void *v)
 {
     struct bpfima_policy_config config;
     struct bpfima_policy_config *policy = &config;
-    bpfima_policy_get_config(policy);
- 
+    u64 generation;
+    mutex_lock(&bpfima_policy_namespace_mutex);
+    int ret = bpfima_policy_read_locked(NULL, policy, &generation);
+    mutex_unlock(&bpfima_policy_namespace_mutex);
+    if (ret)
+        return ret;
+    seq_printf(s, "generation=%llu\n", generation);
     seq_printf(s, "enabled=%u\n", policy->enabled);
     seq_printf(s, "filter_flags=0x%x\n", policy->filter_flags);
     seq_printf(s, "action_flags=0x%x\n", policy->action_flags);
@@ -605,6 +546,21 @@ int create_global_policy_securityfs(struct dentry *parent_dir)
         return PTR_ERR(global_policy_file);
     }
 
+    policy_map_file = securityfs_create_file("policy_map", 0600, parent_dir, NULL, &policy_map_fops);
+    if (IS_ERR(policy_map_file)) {
+        int ret = PTR_ERR(policy_map_file);
+        policy_map_file = NULL;
+        remove_global_policy_securityfs();
+        return ret;
+    }
+    policy_apply_file = securityfs_create_file("policy_apply", mode, parent_dir, NULL, &policy_apply_fops);
+    if (IS_ERR(policy_apply_file)) {
+        int ret = PTR_ERR(policy_apply_file);
+        policy_apply_file = NULL;
+        remove_global_policy_securityfs();
+        return ret;
+    }
+
     if (!securityfs_policy_writable) {
         pr_warn("bpfima: Policy files are READ-ONLY (securityfs_policy_writable=0)\n");
         pr_warn("bpfima: Use YAML configuration for policy updates\n");
@@ -625,6 +581,15 @@ int create_global_policy_securityfs(struct dentry *parent_dir)
  */
 void remove_global_policy_securityfs(void)
 {
+    if (policy_apply_file) {
+        securityfs_remove(policy_apply_file);
+        policy_apply_file = NULL;
+    }
+    if (policy_map_file) {
+        securityfs_remove(policy_map_file);
+        policy_map_file = NULL;
+    }
+
     if (global_policy_file && !IS_ERR(global_policy_file)) {
         securityfs_remove(global_policy_file);
         global_policy_file = NULL;

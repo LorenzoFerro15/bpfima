@@ -1,103 +1,8 @@
 #ifndef BPFIMA_POLICY_H
 #define BPFIMA_POLICY_H
 
-#include <linux/types.h>
+#include "bpfima_common.h"
 #include "bpfima_kfunc_types.h"
-
-/* Maximum number of ignore patterns */
-#define MAX_IGNORE_PATTERNS 8
-#define MAX_PATTERN_LEN 64
-
-/* Maximum number of path filters */
-#define MAX_PATH_FILTERS 8
-
-/* Policy filter flags (what to filter/skip) */
-#define POLICY_FILTER_SYSTEM_CGROUPS    (1 << 0)  /* Filter system cgroups */
-#define POLICY_FILTER_PROC_SYS          (1 << 1)  /* Filter /proc, /sys paths */
-#define POLICY_FILTER_DEV               (1 << 2)  /* Filter /dev paths */
-#define POLICY_FILTER_READONLY_FILES    (1 << 3)  /* Filter readonly file opens */
-#define POLICY_FILTER_SMALL_FILES       (1 << 4)  /* Filter files below min size */
-#define POLICY_FILTER_NON_EXECUTABLE    (1 << 5)  /* Filter non-executable files */
-#define POLICY_FILTER_LIBRARIES         (1 << 6)  /* Filter .so libraries */
-#define POLICY_FILTER_TMP_FILES         (1 << 7)  /* Filter /tmp files */
-
-/* Policy action flags (what to do when matched) */
-#define POLICY_ACTION_EXTEND_TPM        (1 << 0)  /* Extend measurement to TPM */
-#define POLICY_ACTION_LOG_SECURITYFS    (1 << 1)  /* Log to securityfs */
-#define POLICY_ACTION_LOG_KERNEL        (1 << 2)  /* Log to kernel log (printk) */
-#define POLICY_ACTION_ALERT_SUSPICIOUS  (1 << 3)  /* Alert on suspicious activity */
-#define POLICY_ACTION_BLOCK             (1 << 4)  /* Block the operation (future) */
-#define POLICY_ACTION_TRACK_CONTAINER   (1 << 5)  /* Track per-container */
-#define POLICY_ACTION_BUILD_DEPS        (1 << 6)  /* Build dependency chain */
-
-/* Hook-specific flags */
-#define HOOK_FLAG_ENABLED               (1 << 0)  /* Hook is enabled */
-#define HOOK_FLAG_TRACK_CONTAINERS      (1 << 1)  /* Track containers in this hook */
-#define HOOK_FLAG_MEASURE_HASH          (1 << 2)  /* Calculate file hashes */
-
-/**
- * struct bpfima_pattern_entry - Pattern for matching (cgroups, paths, etc.)
- * @pattern: Pattern string to match
- * @enabled: Whether this pattern is active
- * @match_type: 0=exact, 1=prefix, 2=suffix, 3=contains
- */
-struct bpfima_pattern_entry {
-    char pattern[MAX_PATTERN_LEN];
-    u8 enabled;
-    u8 match_type;
-    u16 reserved;
-};
-
-/**
- * struct bpfima_hook_config - Per-hook configuration
- * @flags: Bitmask of HOOK_FLAG_* flags
- * @filter_override: Hook-specific filter flag overrides
- * @action_override: Hook-specific action flag overrides
- * @reserved: Reserved for future use
- */
-struct bpfima_hook_config {
-    u32 flags;
-    u32 filter_override;
-    u32 action_override;
-    u32 reserved[1];
-};
-
-/* Hook identifiers for per-hook configuration */
-enum bpfima_hook_id {
-    HOOK_LSM_BPRM_CHECK_SECURITY = 0,
-    HOOK_LSM_FILE_OPEN,
-    HOOK_LSM_FILE_POST_OPEN,
-    HOOK_LSM_MMAP_FILE,
-    HOOK_LSM_SOCKET_CONNECT,
-    HOOK_LSM_CONTAINER_EVENTS,
-    HOOK_KPROBE_FILE_OPEN,
-    HOOK_MAX
-};
-
-/* Default policy values - LESS STRICT: track everything by default */
-#define DEFAULT_FILTER_FLAGS 0  /* No filtering - track all user processes and containers */
-
-#define DEFAULT_ACTION_FLAGS (POLICY_ACTION_EXTEND_TPM | \
-                              POLICY_ACTION_LOG_SECURITYFS | \
-                              POLICY_ACTION_LOG_KERNEL | \
-                              POLICY_ACTION_TRACK_CONTAINER | \
-                              POLICY_ACTION_BUILD_DEPS)
-
-#define DEFAULT_MIN_FILE_SIZE 0
-#define DEFAULT_MAX_PATH_DEPTH 32
-#define DEFAULT_LOG_LEVEL 2  /* Info level */
-
-/* Default Patterns */
-#define DEFAULT_CGROUP_PATTERN_1 "/"
-#define DEFAULT_CGROUP_PATTERN_2 "init.scope"
-#define DEFAULT_PATH_PATTERN_1 "/proc/"
-#define DEFAULT_PATH_PATTERN_2 "/sys/"
-
-/* Circular buffer defaults */
-#define DEFAULT_MERKLE_HISTORY_MAX_SIZE 1000
-#define MERKLE_HISTORY_SCOPE_GLOBAL 0
-#define MERKLE_HISTORY_SCOPE_ROOT_ONLY 1
-#define DEFAULT_MERKLE_HISTORY_SCOPE MERKLE_HISTORY_SCOPE_GLOBAL
 
 /* Policy change tracking */
 #define MAX_POLICY_CHANGES_STR 1024
@@ -108,7 +13,6 @@ enum bpfima_hook_id {
  * @list: Linked list node
  * @change_hash: SHA-256 hash of the policy_string
  * @policy_string: Full policy configuration string (e.g., "enabled=1,filter_flags=0x0,action_flags=0x3F,min_file_size=0,log_level=2")
- * @timestamp: Timestamp when change occurred (jiffies)
  */
 struct policy_change_entry {
     struct list_head list;
@@ -119,7 +23,7 @@ struct policy_change_entry {
 /**
  * struct bpfima_policy_namespace - Per-namespace policy configuration
  * @namespace_id: Namespace/container identifier
- * @policy: Policy configuration for this namespace
+ * Active namespace configuration is stored only in the policy map.
  * @changes_str: Concatenated string of all policy changes (e.g., "filter_flags=0x7,action_flags=0x3F")
  * @changes_hash: SHA-256 hash of the changes_str
  * @list: Linked list node
@@ -128,7 +32,6 @@ struct policy_change_entry {
  */
 struct bpfima_policy_namespace {
     char namespace_id[CONTAINER_ID_MAX_LEN];
-    struct bpfima_policy_config policy;
     char changes_str[MAX_POLICY_CHANGES_STR];
     u8 changes_hash[MERKLE_HASH_SIZE];
     struct list_head list;
@@ -137,46 +40,38 @@ struct bpfima_policy_namespace {
 };
 
 #ifdef __KERNEL__
-/* Kernel-side policy management functions */
+extern struct mutex bpfima_policy_namespace_mutex;
 int bpfima_policy_init(void);
 void bpfima_policy_cleanup(void);
-int bpfima_policy_set_default(void);
-struct bpfima_policy_config *bpfima_policy_get(void);
+int bpfima_policy_bind_map(u32 fd);
+int bpfima_policy_apply(const struct bpfima_policy_request *request);
+int bpfima_policy_update_field(const char *namespace_id, const char *field, u32 value);
+int bpfima_policy_read(const char *namespace_id, struct bpfima_policy_config *config);
+int bpfima_policy_read_locked(const char *namespace_id, struct bpfima_policy_config *config, u64 *generation);
 void bpfima_policy_get_config(struct bpfima_policy_config *config);
-int bpfima_policy_update(struct bpfima_policy_config *new_config);
-int bpfima_policy_add_cgroup_pattern(const char *pattern);
-int bpfima_policy_add_path_pattern(const char *pattern);
-int bpfima_policy_set_hook_config(enum bpfima_hook_id hook, struct bpfima_hook_config *config);
+u64 bpfima_policy_generation(void);
+u32 bpfima_policy_map_id(void);
+int bpfima_policy_resolve_context(const struct bpfima_policy_context *context,
+                                  struct bpfima_policy_result *result);
+bool bpfima_policy_match_root(const char *text, u32 filter_flags, bool path);
 
-/* Getters for pattern arrays and hook configs */
-struct bpfima_pattern_entry *bpfima_policy_get_cgroup_patterns(void);
-struct bpfima_pattern_entry *bpfima_policy_get_path_patterns(void);
-struct bpfima_hook_config *bpfima_policy_get_hook_config(enum bpfima_hook_id hook);
-
-/* Per-namespace policy management */
 int bpfima_policy_namespace_init(void);
 void bpfima_policy_namespace_cleanup(void);
 struct bpfima_policy_namespace *bpfima_policy_namespace_get_or_create(const char *namespace_id);
+struct bpfima_policy_namespace *bpfima_policy_namespace_get_locked(const char *namespace_id);
 void bpfima_policy_namespace_remove(const char *namespace_id);
-int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 new_flags);
-int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 new_flags);
-int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 new_size);
-int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 new_level);
-int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash_out, u32 hash_size);
-int bpfima_policy_namespace_get_config(const char *namespace_id, u32 namespace_id__sz,
-                                                void *config, u32 config__sz);
-
-/* Global policy change history management */
-int bpfima_global_policy_init_history(void);
+int bpfima_policy_namespace_update_filter_flags(const char *namespace_id, u32 value);
+int bpfima_policy_namespace_update_action_flags(const char *namespace_id, u32 value);
+int bpfima_policy_namespace_update_min_file_size(const char *namespace_id, u32 value);
+int bpfima_policy_namespace_update_log_level(const char *namespace_id, u32 value);
+int bpfima_policy_namespace_get_changes_hash(const char *namespace_id, u8 *hash, u32 size);
+__bpf_kfunc int bpfima_policy_namespace_get_config(const char *namespace_id, u32 namespace_id__sz,
+                                                  void *config, u32 config__sz);
 void bpfima_global_policy_cleanup_history(void);
 struct list_head *bpfima_global_policy_get_history(void);
 spinlock_t *bpfima_global_policy_get_history_lock(void);
-
-/* Policy kfunc registration */
-int register_policy_kfuncs(void);
-void unregister_policy_kfuncs(void);
-bool bpfima_policy_should_ignore_cgroup(const char *cgroup_name__nullable, u32 cgroup_name__sz, u32 filter_flags);
-bool bpfima_policy_should_ignore_path(const char *path__nullable, u32 path__sz, u32 filter_flags);
+bool bpfima_policy_should_ignore_cgroup(const char *text__nullable, u32 text__sz, u32 filter_flags);
+bool bpfima_policy_should_ignore_path(const char *text__nullable, u32 text__sz, u32 filter_flags);
 #endif
 
 #endif /* BPFIMA_POLICY_H */

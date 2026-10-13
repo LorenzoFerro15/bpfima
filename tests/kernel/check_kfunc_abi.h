@@ -19,6 +19,7 @@ static int bpfima_test_check_kfunc_abi(void)
         const char *arguments[4];
     } functions[] = {
         {"bpfima_measurement_extend", 2, {"data", "data__sz"}},
+        {"bpfima_policy_resolve", 4, {"data", "data__sz", "output", "output__sz"}},
         {"bpfima_tpm_get_pcr_value", 2, {"pcr_buf", "pcr_buf__sz"}},
         {"bpfima_tpm_is_available", 0, {NULL}},
         {"bpfima_container_get_or_create", 2, {"container_id", "container_id__sz"}},

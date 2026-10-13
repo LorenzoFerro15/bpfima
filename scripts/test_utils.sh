@@ -140,21 +140,33 @@ wait_for_container() {
     return 1
 }
 
+# Run as root, or pass sudo after build_dir. Detach hooks before unloading;
+# release the policy authority pin only after the module has gone.
+cleanup_bpfima_epoch() {
+    local build_dir=$1
+    local attempt
+    shift
+
+    "$@" "$build_dir/bpfima-tool" unload || return 1
+    for attempt in {1..10}; do
+        if ! lsmod | grep -q "^bpfima "; then
+            "$@" "$build_dir/bpfima-tool" unload
+            return $?
+        fi
+        if "$@" rmmod bpfima; then
+            "$@" "$build_dir/bpfima-tool" unload
+            return $?
+        fi
+        # BPF program destruction can finish after an RCU grace period.
+        sleep 1
+    done
+    return 1
+}
+
 cleanup_bpf() {
     local build_dir=${1:-$(pwd)/build}
-    
-    sudo "$build_dir/bpfima-tool" unload lsm_bprm_check_security > /dev/null 2>&1
-    sudo "$build_dir/bpfima-tool" unload lsm_socket_connect > /dev/null 2>&1
-    
-    sudo pkill -f "bpfima-tool" > /dev/null 2>&1 || true
-    
-    if lsmod | grep -q "^bpfima "; then
-        sudo rmmod bpfima > /dev/null 2>&1
-    fi
-    
-    sudo rm -f /sys/fs/bpf/bpfima_* 2>/dev/null || true
-    sudo rm -f /sys/fs/bpf/scratch_buf_map 2>/dev/null || true
-    sudo rm -f /sys/fs/bpf/bpf_timing_stats 2>/dev/null || true
+
+    cleanup_bpfima_epoch "$build_dir" sudo
 }
 
 load_bpf_hook() {
@@ -162,12 +174,13 @@ load_bpf_hook() {
     local build_dir=${2:-$(pwd)/build}
     
     if ! lsmod | grep -q "^bpfima "; then
-        sudo insmod "$build_dir/bpfima.ko" > /dev/null 2>&1
-        wait_for_module bpfima 5
-        wait_for_securityfs bpfima 5
+        sudo "$build_dir/bpfima-tool" unload || return 1
+        sudo insmod "$build_dir/bpfima.ko" > /dev/null 2>&1 || return 1
+        wait_for_module bpfima 5 || return 1
+        wait_for_securityfs bpfima 5 || return 1
     fi
     
-    sudo "$build_dir/bpfima-tool" load "$hook_obj" -d > /dev/null 2>&1
+    sudo "$build_dir/bpfima-tool" load "$hook_obj" -d > /dev/null 2>&1 || return 1
     sudo "$build_dir/bpfima-tool" policy-init > /dev/null 2>&1
 }
 
@@ -181,6 +194,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     export -f wait_for_bpf_maps
     export -f wait_for_module_unload
     export -f wait_for_container
+    export -f cleanup_bpfima_epoch
     export -f cleanup_bpf
     export -f load_bpf_hook
 fi

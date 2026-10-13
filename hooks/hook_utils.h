@@ -2,6 +2,66 @@
 #include "../utils/utils.h"
 #include "../utils/bpf_kfunc_defs.h"
 
+static __attribute__((noinline, unused)) struct scratch_t *bpfima_scratch(void)
+{
+    struct task_struct *task = bpf_get_current_task_btf();
+    return task ? bpf_task_storage_get(&scratch_buf_map, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE) : NULL;
+}
+
+/* Resolve configuration, hook enablement and filters from one committed map generation. */
+static __attribute__((noinline, unused)) int bpfima_policy_for_hook(u32 hook, const char *path,
+                                                                  u64 size, u32 flags)
+{
+    struct scratch_t *scratch = bpfima_scratch();
+    struct bpfima_policy_context *context;
+    struct task_struct *task;
+    int ret;
+
+    if (!scratch)
+        return -12;
+    context = &scratch->policy_context;
+    __builtin_memset(context, 0, sizeof(*context));
+    task = bpf_get_current_task_btf();
+    fetch_cgroup_name(task, context->cgroup, sizeof(context->cgroup));
+    if (context->cgroup[0] && context->cgroup[0] != '/')
+        __builtin_memcpy(context->namespace_id, context->cgroup, sizeof(context->namespace_id));
+    else
+        __builtin_memcpy(context->namespace_id, "default", 8);
+    if (path) {
+        ret = bpf_probe_read_kernel_str(context->path, sizeof(context->path), path);
+        if (ret <= 0 || ret >= sizeof(context->path))
+            return -36;
+    }
+    context->hook = hook;
+    context->file_size = size;
+    context->flags = flags;
+    ret = bpfima_policy_resolve(context, sizeof(*context), &scratch->policy_result,
+                               sizeof(scratch->policy_result));
+    return ret ? ret : scratch->policy_result.skip;
+}
+
+static __attribute__((noinline, unused)) struct bpfima_policy_config *bpfima_get_policy(void)
+{
+    struct scratch_t *scratch = bpfima_scratch();
+    return scratch ? &scratch->policy_result.config : NULL;
+}
+
+static __attribute__((noinline, unused)) bool bpfima_logging_enabled(u32 level)
+{
+    struct bpfima_policy_config *policy = bpfima_get_policy();
+    return policy && (policy->action_flags & POLICY_ACTION_LOG_KERNEL) && policy->log_level >= level;
+}
+
+static __attribute__((noinline, unused)) const char *bpfima_current_namespace(void)
+{
+    struct scratch_t *scratch = bpfima_scratch();
+    if (!scratch)
+        return NULL;
+    return (scratch->policy_result.hook.flags & HOOK_FLAG_TRACK_CONTAINERS) ||
+           (scratch->policy_result.config.action_flags & POLICY_ACTION_TRACK_CONTAINER) ?
+           scratch->policy_context.namespace_id : "default";
+}
+
 #define TEMP_BUFFER_LEN 32
 
 /* --------------------------------------------------------- */
@@ -117,7 +177,7 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
     if (!task) {
         bpf_printk("hook_utils: Failed to get current task.\n");
-        return 0;
+        return -1;
     }
 
     /* Retrieve or create the task-local storage for this thread */
@@ -135,13 +195,13 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
 
     if (ctx->fname && ctx->cur && (!ctx->policy || (ctx->policy->action_flags & POLICY_ACTION_BUILD_DEPS))) {
         u64 d_start = bpf_ktime_get_ns();
-        deps_actual = build_dependencies(deps, deps_max, ctx->fname, ctx->cur);
+        deps_actual = build_dependencies(deps, deps_max, ctx->fname, ctx->cur, ctx->policy ? ctx->policy->max_path_depth : 32);
         u64 d_end = bpf_ktime_get_ns();
         if (deps_actual < 0)
             return -1;
         if (ctx->deps_duration)
             *ctx->deps_duration = d_end - d_start;
-        if (!ctx->policy || ctx->policy->log_level >= 2) {
+        if (bpfima_logging_enabled(2)) {
             bpf_printk(" dependencies: %s\n", deps);
         }
     }
@@ -156,7 +216,7 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
     u64 start = bpf_ktime_get_ns();
     struct measurement_ctx measurement = {
         .event_name = ctx->event_name,
-        .namespace_id = ctx->is_container_context ? ctx->cgroup_name : NULL,
+        .namespace_id = ctx->cgroup_name,
         .dependencies = deps,
         .additional_data = digest_hex,
         .additional_data_len = 64,
@@ -168,10 +228,11 @@ static __attribute__((noinline, unused)) int measure_accessed_file(struct file_m
 
     if (ret != 0) {
         bpf_printk(" Failed to process measurement: %d\n", ret);
-        return -1;
+        return ret;
     }
 
-    bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
+    if (bpfima_logging_enabled(2))
+        bpf_printk(" Measurement processed: %s (namespace=%s)\n",
             ctx->event_name, ctx->is_container_context ? ctx->cgroup_name : "host");
     return 0;
 }
@@ -194,7 +255,7 @@ static __attribute__((noinline, unused)) int measure_socket_data(struct socket_m
     u64 start = bpf_ktime_get_ns();
     struct measurement_ctx measurement = {
         .event_name = ctx->event_name,
-        .namespace_id = ctx->is_container_context ? ctx->cgroup_name : NULL,
+        .namespace_id = ctx->cgroup_name,
         .dependencies = ctx->deps,
         .additional_data = ctx->additional_data,
         .additional_data_len = ctx->additional_data_len,
@@ -206,10 +267,11 @@ static __attribute__((noinline, unused)) int measure_socket_data(struct socket_m
 
     if (ret != 0) {
         bpf_printk(" Failed to process measurement: %d\n", ret);
-        return -1;
+        return ret;
     }
 
-    bpf_printk(" Measurement processed: %s (namespace=%s)\n", 
+    if (bpfima_logging_enabled(2))
+        bpf_printk(" Measurement processed: %s (namespace=%s)\n",
             ctx->event_name, ctx->is_container_context ? ctx->cgroup_name : "host");
     return 0;
 }

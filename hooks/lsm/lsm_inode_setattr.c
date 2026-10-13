@@ -11,18 +11,10 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
     if (!dentry || !attr)
         return 0;
 
-    struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
-    char cgroup_name[64] = {0};
-    fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
-
-    struct bpfima_policy_config *policy = bpfima_get_policy();
-    if (policy && !policy->enabled)
-        return 0;
-    if (cgroup_name[0] != '\0' && bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy))
-        return 0;
-
-    char entry_name[16] = {0};
-    bpf_core_read_str(entry_name, sizeof(entry_name), dentry->d_name.name);
+    const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+    int decision = bpfima_policy_for_hook(HOOK_LSM_INODE_SETATTR, (const char *)name, 0, 0);
+    if (decision)
+        return decision < 0 ? decision : 0;
 
     char attrs[64] = {0};
     int attr_len = build_attributes(attrs, sizeof(attrs), attr);
@@ -32,10 +24,10 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
     char event_name[] = "inode_setattr";
     struct measurement_ctx measurement = {
         .event_name = event_name,
-        .namespace_id = cgroup_name[0] ? cgroup_name : NULL,
+        .namespace_id = bpfima_current_namespace(),
         .additional_data = attrs,
         .additional_data_len = attr_len,
     };
     int ret = bpfima_submit_measurement(&measurement);
-    return ret < 0 ? -1 : 0;
+    return ret;
 }

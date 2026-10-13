@@ -80,9 +80,9 @@ spec:
                       description: Enabled whether this pattern is active
                       type: boolean
                     match_type:
-                      description: MatchType 0=exact, 1=prefix
+                      description: MatchType 0=exact, 1=prefix, 2=suffix, 3=contains
                       format: int32
-                      maximum: 1
+                      maximum: 3
                       minimum: 0
                       type: integer
                     pattern:
@@ -282,6 +282,35 @@ spec:
                     - measure_hash
                     - track_containers
                     type: object
+                  lsm_inode_setattr:
+                    description: LSMFilePostOpen configuration
+                    properties:
+                      action_override:
+                        description: ActionOverride override global action flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: Enabled whether this hook is active
+                        type: boolean
+                      filter_override:
+                        description: FilterOverride override global filter flags
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      measure_hash:
+                        description: MeasureHash whether to measure file hashes
+                        type: boolean
+                      track_containers:
+                        description: TrackContainers whether to track container context
+                        type: boolean
+                    required:
+                    - action_override
+                    - enabled
+                    - filter_override
+                    - measure_hash
+                    - track_containers
+                    type: object
                   lsm_mmap_file:
                     description: LSMMmapFile configuration
                     properties:
@@ -350,9 +379,9 @@ spec:
                       description: Enabled whether this pattern is active
                       type: boolean
                     match_type:
-                      description: MatchType 0=exact, 1=prefix
+                      description: MatchType 0=exact, 1=prefix, 2=suffix, 3=contains
                       format: int32
-                      maximum: 1
+                      maximum: 3
                       minimum: 0
                       type: integer
                     pattern:
@@ -381,9 +410,10 @@ spec:
                     minimum: 0
                     type: integer
                   max_path_depth:
-                    description: MaxPathDepth maximum depth of file paths to track
+                    description: MaxPathDepth bounds dependency ancestry (legacy field name)
                     format: int32
-                    minimum: 1
+                    maximum: 32
+                    minimum: 0
                     type: integer
                   min_file_size:
                     description: MinFileSize minimum file size to track

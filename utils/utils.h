@@ -48,6 +48,8 @@ struct scratch_t {
     char buf[128];
     char digest_hex[68];
     struct bpfima_measurement_request measurement;
+    struct bpfima_policy_context policy_context;
+    struct bpfima_policy_result policy_result;
 };
 
 // BPF_MAP_TYPE_TASK_STORAGE is safer then BPF_MAP_TYPE_PERCPU_ARRAY against race conditions
@@ -242,7 +244,7 @@ static __attribute__((noinline, unused)) int append_parent_comm(char *deps, int 
  */
 static __attribute__((noinline, unused)) int build_dependencies(char *deps, int deps_max,
                                                       const char *initial_name,
-                                                      struct task_struct *current_task)
+                                                      struct task_struct *current_task, u32 max_depth)
 {
     int deps_actual = 0;
 
@@ -266,7 +268,11 @@ static __attribute__((noinline, unused)) int build_dependencies(char *deps, int 
         ancestor = BPF_CORE_READ(current_task, real_parent);
     }
     
-    for (int i = 0; i < 10; i++) {
+    if (max_depth > 32)
+        max_depth = 32;
+    for (int i = 0; i < 32; i++) {
+        if (i >= max_depth)
+            break;
         if (!ancestor)
             break;
         

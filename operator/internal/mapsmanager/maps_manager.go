@@ -1,13 +1,15 @@
-// Package containing the helper functions to interact with the eBPF maps
+// Package mapsmanager builds complete requests for the authoritative policy map transaction.
 package mapsmanager
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
-	"path/filepath"
+	"os"
 
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
-	"github.com/cilium/ebpf"
 )
 
 const MaxPatternLen = 64
@@ -71,25 +73,6 @@ type BPFHookConfig struct {
 	FilterOverride uint32
 	ActionOverride uint32
 	Reserved       [1]uint32
-}
-
-// Open the maps given the directory
-func OpenMaps(baseDir string, names []string) (map[string]*ebpf.Map, error) {
-	result := make(map[string]*ebpf.Map, len(names))
-
-	for _, name := range names {
-		fullPath := filepath.Join(baseDir, name)
-		m, err := ebpf.LoadPinnedMap(fullPath, nil)
-		if err != nil {
-			for _, opened := range result {
-				_ = opened.Close()
-			}
-			return nil, err
-		}
-		result[name] = m
-	}
-
-	return result, nil
 }
 
 // Helper functions
@@ -167,153 +150,124 @@ func computeValue(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, a
 	}
 }
 
-// UpdatePolicy updates the BPF policy map with the given configuration
-func UpdatePolicy(policyMap *ebpf.Map, policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) error {
-	if policyMap == nil {
-		return fmt.Errorf("policy map is nil")
-	}
-	if policy.MinFileSize < 0 || policy.MinFileSize > math.MaxUint32 ||
-		policy.MaxPathDepth < 0 || policy.LogLevel < 0 || policy.LogLevel > 3 {
-		return fmt.Errorf("policy value exceeds the kernel ABI limits")
-	}
-
-	key := uint32(0) // Global policy key
-	value := computeValue(policy, filters, actions)
-
-	return policyMap.Put(key, value)
+// PolicySnapshot matches the complete C policy map snapshot (1252 bytes).
+type PolicySnapshot struct {
+	Config  BpfimaPolicyConfig
+	Cgroups [8]BPFPatternEntry
+	Paths   [8]BPFPatternEntry
+	Hooks   [8]BPFHookConfig
 }
 
-// UpdatePatterns updates the BPF cgroup/path patterns map
-func UpdatePatterns(patternsMap *ebpf.Map, patterns []v1alpha1.PatternEntry) error {
-	if patternsMap == nil {
-		return fmt.Errorf("cgroup/path map is nil")
-	}
+// PolicyRequest is the versioned, little-endian SecurityFS transaction ABI.
+type PolicyRequest struct {
+	Version            uint32
+	Reserved           uint32
+	ExpectedGeneration uint64
+	NamespaceID        [128]byte
+	Snapshot           PolicySnapshot
+	Padding            [4]byte
+}
 
-	// Get the max number of entries storable in the map
-	info, err := patternsMap.Info()
-	if err != nil {
-		return fmt.Errorf("failed to get cgroup/path map info: %w", err)
-	}
-
-	maxEntries := int(info.MaxEntries)
-	enabledCount := 0
-	for _, entry := range patterns {
+func buildPatterns(entries []v1alpha1.PatternEntry) ([8]BPFPatternEntry, error) {
+	var result [8]BPFPatternEntry
+	index := 0
+	for _, entry := range entries {
 		if !entry.Enabled {
 			continue
 		}
-		if entry.Pattern == "" || len(entry.Pattern) >= MaxPatternLen ||
-			entry.MatchType < 0 || entry.MatchType > 1 {
-			return fmt.Errorf("invalid cgroup/path pattern %q", entry.Pattern)
+		if index == len(result) || entry.Pattern == "" || len(entry.Pattern) >= MaxPatternLen ||
+			entry.MatchType < 0 || entry.MatchType > 3 {
+			return result, fmt.Errorf("invalid or excessive policy pattern %q", entry.Pattern)
 		}
-		enabledCount++
+		result[index].Enabled = 1
+		result[index].MatchType = uint8(entry.MatchType)
+		copy(result[index].Pattern[:], entry.Pattern)
+		index++
 	}
-	if enabledCount > maxEntries {
-		return fmt.Errorf("too many enabled patterns: %d (max %d)", enabledCount, maxEntries)
-	}
-	i := 0
-
-	// Write current enabled patterns only
-	for _, patternEntry := range patterns {
-		if patternEntry.Pattern == "" || !patternEntry.Enabled {
-			continue
-		}
-
-		// This should never occur due to CR validation, just safe-check
-		if i >= maxEntries {
-			return fmt.Errorf("too many enabled patterns: %d (max %d)", i+1, maxEntries)
-		}
-
-		entry := BPFPatternEntry{
-			Enabled:   1,
-			MatchType: uint8(patternEntry.MatchType),
-		}
-
-		// Copy pattern into byte array (truncate if too long)
-		copy(entry.Pattern[:], patternEntry.Pattern)
-
-		key := uint32(i)
-		if err := patternsMap.Put(key, entry); err != nil {
-			return fmt.Errorf("failed to update cgroup/path pattern %d: %w", i, err)
-		}
-		i++
-	}
-
-	// Clean older entries
-	zero := BPFPatternEntry{}
-	for ; i < maxEntries; i++ {
-		key := uint32(i)
-		if err := patternsMap.Put(key, zero); err != nil {
-			return fmt.Errorf("failed to clear cgroup/path pattern %d: %w", i, err)
-		}
-	}
-
-	return nil
+	return result, nil
 }
 
-// UpdateHookConfig updates the BPF hooks map
-func UpdateHookConfig(hooksMap *ebpf.Map, hooks v1alpha1.HookConfigs) error {
-	if hooksMap == nil {
-		return fmt.Errorf("hooks map is nil")
+func BuildPolicyRequest(policy *v1alpha1.Policy, namespace string, generation uint64) (*PolicyRequest, error) {
+	if policy == nil || len(namespace) >= 128 {
+		return nil, fmt.Errorf("invalid policy or namespace")
 	}
-
-	type hookEntry struct {
-		index uint32
-		cfg   *v1alpha1.HookConfig
+	config := policy.Spec.Policy
+	if policy.Spec.Actions.AlertSuspicious || policy.Spec.Actions.Block {
+		return nil, fmt.Errorf("appraisal/alert actions are not implemented")
 	}
-
-	entries := []hookEntry{
-		{index: 0, cfg: hooks.LSMBprmCheckSecurity},
-		{index: 1, cfg: hooks.LSMFileOpen},
-		{index: 2, cfg: hooks.LSMFilePostOpen},
-		{index: 3, cfg: hooks.LSMMmapFile},
-		{index: 4, cfg: hooks.LSMSocketConnect},
-		{index: 5, cfg: hooks.LSMContainerEvents},
-		{index: 6, cfg: hooks.KprobeFileOpen},
+	if config.MinFileSize < 0 || config.MinFileSize > math.MaxUint32 || config.MaxPathDepth < 0 ||
+		config.MaxPathDepth > 32 || config.LogLevel < 0 || config.LogLevel > 3 ||
+		!policy.Spec.Actions.ExtendTPM || !policy.Spec.Actions.LogSecurityFS {
+		return nil, fmt.Errorf("policy values are invalid or disable the mandatory measurement transaction")
 	}
-
-	for _, entry := range entries {
-		if entry.cfg == nil {
+	request := &PolicyRequest{Version: 2, ExpectedGeneration: generation}
+	copy(request.NamespaceID[:], namespace)
+	request.Snapshot.Config = computeValue(config, policy.Spec.Filters, policy.Spec.Actions)
+	var err error
+	request.Snapshot.Cgroups, err = buildPatterns(policy.Spec.CgroupPatterns)
+	if err != nil {
+		return nil, err
+	}
+	request.Snapshot.Paths, err = buildPatterns(policy.Spec.PathPatterns)
+	if err != nil {
+		return nil, err
+	}
+	hooks := policy.Spec.Hooks
+	entries := []*v1alpha1.HookConfig{hooks.LSMBprmCheckSecurity, hooks.LSMFileOpen,
+		hooks.LSMFilePostOpen, hooks.LSMMmapFile, hooks.LSMSocketConnect,
+		hooks.LSMContainerEvents, hooks.KprobeFileOpen, hooks.LSMInodeSetattr}
+	for i, config := range entries {
+		// Omitted hooks use root defaults; never retain values from a previous policy.
+		request.Snapshot.Hooks[i].Flags = HookFlagEnabled | HookFlagTrackContainers | HookFlagMeasureHash
+		if i == 6 {
+			request.Snapshot.Hooks[i].Flags = 0
+		}
+		if config == nil {
 			continue
 		}
-
-		// Compute the flags
+		if config.FilterOverride != 0 || config.ActionOverride != 0 {
+			return nil, fmt.Errorf("hook overrides are unsupported")
+		}
 		var flags uint32
-		if entry.cfg.Enabled {
+		if config.Enabled {
 			flags |= HookFlagEnabled
 		}
-		if entry.cfg.TrackContainers {
+		if config.TrackContainers {
 			flags |= HookFlagTrackContainers
 		}
-		if entry.cfg.MeasureHash {
+		if config.MeasureHash {
 			flags |= HookFlagMeasureHash
 		}
-
-		bpfHook := BPFHookConfig{
-			Flags:          flags,
-			FilterOverride: uint32(entry.cfg.FilterOverride),
-			ActionOverride: uint32(entry.cfg.ActionOverride),
-		}
-
-		if err := hooksMap.Put(entry.index, bpfHook); err != nil {
-			return fmt.Errorf("failed to update hook %d: %w", entry.index, err)
-		}
+		request.Snapshot.Hooks[i].Flags = flags
 	}
+	return request, nil
+}
 
+func WritePolicyRequest(writer io.Writer, request *PolicyRequest) error {
+	var buffer bytes.Buffer
+	if err := binary.Write(&buffer, binary.LittleEndian, request); err != nil {
+		return err
+	}
+	count, err := writer.Write(buffer.Bytes())
+	if err != nil {
+		return fmt.Errorf("policy transaction: %w", err)
+	}
+	if count != buffer.Len() {
+		return io.ErrShortWrite
+	}
 	return nil
 }
 
-func GetPolicyString(policy v1alpha1.PolicyConfig, filters v1alpha1.FilterConfig, actions v1alpha1.ActionConfig) string {
-	value := computeValue(policy, filters, actions)
-
-	policyString := fmt.Sprintf(
-		"enabled=%d,filter_flags=0x%x,action_flags=0x%x,min_file_size=%d,max_path_depth=%d,log_level=%d",
-		value.Enabled,
-		value.FilterFlags,
-		value.ActionFlags,
-		value.MinFileSize,
-		value.MaxPathDepth,
-		value.LogLevel,
-	)
-
-	return policyString
+// ApplyPolicy activates a complete policy only after the kernel's synchronous TPM commit.
+func ApplyPolicy(policy *v1alpha1.Policy, path string) error {
+	request, err := BuildPolicyRequest(policy, "", 0)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open policy transaction: %w", err)
+	}
+	defer file.Close()
+	return WritePolicyRequest(file, request)
 }

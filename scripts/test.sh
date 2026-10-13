@@ -96,22 +96,10 @@ log_err() {
     echo "[ERR] $1"
 }
 
-unload_test_module() {
-    for attempt in {1..10}; do
-        if ! lsmod | grep -q "^bpfima "; then
-            return 0
-        fi
-        if rmmod bpfima 2>/dev/null; then
-            return 0
-        fi
-        # BPF program destruction can finish after an RCU grace period.
-        sleep 1
-    done
-    return 1
-}
-
 # Cleanup function
 cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
     log_info "Cleanup started"
     
     # Kill bpfima-tool process first
@@ -150,27 +138,23 @@ cleanup() {
         done
     fi
     
-    log_verbose "Cleaning up pinned BPF maps and links"
-    if [ -x "$BUILD_DIR/bpfima-tool" ] && ! "$BUILD_DIR/bpfima-tool" unload; then
-        log_warn "BPF pin cleanup failed; check the errors above"
-    fi
-    
-    # Try to remove module
-    if lsmod | grep -q "^bpfima "; then
-        log_info "Removing kernel module"
-        if unload_test_module; then
-            log_info "Kernel module removed"
-        else
-            log_warn "Could not remove module (may require manual cleanup)"
-            log_warn "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
+    log_verbose "Detaching hooks, removing the module, and cleaning stale pins"
+    if [ -x "$BUILD_DIR/bpfima-tool" ] && ! cleanup_bpfima_epoch "$BUILD_DIR"; then
+        log_warn "Module or BPF pin cleanup failed; check the errors above"
+        log_warn "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
+        if [ "$exit_code" -eq 0 ]; then
+            exit_code=1
         fi
     fi
     
     rm -rf "$TEST_DIR" 2>/dev/null || true
     
     log_info "Cleanup completed"
+    exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Main execution
 log_info "BPF-IMA Test Starting"
@@ -191,20 +175,14 @@ fi
 log_info "Build successful"
 
 # 2. Load kernel module
-log_info "Loading kernel module..."
-if lsmod | grep -q "^bpfima "; then
-    log_info "Module already loaded, removing..."
-    if ! "$BUILD_DIR/bpfima-tool" unload; then
-        log_err "Cannot clean up existing BPF pins"
-        exit 1
-    fi
-    if ! unload_test_module; then
-        log_err "Cannot remove existing module - a BPF program or open handle may still reference it"
-        log_err "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
-        exit 1
-    fi
+log_info "Cleaning up the previous module epoch..."
+if ! cleanup_bpfima_epoch "$BUILD_DIR"; then
+    log_err "Cannot remove the previous module or its BPF pins"
+    log_err "Inspect remaining references with sudo bpftool prog show and sudo bpftool link show"
+    exit 1
 fi
 
+log_info "Loading kernel module..."
 if ! insmod "$BUILD_DIR/bpfima.ko"; then
     log_err "Failed to load module"
     exit 1
@@ -258,7 +236,7 @@ log_info "eBPF program loaded (PID: $LOADER_PID)"
 
 # Wait for BPF maps to be pinned
 log_verbose "Waiting for BPF maps to be available..."
-if ! wait_for_bpf_maps bpfima_policy_map bpfima_hook_config_map bpfima_cgroup_patterns_map bpfima_path_patterns_map; then
+if ! wait_for_bpf_maps bpfima_policy_map; then
     log_err "BPF maps not available in time"
     log_err "bpfima-tool may have failed"
     exit 1
@@ -266,20 +244,18 @@ fi
 log_verbose "  BPF maps available"
 
 # Initialize policy maps using bpfima-tool
-log_info "Initializing BPF policy maps (comprehensive policy - tracks everything)"
+log_info "Initializing the audited policy map with defaults"
 if [ "$VERBOSE" -eq 1 ]; then
     if ! "$BUILD_DIR/bpfima-tool" policy-init; then
-        log_err "Failed to initialize policy maps"
-        log_err "This may cause issues with event recording"
-        log_warn "Continuing anyway..."
+        log_err "Failed to initialize the policy map"
+        exit 1
     else
         log_info "  Policy maps initialized successfully"
-        log_info "  - Filter flags: 0x0 (no filtering)"
-        log_info "  - All user processes, containers, and system services will be tracked"
     fi
 else
     if ! "$BUILD_DIR/bpfima-tool" policy-init > /dev/null 2>&1; then
-        log_warn "Failed to initialize policy maps (continuing anyway)"
+        log_err "Failed to initialize the policy map"
+        exit 1
     else
         log_info "Policy maps initialized successfully"
     fi
@@ -304,13 +280,15 @@ if [ -f "config/policy.yaml" ]; then
         if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml; then
             log_info "  Successfully loaded comprehensive policy from YAML"
         else
-            log_warn "Failed to load YAML policy (may not be fully implemented yet)"
+            log_err "Failed to load YAML policy"
+            exit 1
         fi
     else
         if "$BUILD_DIR/bpfima-tool" policy-update config/policy.yaml > /dev/null 2>&1; then
             log_info "  YAML policy loaded successfully"
         else
-            log_warn "YAML policy update failed (continuing with hardcoded defaults)"
+            log_err "YAML policy update failed"
+            exit 1
         fi
     fi
     
@@ -323,12 +301,13 @@ if [ -f "config/policy.yaml" ]; then
         
         # Validate policy content
         log_info "Validating policy configuration..."
-        if grep -q "enabled:" /sys/kernel/security/bpfima/policy && \
-           grep -q "filter_flags:" /sys/kernel/security/bpfima/policy && \
-           grep -q "action_flags:" /sys/kernel/security/bpfima/policy; then
+        if grep -q "^enabled=" /sys/kernel/security/bpfima/policy && \
+           grep -q "^filter_flags=" /sys/kernel/security/bpfima/policy && \
+           grep -q "^action_flags=" /sys/kernel/security/bpfima/policy; then
             log_info "  Policy file contains expected fields"
         else
-            log_warn "Policy file missing expected fields"
+            log_err "Policy file missing expected fields"
+            exit 1
         fi
     fi
 else
@@ -342,7 +321,8 @@ if [ -f "config/policy-minimal.yaml" ] && [ "$VERBOSE" -eq 1 ]; then
     if "$BUILD_DIR/bpfima-tool" policy-update config/policy-minimal.yaml; then
         log_info "  Successfully loaded minimal policy from YAML"
     else
-        log_warn "Failed to load minimal YAML policy"
+        log_err "Failed to load minimal YAML policy"
+        exit 1
     fi
 fi
 
@@ -366,19 +346,21 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     if grep -q "filter_flags=0x7" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: filter_flags is now 0x7"
     else
-        log_warn "     Failed to verify filter_flags update"
+        log_err "     Failed to verify filter_flags update"
+        exit 1
     fi
     
     # Change 2: Update action_flags
-    log_info "Test 2: Changing action_flags to 0x7F"
-    echo "action_flags=0x7F" > /sys/kernel/security/bpfima/policy
+    log_info "Test 2: Changing action_flags to 0x67"
+    echo "action_flags=0x67" > /sys/kernel/security/bpfima/policy
     log_info "  action_flags updated"
     
     # Verify the change was applied
-    if grep -q -i "action_flags=0x7f" /sys/kernel/security/bpfima/policy; then
-        log_info "     Verified: action_flags is now 0x7F"
+    if grep -q "^action_flags=0x67$" /sys/kernel/security/bpfima/policy; then
+        log_info "     Verified: action_flags is now 0x67"
     else
-        log_warn "     Failed to verify action_flags update"
+        log_err "     Failed to verify action_flags update"
+        exit 1
     fi
     
     # Change 3: Update min_file_size
@@ -390,7 +372,8 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     if grep -q "min_file_size=4096" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: min_file_size is now 4096"
     else
-        log_warn "     Failed to verify min_file_size update"
+        log_err "     Failed to verify min_file_size update"
+        exit 1
     fi
     
     # Change 4: Update log_level
@@ -402,7 +385,8 @@ if [ -f "/sys/kernel/security/bpfima/policy" ]; then
     if grep -q "log_level=3" /sys/kernel/security/bpfima/policy; then
         log_info "     Verified: log_level is now 3"
     else
-        log_warn "     Failed to verify log_level update"
+        log_err "     Failed to verify log_level update"
+        exit 1
     fi
     
     # Display policy changes

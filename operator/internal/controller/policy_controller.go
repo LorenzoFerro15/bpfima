@@ -3,13 +3,10 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/csv"
-	"encoding/hex"
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -29,15 +26,16 @@ import (
 	bpfimav1alpha1 "github.com/LorenzoFerro15/bpfima/api/v1alpha1"
 	"github.com/LorenzoFerro15/bpfima/internal/mapsmanager"
 	"github.com/LorenzoFerro15/bpfima/internal/policyselector"
-	"github.com/cilium/ebpf"
 	"github.com/go-logr/logr"
 )
 
 // PolicyReconciler reconciles a Policy object
 type PolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme         *runtime.Scheme
+	Log            logr.Logger
+	PolicyEndpoint string
+	StatisticsPath string
 }
 
 // Struct to save the execution times
@@ -58,7 +56,7 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	s := &Stats{enterController: time.Now().UnixNano()}
 	defer func() {
 		s.exitController = time.Now().UnixNano()
-		if csvErr := s.saveStatistics(); csvErr != nil {
+		if csvErr := s.saveStatistics(r.StatisticsPath); csvErr != nil {
 			log.Error(csvErr, "failed to write statistics to file")
 		}
 	}()
@@ -90,68 +88,23 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Open the maps
-	mapFiles := []string{"bpfima_policy_map", "bpfima_cgroup_patterns_map", "bpfima_path_patterns_map", "bpfima_hook_config_map"}
-	bpfimaMaps, err := mapsmanager.OpenMaps("/sys/fs/bpf/", mapFiles)
-	if err != nil {
-		log.Error(err, "failed to open map")
-		log.Error(nil, "did you load the BPF program first?")
-		return ctrl.Result{}, err
+	s.startMapUpdate = time.Now().UnixNano()
+	s.startPolicyMeasurement = s.startMapUpdate
+	endpoint := r.PolicyEndpoint
+	if endpoint == "" {
+		endpoint = "/sys/kernel/security/bpfima/policy_apply"
 	}
-	defer func() {
-		for _, m := range bpfimaMaps {
-			_ = m.Close()
-		}
-	}()
-
-	// TODO: avoid updating the maps and recording the change if selectedPolicy is the same of the previous chosen policy
-
-	// Update the maps using the selected policy
-	err = updateMaps(bpfimaMaps, selectedPolicy, s)
+	err = mapsmanager.ApplyPolicy(selectedPolicy, endpoint)
+	s.endMapUpdate = time.Now().UnixNano()
+	s.endPolicyMeasurement = s.endMapUpdate
 	if err != nil {
-		log.Error(err, "failed to update BPF maps")
-		return ctrl.Result{}, err
-	}
-
-	// Store the change in the Merkle tree
-	err = recordPolicyMeasurement(selectedPolicy, s)
-	if err != nil {
-		log.Error(err, "failed to record policy update in the Merkle tree")
+		log.Error(err, "policy transaction failed; candidate was not activated")
 		return ctrl.Result{}, err
 	}
 
 	log.Info("Policy updated successfully", "selected-policy", selectedPolicy.Name)
 
 	return ctrl.Result{}, nil
-}
-
-func updateMaps(bpfimaMaps map[string]*ebpf.Map, policy *bpfimav1alpha1.Policy, s *Stats) error {
-	// Save time used to update the maps
-	s.startMapUpdate = time.Now().UnixNano()
-	defer func() { s.endMapUpdate = time.Now().UnixNano() }()
-
-	var err error
-
-	err = mapsmanager.UpdatePolicy(bpfimaMaps["bpfima_policy_map"], policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
-	if err != nil {
-		return fmt.Errorf("updating policy map: %w", err)
-	}
-
-	err = mapsmanager.UpdatePatterns(bpfimaMaps["bpfima_cgroup_patterns_map"], policy.Spec.CgroupPatterns)
-	if err != nil {
-		return fmt.Errorf("updating cgroup patterns map: %w", err)
-	}
-
-	err = mapsmanager.UpdatePatterns(bpfimaMaps["bpfima_path_patterns_map"], policy.Spec.PathPatterns)
-	if err != nil {
-		return fmt.Errorf("updating path patterns map: %w", err)
-	}
-
-	err = mapsmanager.UpdateHookConfig(bpfimaMaps["bpfima_hook_config_map"], policy.Spec.Hooks)
-	if err != nil {
-		return fmt.Errorf("updating hook config map: %w", err)
-	}
-	return nil
 }
 
 func (r *PolicyReconciler) getNodeLabel(ctx context.Context) (map[string]string, error) {
@@ -174,38 +127,16 @@ func (r *PolicyReconciler) getNodeLabel(ctx context.Context) (map[string]string,
 		return nil, fmt.Errorf("failed to get node by name %s: %w", nodeName, err)
 	}
 
+	if node.Labels == nil {
+		return map[string]string{}, nil
+	}
 	return node.Labels, nil
 }
 
-func recordPolicyMeasurement(policy *bpfimav1alpha1.Policy, s *Stats) error {
-	// Save time used to record policy measurements
-	s.startPolicyMeasurement = time.Now().UnixNano()
-	defer func() { s.endPolicyMeasurement = time.Now().UnixNano() }()
-
-	policyString := mapsmanager.GetPolicyString(policy.Spec.Policy, policy.Spec.Filters, policy.Spec.Actions)
-
-	hash := sha256.Sum256([]byte(policyString))
-	hashHex := hex.EncodeToString(hash[:])
-
-	// Write the hash in the measure_policy file to trigger the Merkle tree extension
-	path := "/sys/kernel/security/bpfima/measure_policy"
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open measure_policy endpoint: %w", err)
+func (s *Stats) saveStatistics(path string) error {
+	if path == "" {
+		path = "/tmp/controller_times.csv"
 	}
-	defer file.Close()
-
-	_, err = file.WriteString(hashHex)
-	if err != nil {
-		return fmt.Errorf("failed to write policy measurement: %w", err)
-	}
-	return nil
-}
-
-func (s *Stats) saveStatistics() error {
-	// Save statistics to csv file
-	dstFolder := "/tmp"
-	path := filepath.Join(dstFolder, "controller_times.csv")
 
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

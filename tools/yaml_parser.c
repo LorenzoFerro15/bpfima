@@ -1,11 +1,12 @@
+#include <fcntl.h>
+#include <unistd.h>
+#include <limits.h>
+#include <endian.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <limits.h>
 #include <yaml.h>
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
 
 #include "yaml_parser.h"
 #include "../include/bpfima_policy_user.h"
@@ -52,6 +53,19 @@ static int parse_int(const char *value, void *ctx)
     return 0;
 }
 
+static int parse_u32(const char *value, u32 maximum, u32 *output)
+{
+    char *end;
+    if (!value || !value[0] || value[0] == '-')
+        return -1;
+    errno = 0;
+    unsigned long number = strtoul(value, &end, 0);
+    if (errno || *end || number > maximum)
+        return -1;
+    *output = number;
+    return 0;
+}
+
 /* 
  * Re-designing for the table-driven request:
  * Since we can't easily statically define "pointer to member of instance",
@@ -66,6 +80,9 @@ static int handle_policy_measure(struct yaml_policy *p, const char *v) { return 
 static int handle_policy_appraise(struct yaml_policy *p, const char *v) { return parse_bool(v, &p->appraise_enabled); }
 static int handle_policy_enforce(struct yaml_policy *p, const char *v) { return parse_bool(v, &p->enforce_enabled); }
 static int handle_policy_tracking(struct yaml_policy *p, const char *v) { return parse_bool(v, &p->container_tracking); }
+static int handle_policy_filters(struct yaml_policy *p, const char *v) { return parse_u32(v, 255, &p->filter_flags); }
+static int handle_policy_min_size(struct yaml_policy *p, const char *v) { return parse_u32(v, UINT32_MAX, &p->min_file_size); }
+static int handle_policy_depth(struct yaml_policy *p, const char *v) { return parse_u32(v, 32, &p->max_path_depth); }
 
 struct policy_dispatch_entry {
     const char *key;
@@ -79,6 +96,9 @@ static const struct policy_dispatch_entry policy_handlers[] = {
     { "appraise_enabled", handle_policy_appraise },
     { "enforce_enabled", handle_policy_enforce },
     { "container_tracking", handle_policy_tracking },
+    { "filter_flags", handle_policy_filters },
+    { "min_file_size", handle_policy_min_size },
+    { "max_path_depth", handle_policy_depth },
 };
 
 /* Generic map parser */
@@ -311,6 +331,7 @@ int parse_yaml_policy(const char *config_file,
 
     /* Zero out everything first */
     memset(policy, 0, sizeof(*policy));
+    policy->max_path_depth = DEFAULT_MAX_PATH_DEPTH;
     memset(cgroup_filters, 0, max_cgroups * 256);
     memset(path_filters, 0, max_paths * 256);
     memset(hook_configs, 0, max_hooks * sizeof(*hook_configs));
@@ -363,7 +384,7 @@ static int get_hook_id(const char *name)
 {
     const char *names[] = {"lsm_bprm_check_security", "lsm_file_open", "lsm_file_post_open",
                            "lsm_mmap_file", "lsm_socket_connect", "lsm_container_events",
-                           "kprobe_file_open"};
+                           "kprobe_file_open", "lsm_inode_setattr"};
 
     for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (!strcmp(name, names[i]))
@@ -372,86 +393,82 @@ static int get_hook_id(const char *name)
     return -1;
 }
 
-int update_maps_from_policy(int policy_fd, int cgroup_fd, int path_fd, int hook_fd,
+int build_policy_from_yaml(struct bpfima_policy_snapshot *snapshot,
                             const struct yaml_policy *policy,
                             char cgroup_filters[][256], int num_cgroups,
                             char path_filters[][256], int num_paths,
-                            const struct yaml_hook_config *hook_configs, int num_hooks)
+                            const struct yaml_hook_config *hooks, int num_hooks)
 {
-    int ret = 0;
-    __u32 key = 0;
-
+    if (!snapshot || !policy || num_cgroups < 0 || num_cgroups > MAX_IGNORE_PATTERNS ||
+        num_paths < 0 || num_paths > MAX_PATH_FILTERS || num_hooks < 0 || num_hooks > MAX_HOOK_CONFIGS)
+        return -EINVAL;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->config.enabled = policy->enabled;
+    snapshot->config.log_level = policy->log_level;
+    snapshot->config.max_path_depth = policy->max_path_depth;
+    snapshot->config.filter_flags = policy->filter_flags;
+    snapshot->config.min_file_size = policy->min_file_size;
+    snapshot->config.merkle_history_max_size = DEFAULT_MERKLE_HISTORY_MAX_SIZE;
+    if (policy->appraise_enabled || policy->enforce_enabled)
+        return -EOPNOTSUPP;
+    if (!policy->measure_enabled)
+        return -EINVAL; /* Recording and TPM extension are one mandatory transaction. */
+    snapshot->config.action_flags = POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS | POLICY_ACTION_BUILD_DEPS;
+    if (policy->log_level)
+        snapshot->config.action_flags |= POLICY_ACTION_LOG_KERNEL;
+    if (policy->container_tracking)
+        snapshot->config.action_flags |= POLICY_ACTION_TRACK_CONTAINER;
+    for (int i = 0; i < HOOK_MAX; i++)
+        snapshot->hooks[i].flags = HOOK_FLAG_ENABLED | HOOK_FLAG_TRACK_CONTAINERS | HOOK_FLAG_MEASURE_HASH;
+    snapshot->hooks[HOOK_KPROBE_FILE_OPEN].flags = 0;
     for (int i = 0; i < num_hooks; i++) {
-        if (hook_configs[i].hook_name[0] && get_hook_id(hook_configs[i].hook_name) < 0) {
-            fprintf(stderr, "Error: Unknown hook '%s'\n", hook_configs[i].hook_name);
-            return -1;
+        if (!hooks[i].hook_name[0])
+            continue;
+        if (hooks[i].appraise || hooks[i].enforce)
+            return -EOPNOTSUPP;
+        int id = get_hook_id(hooks[i].hook_name);
+        if (id < 0)
+            return -EINVAL;
+        snapshot->hooks[id].flags = (hooks[i].enabled ? HOOK_FLAG_ENABLED : 0) |
+                                   (hooks[i].measure ? HOOK_FLAG_MEASURE_HASH : 0) |
+                                   (policy->container_tracking ? HOOK_FLAG_TRACK_CONTAINERS : 0);
+    }
+    for (int i = 0; i < num_cgroups + num_paths; i++) {
+        const char *pattern = i < num_cgroups ? cgroup_filters[i] : path_filters[i - num_cgroups];
+        struct bpfima_pattern_entry *entry = i < num_cgroups ? &snapshot->cgroups[i] : &snapshot->paths[i - num_cgroups];
+        if (strlen(pattern) >= MAX_PATTERN_LEN)
+            return -EINVAL;
+        if (pattern[0]) {
+            snprintf(entry->pattern, sizeof(entry->pattern), "%s", pattern);
+            entry->enabled = 1;
+            entry->match_type = 1;
         }
     }
+    return 0;
+}
 
-    struct bpfima_policy_config bpf_policy = {0};
-    
-    bpf_policy.enabled = policy->enabled;
-    bpf_policy.log_level = policy->log_level;
-    bpf_policy.max_path_depth = 10; 
-    
-    if (policy->measure_enabled) bpf_policy.action_flags |= POLICY_ACTION_EXTEND_TPM | POLICY_ACTION_LOG_SECURITYFS;
-    if (policy->appraise_enabled) bpf_policy.action_flags |= POLICY_ACTION_ALERT_SUSPICIOUS;
-    if (policy->enforce_enabled) bpf_policy.action_flags |= POLICY_ACTION_BLOCK;
-    if (policy->container_tracking) bpf_policy.action_flags |= POLICY_ACTION_TRACK_CONTAINER;
-    bpf_policy.action_flags |= POLICY_ACTION_BUILD_DEPS;
+/* One complete little-endian request replaces the former independent map writes. */
+int apply_policy_snapshot(const char *namespace_id, const struct bpfima_policy_snapshot *snapshot)
+{
+    struct bpfima_policy_request request = {0};
+    char path[PATH_MAX];
+    const char *directory = getenv("BPFIMA_SECURITYFS_DIR");
+    ssize_t written;
+    int fd, ret;
 
-    if (bpf_map_update_elem(policy_fd, &key, &bpf_policy, BPF_ANY) < 0) {
-        fprintf(stderr, "Error: Failed to update policy map: %s\n", strerror(errno));
-        return -1;
-    }
-    printf("  Updated global policy configuration\n");
-
-    /* Replace every pattern slot, including entries omitted by the new policy. */
-    for (int i = 0; i < num_cgroups; i++) {
-        struct bpfima_pattern_entry entry = {0};
-        if (cgroup_filters[i][0]) {
-            snprintf(entry.pattern, MAX_PATTERN_LEN, "%s", cgroup_filters[i]);
-            entry.enabled = 1;
-            entry.match_type = 1;
-        }
-        __u32 idx = i;
-        if (bpf_map_update_elem(cgroup_fd, &idx, &entry, BPF_ANY) < 0) {
-            fprintf(stderr, "Error: Failed to update cgroup filter %d: %s\n", i, strerror(errno));
-            return -1;
-        }
-    }
-
-    for (int i = 0; i < num_paths; i++) {
-        struct bpfima_pattern_entry entry = {0};
-        if (path_filters[i][0]) {
-            snprintf(entry.pattern, MAX_PATTERN_LEN, "%s", path_filters[i]);
-            entry.enabled = 1;
-            entry.match_type = 1;
-        }
-        __u32 idx = i;
-        if (bpf_map_update_elem(path_fd, &idx, &entry, BPF_ANY) < 0) {
-            fprintf(stderr, "Error: Failed to update path filter %d: %s\n", i, strerror(errno));
-            return -1;
-        }
-    }
-
-    /* Hooks */
-    for (int i = 0; i < num_hooks; i++) {
-        if (strlen(hook_configs[i].hook_name) > 0) {
-            struct bpfima_hook_config bpf_hook = {0};
-            if (hook_configs[i].enabled) bpf_hook.flags |= HOOK_FLAG_ENABLED;
-            if (hook_configs[i].measure) bpf_hook.flags |= HOOK_FLAG_MEASURE_HASH;
-            
-            __u32 idx = get_hook_id(hook_configs[i].hook_name);
-            if (bpf_map_update_elem(hook_fd, &idx, &bpf_hook, BPF_ANY) < 0) {
-                fprintf(stderr, "Warning: Failed to update hook config %d: %s\n", i, strerror(errno));
-                return -1;
-            } else {
-                printf("  Configured hook: %s (enabled=%d, measure=%d)\n",
-                       hook_configs[i].hook_name, hook_configs[i].enabled, hook_configs[i].measure);
-            }
-        }
-    }
-
+    if (!snapshot || (namespace_id && strlen(namespace_id) >= BPFIMA_NAMESPACE_SIZE))
+        return -EINVAL;
+    request.version = BPFIMA_POLICY_VERSION;
+    request.record.snapshot = *snapshot;
+    if (namespace_id)
+        snprintf(request.record.namespace_id, sizeof(request.record.namespace_id), "%s", namespace_id);
+    bpfima_policy_encode_request(&request);
+    snprintf(path, sizeof(path), "%s/policy_apply", directory ? directory : "/sys/kernel/security/bpfima");
+    fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -errno;
+    written = write(fd, &request, sizeof(request));
+    ret = written == sizeof(request) ? 0 : written < 0 ? -errno : -EIO;
+    close(fd);
     return ret;
 }

@@ -7,29 +7,6 @@
 #include <bpf/bpf.h>
 #include "../../tools/yaml_parser.h"
 
-static struct bpfima_policy_config written_policy;
-static __u32 hook_keys[MAX_HOOK_CONFIGS];
-static int hook_count;
-static int cleared_patterns;
-static int fail_fd;
-
-/* Check the production parser/updater without modifying kernel maps. */
-int bpf_map_update_elem(int fd, const void *key, const void *value, __u64 flags)
-{
-    (void)flags;
-    if (fd == fail_fd) {
-        errno = EIO;
-        return -1;
-    }
-    if (fd == 1)
-        memcpy(&written_policy, value, sizeof(written_policy));
-    if (fd == 4)
-        hook_keys[hook_count++] = *(__u32 *)key;
-    if ((fd == 2 || fd == 3) && !((struct bpfima_pattern_entry *)value)->enabled)
-        cleared_patterns++;
-    return 0;
-}
-
 static int parse_text(const char *text, struct yaml_policy *policy,
                       char cgroups[][256], char paths[][256], struct yaml_hook_config *hooks)
 {
@@ -58,17 +35,22 @@ int main(void)
     assert(parse_text(valid, &policy, cgroups, paths, hooks) == 0);
     for (size_t i = 2 * sizeof(*hooks); i < sizeof(hooks); i++)
         assert(((unsigned char *)hooks)[i] == 0);
-    assert(update_maps_from_policy(1, 2, 3, 4, &policy, cgroups, MAX_CGROUP_PATTERNS,
+    struct bpfima_policy_snapshot snapshot;
+    assert(build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
                                    paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == 0);
-    assert(hook_count == 2 && hook_keys[0] == HOOK_LSM_SOCKET_CONNECT &&
-           hook_keys[1] == HOOK_LSM_BPRM_CHECK_SECURITY);
-    assert(cleared_patterns == MAX_CGROUP_PATTERNS + MAX_PATH_PATTERNS);
-    assert(written_policy.enabled == 1 && written_policy.log_level == 2 &&
-           (written_policy.action_flags & POLICY_ACTION_EXTEND_TPM));
-    fail_fd = 2;
-    assert(update_maps_from_policy(1, 2, 3, 4, &policy, cgroups, MAX_CGROUP_PATTERNS,
-                                   paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) < 0);
-    fail_fd = 0;
+    assert(snapshot.config.enabled == 1 && snapshot.config.log_level == 2 &&
+           (snapshot.config.action_flags & POLICY_ACTION_EXTEND_TPM));
+    assert(snapshot.hooks[HOOK_LSM_SOCKET_CONNECT].flags & HOOK_FLAG_ENABLED);
+    assert(snapshot.hooks[HOOK_LSM_BPRM_CHECK_SECURITY].flags & HOOK_FLAG_ENABLED);
+    assert(snapshot.hooks[HOOK_LSM_INODE_SETATTR].flags & HOOK_FLAG_ENABLED);
+    for (int i = 0; i < MAX_IGNORE_PATTERNS; i++)
+        assert(!snapshot.cgroups[i].enabled && !snapshot.paths[i].enabled);
+    snprintf(hooks[0].hook_name, sizeof(hooks[0].hook_name), "unknown_hook");
+    assert(build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                                   paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == -EINVAL);
+    policy.measure_enabled = 0;
+    assert(build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                                   paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == -EINVAL);
     const char *invalid[] = {"policy:\n  enabled: typo\n", "policy:\n  log_level: -1\n",
                              "policy:\n  log_level: 4294967296\n", "policy:\n  unknown: true\n",
                              "filters:\n  cgroup_patterns: [a,b,c,d,e,f,g,h,i]\n",
@@ -79,6 +61,13 @@ int main(void)
                              paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == 0);
     assert(parse_yaml_policy("config/policy-minimal.yaml", &policy, cgroups, MAX_CGROUP_PATTERNS,
                              paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == 0);
-    puts("PASS: YAML initialization, named hooks, pattern replacement, invalid values, and update errors");
+    assert(parse_text("policy:\n  enabled: true\n  measure_enabled: true\n  log_level: 2\n  filter_flags: 0x10\n  min_file_size: 8192\n  max_path_depth: 16\n", &policy, cgroups, paths, hooks) == 0);
+    assert(build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                                   paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == 0);
+    assert(snapshot.config.filter_flags == 16 && snapshot.config.min_file_size == 8192 && snapshot.config.max_path_depth == 16);
+    policy.appraise_enabled = 1;
+    assert(build_policy_from_yaml(&snapshot, &policy, cgroups, MAX_CGROUP_PATTERNS,
+                                   paths, MAX_PATH_PATTERNS, hooks, MAX_HOOK_CONFIGS) == -EOPNOTSUPP);
+    puts("PASS: YAML initialization, complete policy snapshots, named hooks, and invalid values");
     return 0;
 }

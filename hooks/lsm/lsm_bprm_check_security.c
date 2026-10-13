@@ -1,5 +1,4 @@
 #include "../hook_utils.h"
-#include "../../include/bpfima_event.h"
 
 
 
@@ -38,9 +37,6 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int previous_re
     if (!bprm)
         return 0;
 
-    if (!bpfima_should_process(HOOK_LSM_BPRM_CHECK_SECURITY))
-        return 0;
-
     u64 total_time = 0, deps_time = 0;
     u64 get_config_time = 0, filtering_time = 0, measure_time = 0;
     u64 hash_time = 0, extend_time = 0;
@@ -50,60 +46,23 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int previous_re
     struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
     char comm[16] = {0};
     bpf_get_current_comm(comm, sizeof(comm));
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     const char *debug_fname = BPF_CORE_READ(bprm, filename);
-    bpf_printk("Check: PID=%u comm=%s file=%s\n", pid, comm, debug_fname);
 
-    char cgroup_name[64] = {0};
-    fetch_cgroup_name(cur, cgroup_name, sizeof(cgroup_name));
-
-    struct bpfima_policy_config *policy = NULL;
     get_config_time = bpf_ktime_get_ns();
-    struct bpfima_policy_config ns_policy = {0};
-    if (cgroup_name[0] != '\0') {
-        if (bpfima_policy_namespace_get_config(cgroup_name, sizeof(cgroup_name),
-                                                &ns_policy, sizeof(ns_policy)) == 0) {
-            policy = &ns_policy;
-        }
-    }
-    if (!policy) {
-        policy = bpfima_get_policy();
-    }
-
-    struct bpfima_hook_config *hook_cfg = bpfima_get_hook_config(HOOK_LSM_BPRM_CHECK_SECURITY);
-
+    struct file *policy_file = bprm->file;
+    if (!policy_file)
+        return 0;
+    struct inode *policy_inode = BPF_CORE_READ(policy_file, f_inode);
+    u64 size = policy_inode ? BPF_CORE_READ(policy_inode, i_size) : 0;
+    int decision = bpfima_policy_for_hook(HOOK_LSM_BPRM_CHECK_SECURITY, debug_fname, size,
+                                         BPFIMA_POLICY_FILE | BPFIMA_POLICY_READONLY | BPFIMA_POLICY_EXECUTABLE);
+    if (decision)
+        return decision < 0 ? decision : 0;
+    struct bpfima_policy_config *policy = bpfima_get_policy();
+    const char *cgroup_name = bpfima_current_namespace();
+    bool is_container_context = true;
     get_config_time = bpf_ktime_get_ns() - get_config_time;
-    int cgroup_id = bpf_get_current_cgroup_id();
-    if (!policy || policy->log_level >= 2) {
-        bpf_printk("LSM bprm_check_security: %s PID=%u cgroup_id=%d\n", comm, pid, cgroup_id);
-        if (cgroup_name[0] != '\0') {
-            bpf_printk(" cgroup_name: %s\n", cgroup_name);
-        }
-    }
-
-    bool is_container_context = false;
-    if (cgroup_name[0] != '\0') {
-        /* Check if this cgroup should be ignored based on policy */
-        filtering_time = bpf_ktime_get_ns();
-        if (bpfima_should_ignore_cgroup(cgroup_name, sizeof(cgroup_name), policy)) {
-            if (!policy || policy->log_level >= 3) {
-                bpf_printk("Ignoring cgroup by policy: %s\n", cgroup_name);
-            }
-            return 0;
-        }
-        filtering_time = bpf_ktime_get_ns() - filtering_time;
-
-        /* Check if this is actually a container, not just any cgroup */
-        if (!hook_cfg || (hook_cfg->flags & HOOK_FLAG_TRACK_CONTAINERS)) {
-            if (bpfima_is_container_cgroup(cgroup_name)) {
-                is_container_context = true;
-                if (!policy || policy->log_level >= 2) {
-                    bpf_printk("Container context detected: %s\n", cgroup_name);
-                }
-            }
-        }
-    }
 
     const char *fname = BPF_CORE_READ(bprm, filename);
     char event_name[32] = "bprm_check_security";

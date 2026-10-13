@@ -13,23 +13,6 @@
 
 #include "../utils/bpf_kfunc_defs.h"
 
-#define POLICY_FILTER_SYSTEM_CGROUPS (1 << 0)
-#define POLICY_FILTER_PROC_SYS (1 << 1)
-#define POLICY_FILTER_DEV (1 << 2)
-#define POLICY_FILTER_READONLY_FILES (1 << 3)
-#define POLICY_FILTER_SMALL_FILES (1 << 4)
-#define POLICY_FILTER_NON_EXECUTABLE (1 << 5)
-#define POLICY_FILTER_LIBRARIES (1 << 6)
-#define POLICY_FILTER_TMP_FILES (1 << 7)
-
-#define POLICY_ACTION_EXTEND_TPM (1 << 0)
-#define POLICY_ACTION_LOG_SECURITYFS (1 << 1)
-#define POLICY_ACTION_LOG_KERNEL (1 << 2)
-#define POLICY_ACTION_ALERT_SUSPICIOUS (1 << 3)
-#define POLICY_ACTION_BLOCK (1 << 4)
-#define POLICY_ACTION_TRACK_CONTAINER (1 << 5)
-#define POLICY_ACTION_BUILD_DEPS (1 << 6)
-
 #define MERKLE_HASH_SIZE 32
 
 char LICENSE[] SEC("license") = "GPL";
@@ -61,9 +44,8 @@ int BPF_PROG(policy_update_on_exec, struct linux_binprm *bprm, int ret)
         return 0;
     }
 
-    new_filter_flags = POLICY_FILTER_SYSTEM_CGROUPS |
-                       POLICY_FILTER_PROC_SYS |
-                       POLICY_FILTER_DEV;
+    /* Filter flags are exclusions: clearing them strengthens root coverage. */
+    new_filter_flags = 0;
 
     result = bpfima_policy_update_filter_flags(container_id, sizeof(container_id), new_filter_flags);
     if (result < 0)
@@ -117,7 +99,7 @@ int BPF_PROG(policy_adjust_on_file_open, struct file *file, int ret)
 
     if (size > 10 * 1024 * 1024)
     {                                  
-        min_file_size = 5 * 1024 * 1024;
+        min_file_size = 0; /* Namespace rules cannot raise the root measurement threshold. */
 
         result = bpfima_policy_update_min_file_size(namespace_id, sizeof(namespace_id), min_file_size);
         if (result < 0)
