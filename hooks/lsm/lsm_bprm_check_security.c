@@ -64,7 +64,10 @@ int BPF_PROG(lsm_bprm_check_security, struct linux_binprm *bprm, int previous_re
     bool is_container_context = true;
     get_config_time = bpf_ktime_get_ns() - get_config_time;
 
-    const char *fname = BPF_CORE_READ(bprm, filename);
+    /* The path of bprm->file, the measured file: the hook runs again for the
+     * interpreter of a script, with the same filename but the interpreter as
+     * file and interp. interp is the filename for the executable itself. */
+    const char *fname = BPF_CORE_READ(bprm, interp);
     char event_name[32] = "bprm_check_security";
     u8 hash[32] = {0};
 

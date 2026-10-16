@@ -14,11 +14,13 @@ const (
 	// ContainerListPath is the directory to enumerate for tracked namespaces.
 	// Deprecated: use ContainerMeasurementDir; there is no container-list file.
 	ContainerListPath = ContainerMeasurementDir
-	// ContainerMeasurementDir is the path to the directory containing container-specific measurements.
+	// ContainerMeasurementDir is the path to the directory containing a directory of measurements
+	// per namespace, named after the cgroup of the namespace (e.g. a container).
 	ContainerMeasurementDir = BaseDir + "/namespaces"
 )
 
-// ContainerMeasurementListPath returns the path to the measurement list for a specific container.
+// ContainerMeasurementListPath returns the path to the measurement list of the namespace with the
+// given ID, i.e. the name of its cgroup as recorded by the kernel module.
 func ContainerMeasurementListPath(containerID string) string {
 	return filepath.Join(ContainerMeasurementDir, containerID, "measurements")
 }

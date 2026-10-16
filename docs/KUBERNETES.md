@@ -113,6 +113,8 @@ To achieve this, the framework enforces a strict hierarchical precedence:
 - **Cluster-wide Policies:** if the local node possesses no labels, or if no targeted policies match, the controller falls back to evaluating global policies, which are those omitting a selector. It applies the same deterministic logic, selecting the most recently created cluster-wide policy, using the alphabetical tie-breaker if necessary.
 - **Fallback Baseline:** if no valid Policy resources exist within the cluster, the controller safely applies the default hardcoded baseline configuration.
 
+The controller reports ready only after it has written a policy to the eBPF maps and recorded it in the Merkle tree for the first time. Hence, once the DaemonSet Pod is ready on a node, the kernel module is loaded, the eBPF programs are pinned and the measurements follow the policy selected for that node: other components can rely on the Pod readiness to know when the node is measured.
+
 The custom controller requires explicit authorization to interact with the Kubernetes API server to monitor and reconcile the cluster state defined through the Kubernetes **Role-Based Access Control** (RBAC). These permissions are configured via a ClusterRole, granting the operator read-only access to the Node resources (to watch for label modifications) and to the Policy resources. The ClusterRole is bound to the controller's ServiceAccount (defining its identity) via the ClusterRoleBinding.
 
 
@@ -209,7 +211,7 @@ helm install <release> oci://registry-1.docker.io/iochia02/bpfima \
     --set image.tag="v0.2"
 ```
 
-The second option is passing a custom YAML file via the `-f` flag. The configurable parameters include: the container image to use, the nodes to target, the eBPF hooks to load, the TPM PCR to extend, and the resource limits/requests for the various containers. These parameters are described in the [values.yaml](../install/kubernetes/bpfima/values.yaml) file:
+The second option is passing a custom YAML file via the `-f` flag. The configurable parameters include: the container image to use, the nodes to target, the labels of the DaemonSet Pods, the eBPF hooks to load, the TPM PCR to extend, and the resource limits/requests for the various containers. These parameters are described in the [values.yaml](../install/kubernetes/bpfima/values.yaml) file:
 ```bash
 helm install <release> oci://registry-1.docker.io/iochia02/bpfima \
     --namespace <target_namespace> \

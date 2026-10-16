@@ -61,6 +61,14 @@ cd /opt/bpfima
 make modules KERNEL_SRC=$KERNEL_SRC KERNEL_HEADERS=$KERNEL_SRC
 rm -f /host/lib/modules/$KERNEL_VER/build/vmlinux
 
+# The Merkle tree of the module starts empty, while the PCR keeps the extensions
+# of the modules loaded before since boot: reset it, so that the verifiers
+# replaying the tree from a zero PCR reach its value. Only the resettable PCRs,
+# e.g. 23, can be: on another PCR, a reloaded module is attestable after a reboot.
+if ! tpm2_pcrreset -T device:/dev/tpmrm0 "${TPM_PCR}"; then
+    echo "Warning: cannot reset PCR ${TPM_PCR}: the node is not attestable until it reboots"
+fi
+
 # Load the module
 insmod build/bpfima.ko tpm-pcr-index="${TPM_PCR}"
 echo "Module inserted"

@@ -26,7 +26,7 @@ FROM fedora:43
 
 RUN --mount=type=cache,target=/var/cache/dnf \
     dnf -y install libbpf-devel elfutils-libelf-devel zlib-devel clang \
-    llvm libyaml-devel openssl-devel pahole bpftool kmod --setopt=install_weak_deps=False && \
+    llvm libyaml-devel openssl-devel pahole bpftool kmod tpm2-tools --setopt=install_weak_deps=False && \
     dnf clean all
 
 COPY ./ /opt/bpfima
