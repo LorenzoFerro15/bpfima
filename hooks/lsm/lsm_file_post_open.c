@@ -63,7 +63,7 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
                                          BPFIMA_POLICY_FILE | BPFIMA_POLICY_READONLY |
                                          ((mask & 1) ? BPFIMA_POLICY_EXECUTABLE : 0));
     if (decision)
-        return decision < 0 ? decision : 0;
+        return (decision < -4095) ? -4095 : (decision > 0) ? 0 : (int)decision;
 
     u8 digest[32] = {0};
     char comm[16] = {0};
@@ -120,5 +120,5 @@ int BPF_PROG(lsm_file_post_open, struct file *file, int mask, int previous_ret)
         bpf_printk("  IMA measurement extension FAILED for event: %s (ret=%d)\n", event_name, extend_ret);
     }
 
-    return extend_ret;
+    return (extend_ret < -4095) ? -4095 : (extend_ret > 0) ? 0 : (int)extend_ret;
 }
