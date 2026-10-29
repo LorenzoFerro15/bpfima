@@ -104,29 +104,29 @@ static __always_inline int append_u32_to_buffer(char *buf, int *len, int max_len
 {
     char temp[16];
     int temp_len = 0;
-    
+
     /* Handle zero case */
     if (value == 0) {
         if (*len >= max_len - 1) return -1;
         buf[(*len)++] = '0';
         return 0;
     }
-    
+
     /* Convert to string (digits in reverse order) */
     u32 temp_val = value;
     while (temp_val > 0 && temp_len < 15) {
         temp[temp_len++] = '0' + (temp_val % 10);
         temp_val /= 10;
     }
-    
+
     /* Check if we have space */
     if (*len + temp_len >= max_len) return -1;
-    
+
     /* Reverse and copy to buffer */
     for (int i = temp_len - 1; i >= 0; i--) {
         buf[(*len)++] = temp[i];
     }
-    
+
     return 0;
 }
 
@@ -151,50 +151,58 @@ static __always_inline int append_separator(char *buf, int *len, int max_len)
 }
 
 /* Build measurement data string: "comm_pid_uid" */
-static __always_inline int build_measurement_data(char *measurement_data, int max_len, 
+static __always_inline int build_measurement_data(char *measurement_data, int max_len,
                                                   const char *comm, pid_t pid, u32 uid)
 {
     int len = 0;
-    
+
     /* Add process name */
     if (append_string_to_buffer(measurement_data, &len, max_len, comm, 16) < 0)
         return -1;
-    
+
     /* Add separator and PID */
     if (append_separator(measurement_data, &len, max_len) < 0)
         return -1;
     if (append_u32_to_buffer(measurement_data, &len, max_len, pid) < 0)
         return -1;
-    
+
     /* Add separator and UID */
     if (append_separator(measurement_data, &len, max_len) < 0)
         return -1;
     if (append_u32_to_buffer(measurement_data, &len, max_len, uid) < 0)
         return -1;
-    
+
     /* Null terminate */
     if (len < max_len) {
         measurement_data[len] = '\0';
     } else {
         return -1;
     }
-    
+
     return len;
 }
 
 /*
  * Build a dependency chain by walking up to 10 ancestor processes.
- * 
+ *
  * @param deps: Output buffer for the dependency string (colon-separated)
  * @param deps_max: Maximum size of the deps buffer
  * @param initial_name: Initial name to prepend (e.g., filename), can be NULL
  * @param current_task: The current task_struct pointer
- * 
+ *
  * @returns the actual length of the dependency string (excluding null terminator).
- * 
+ *
  * The resulting string format is: "initial_name:parent1:parent2:...:parent10"
  * If initial_name is NULL, starts with "unknown:"
  */
+ // Context structure passed into the bpf_loop callback
+struct deps_loop_ctx {
+    char *deps;
+    int deps_actual;
+    int deps_max;
+    struct task_struct *ancestor;
+};
+
 static __attribute__((noinline, unused)) void fetch_cgroup_name(struct task_struct *cur, char *cgroup_name, size_t size)
 {
     if (!cgroup_name || size == 0)
@@ -240,9 +248,34 @@ static __attribute__((noinline, unused)) int append_parent_comm(char *deps, int 
 }
 
 /*
- * Build a dependency chain by walking up to 10 ancestor processes.
+ * Callback invoked by bpf_loop for each depth level
  */
-static __attribute__((noinline, unused)) int build_dependencies(char *deps, int deps_max,
+static __attribute__((noinline, unused)) long build_deps_cb(u64 index, void *data)
+{
+    struct deps_loop_ctx *ctx = data;
+    (void)index;
+
+    if (!ctx || !ctx->deps || ctx->deps_actual >= ctx->deps_max)
+        return 1;
+
+    struct task_struct *next = NULL;
+    int next_deps = append_parent_comm(ctx->deps, ctx->deps_actual, ctx->deps_max,
+                                        ctx->ancestor, &next);
+    if (next_deps < 0)
+        return 1;
+
+    ctx->deps_actual = next_deps;
+    if (!next || next == ctx->ancestor)
+        return 1;
+
+    ctx->ancestor = next;
+    return 0;
+}
+
+/*
+ * Build a dependency chain by walking up the ancestor processes.
+ */
+ static __attribute__((noinline, unused)) int build_dependencies(char *deps, int deps_max,
                                                       const char *initial_name,
                                                       struct task_struct *current_task, u32 max_depth)
 {
@@ -262,34 +295,35 @@ static __attribute__((noinline, unused)) int build_dependencies(char *deps, int 
         bpf_probe_read_kernel_str(deps, deps_max, "unknown:");
         deps_actual = 8;
     }
-    
+
     struct task_struct *ancestor = NULL;
     if (current_task) {
         ancestor = BPF_CORE_READ(current_task, real_parent);
     }
-    
+
     if (max_depth > 32)
         max_depth = 32;
-    for (int i = 0; i < 32; i++) {
-        if (i >= max_depth)
-            break;
-        if (!ancestor)
-            break;
-        
-        struct task_struct *next = NULL;
-        int next_deps = append_parent_comm(deps, deps_actual, deps_max, ancestor, &next);
-        if (next_deps < 0)
-            break;
-        deps_actual = next_deps;
-        if (!next || next == ancestor)
-            break;
-        ancestor = next;
-    }
-    
+
+    /* Setup context for bpf_loop */
+    struct deps_loop_ctx loop_ctx = {
+        .deps = deps,
+        .deps_actual = deps_actual,
+        .deps_max = deps_max,
+        .ancestor = ancestor,
+    };
+
+    /* Execute the loop using bpf_loop helper */
+    long loop_ret = bpf_loop(max_depth, build_deps_cb, &loop_ctx, 0);
+    if (loop_ret < 0)
+        return -1;
+
+    /* Retrieve updated deps_actual from context */
+    deps_actual = loop_ctx.deps_actual;
+
     if (deps_actual > 0 && deps_actual <= deps_max) {
         deps[--deps_actual] = '\0';
     }
-    
+
     return deps_actual;
 }
 
@@ -309,14 +343,14 @@ static __attribute__((noinline, unused)) long build_socket_additional_data(struc
 
     u64 params[10] = {
         (u64)(info->saddr & 0xFF),
-        (u64)((info->saddr >> 8) & 0xFF), 
+        (u64)((info->saddr >> 8) & 0xFF),
         (u64)((info->saddr >> 16) & 0xFF),
-        (u64)((info->saddr >> 24) & 0xFF), 
+        (u64)((info->saddr >> 24) & 0xFF),
         (u64)info->sport,
         (u64)(info->daddr & 0xFF),
-        (u64)((info->daddr >> 8) & 0xFF), 
+        (u64)((info->daddr >> 8) & 0xFF),
         (u64)((info->daddr >> 16) & 0xFF),
-        (u64)((info->daddr >> 24) & 0xFF), 
+        (u64)((info->daddr >> 24) & 0xFF),
         (u64)info->dport
     };
 
