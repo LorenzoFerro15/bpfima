@@ -14,7 +14,7 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
     const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
     int decision = bpfima_policy_for_hook(HOOK_LSM_INODE_SETATTR, (const char *)name, 0, 0);
     if (decision)
-        return decision < 0 ? decision : 0;
+        return (decision < -4095) ? -4095 : (decision > 0) ? 0 : (int)decision;
 
     char attrs[64] = {0};
     int attr_len = build_attributes(attrs, sizeof(attrs), attr);
@@ -28,6 +28,7 @@ int BPF_PROG(bpf_inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, 
         .additional_data = attrs,
         .additional_data_len = attr_len,
     };
+
     int ret = bpfima_submit_measurement(&measurement);
-    return ret;
+    return (ret < -4095) ? -4095 : (ret > 0) ? 0 : (int)ret;
 }
