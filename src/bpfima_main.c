@@ -141,6 +141,7 @@ BTF_ID_FLAGS(func, bpfima_policy_get_changes_hash, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_namespace_get_config, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_should_ignore_cgroup, KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpfima_policy_should_ignore_path, KF_SLEEPABLE)
+BTF_ID_FLAGS(func, bpfima_policy_resolve, KF_SLEEPABLE)
 BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
 
 const struct btf_kfunc_id_set bpf_kfunc_example_set = {
