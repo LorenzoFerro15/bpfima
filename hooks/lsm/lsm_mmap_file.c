@@ -25,7 +25,7 @@ int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
     }
 
     char filepath[BPFIMA_PATH_SIZE] = {0};
-    if (bpf_d_path(&file->f_path, filepath, sizeof(filepath)) < 0)
+    if (bpf_d_path((struct path *)&file->f_path, filepath, sizeof(filepath)) < 0)
         return -36;
     u64 size = inode ? BPF_CORE_READ(inode, i_size) : 0;
     u32 policy_flags = BPFIMA_POLICY_FILE | ((prot & 4) ? BPFIMA_POLICY_EXECUTABLE : 0);

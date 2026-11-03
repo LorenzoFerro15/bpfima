@@ -37,6 +37,7 @@ typedef unsigned char u8;
 #define MAX_PATH_DEPTH 16
 #define MAX_PATH_LEN 108
 #define PATH_LEN_MASK 0x7F
+#define DEPS_BUF_SIZE 128
 
 /* Per-CPU scratch buffer to avoid large stack allocations and heavy inlining
  * which can blow up the verifier. Value contains a small buffer and a length.
@@ -45,7 +46,7 @@ typedef unsigned char u8;
  * verifier can reason about map value bounds when we write fixed-size slots.
  */
 struct scratch_t {
-    char buf[128];
+    char buf[DEPS_BUF_SIZE];
     char digest_hex[68];
     struct bpfima_measurement_request measurement;
     struct bpfima_policy_context policy_context;
@@ -234,13 +235,14 @@ static __attribute__((noinline, unused)) int append_parent_comm(char *deps, int 
         return -1;
 
     *next_out = BPF_CORE_READ(ancestor, real_parent);
-    if (deps_actual >= deps_max - 16)
+    // Additional checks to make happy the ebpf verifier on kernel versions before the 7.0.0
+    if (deps_actual >= deps_max - 16 || deps_actual >= DEPS_BUF_SIZE - 16)
         return deps_actual;
 
     int ret = bpf_probe_read_kernel_str(&deps[deps_actual], 16, BPF_CORE_READ(ancestor, comm));
     if (ret > 1) {
         deps_actual += (ret - 1);
-        if (deps_actual < deps_max) {
+        if (deps_actual < deps_max || deps_actual < DEPS_BUF_SIZE) {
             deps[deps_actual++] = ':';
         }
     }
@@ -255,7 +257,7 @@ static __attribute__((noinline, unused)) long build_deps_cb(u64 index, void *dat
     struct deps_loop_ctx *ctx = data;
     (void)index;
 
-    if (!ctx || !ctx->deps || ctx->deps_actual >= ctx->deps_max)
+    if (!ctx || !ctx->deps || ctx->deps_actual >= ctx->deps_max || ctx->deps_actual >= DEPS_BUF_SIZE)
         return 1;
 
     struct task_struct *next = NULL;
