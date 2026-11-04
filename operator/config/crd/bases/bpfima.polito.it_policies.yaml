@@ -44,21 +44,35 @@ spec:
                   alert_suspicious:
                     description: AlertSuspicious alert on suspicious activity
                     type: boolean
+                    x-kubernetes-validations:
+                    - message: The AlertSuspicious functionality is not yet supported
+                        and must be left to zero
+                      rule: '!self'
                   block:
                     description: Block block the operation
                     type: boolean
+                    x-kubernetes-validations:
+                    - message: The Block functionality is not yet supported and must
+                        be left to zero
+                      rule: '!self'
                   build_deps:
                     description: BuildDeps build dependency chain
                     type: boolean
                   extend_tpm:
                     description: ExtendTPM extend measurement to TPM PCR
                     type: boolean
+                    x-kubernetes-validations:
+                    - message: The ExtendTPM functionality is mandatory
+                      rule: self
                   log_kernel:
                     description: LogKernel log to kernel log (dmesg)
                     type: boolean
                   log_securityfs:
                     description: LogSecurityFS log to /sys/kernel/security/bpfima/
                     type: boolean
+                    x-kubernetes-validations:
+                    - message: The LogSecurityFS functionality is mandatory
+                      rule: self
                   track_container:
                     description: TrackContainer track per-container measurements
                     type: boolean
@@ -143,16 +157,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -172,16 +192,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -201,16 +227,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -230,16 +262,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -259,16 +297,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -283,21 +327,28 @@ spec:
                     - track_containers
                     type: object
                   lsm_inode_setattr:
-                    description: LSMFilePostOpen configuration
+                    description: LSMInodeSetattr controls attribute measurement through
+                      the root/namespace policy.
                     properties:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -317,16 +368,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -346,16 +403,22 @@ spec:
                       action_override:
                         description: ActionOverride override global action flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       enabled:
                         description: Enabled whether this hook is active
                         type: boolean
                       filter_override:
                         description: FilterOverride override global filter flags
                         format: int32
-                        minimum: 0
                         type: integer
+                        x-kubernetes-validations:
+                        - message: The FilterOverride field is not yet supported and
+                            must be left to zero
+                          rule: self == 0
                       measure_hash:
                         description: MeasureHash whether to measure file hashes
                         type: boolean
@@ -410,7 +473,8 @@ spec:
                     minimum: 0
                     type: integer
                   max_path_depth:
-                    description: MaxPathDepth bounds dependency ancestry (legacy field name)
+                    description: MaxPathDepth bounds the dependency ancestry depth
+                      (legacy field name)
                     format: int32
                     maximum: 32
                     minimum: 0

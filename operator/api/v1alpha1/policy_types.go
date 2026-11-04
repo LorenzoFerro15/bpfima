@@ -125,11 +125,13 @@ type ActionConfig struct {
 	// ExtendTPM extend measurement to TPM PCR
 	//
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self",message="The ExtendTPM functionality is mandatory"
 	ExtendTPM bool `json:"extend_tpm"`
 
 	// LogSecurityFS log to /sys/kernel/security/bpfima/
 	//
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self",message="The LogSecurityFS functionality is mandatory"
 	LogSecurityFS bool `json:"log_securityfs"`
 
 	// LogKernel log to kernel log (dmesg)
@@ -139,11 +141,13 @@ type ActionConfig struct {
 
 	// AlertSuspicious alert on suspicious activity
 	//
+	// +kubebuilder:validation:XValidation:rule="!self",message="The AlertSuspicious functionality is not yet supported and must be left to zero"
 	// +kubebuilder:validation:Required
 	AlertSuspicious bool `json:"alert_suspicious"`
 
 	// Block block the operation
 	//
+	// +kubebuilder:validation:XValidation:rule="!self",message="The Block functionality is not yet supported and must be left to zero"
 	// +kubebuilder:validation:Required
 	Block bool `json:"block"`
 
@@ -240,14 +244,14 @@ type HookConfig struct {
 
 	// FilterOverride override global filter flags
 	//
-	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == 0",message="The FilterOverride field is not yet supported and must be left to zero"
 	FilterOverride int32 `json:"filter_override"`
 
 	// ActionOverride override global action flags
 	//
-	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == 0",message="The FilterOverride field is not yet supported and must be left to zero"
 	ActionOverride int32 `json:"action_override"`
 }
 

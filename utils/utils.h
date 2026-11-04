@@ -34,7 +34,6 @@ typedef unsigned char u8;
 #define AF_UNIX 1
 #define AF_INET 2
 #define MAX_DATA_BUF_SIZE 64
-#define MAX_PATH_DEPTH 16
 #define MAX_PATH_LEN 108
 #define PATH_LEN_MASK 0x7F
 #define DEPS_BUF_SIZE 128
