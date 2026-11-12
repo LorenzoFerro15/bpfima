@@ -108,7 +108,8 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     get_config_time = bpf_ktime_get_ns();
     int decision = bpfima_policy_for_hook(HOOK_LSM_SOCKET_CONNECT, socket_path, 0, 0);
     if (decision)
-        return decision < 0 ? decision : 0;
+        return (decision < -4095) ? -4095 : (decision > 0) ? 0 : (int)decision;
+
     struct bpfima_policy_config *policy = bpfima_get_policy();
     const char *cgroup_name = bpfima_current_namespace();
     bool is_container_context = true;
@@ -143,8 +144,7 @@ int BPF_PROG(bpf_socket_connect, struct socket *sock, struct sockaddr *address, 
     measure_time = bpf_ktime_get_ns() - measure_time;
 
     if (ret < 0)
-        return ret;
-
+        return (ret < -4095) ? -4095 : ret;
 
     total_time = bpf_ktime_get_ns() - total_time;
 

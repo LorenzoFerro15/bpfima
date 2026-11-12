@@ -25,7 +25,7 @@ int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
     }
 
     char filepath[BPFIMA_PATH_SIZE] = {0};
-    if (bpf_d_path(&file->f_path, filepath, sizeof(filepath)) < 0)
+    if (bpf_d_path((struct path *)&file->f_path, filepath, sizeof(filepath)) < 0)
         return -36;
     u64 size = inode ? BPF_CORE_READ(inode, i_size) : 0;
     u32 policy_flags = BPFIMA_POLICY_FILE | ((prot & 4) ? BPFIMA_POLICY_EXECUTABLE : 0);
@@ -33,7 +33,7 @@ int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
         policy_flags |= BPFIMA_POLICY_READONLY;
     int decision = bpfima_policy_for_hook(HOOK_LSM_MMAP_FILE, filepath, size, policy_flags);
     if (decision)
-        return decision < 0 ? decision : 0;
+        return (decision < -4095) ? -4095 : (decision > 0) ? 0 : (int)decision;
 
     u8 digest[32] = {0};
     long hash_algo = bpf_ima_file_hash(file, digest, sizeof(digest));
@@ -75,5 +75,5 @@ int BPF_PROG(bpf_mmap_file, struct file *file, unsigned long reqprot,
         bpf_printk("   IMA measurement extension failed: %d\n", ret_extension);
     }
 
-    return ret_extension;
+    return (ret_extension < -4095) ? -4095 : (ret_extension > 0) ? 0 : (int)ret_extension;
 }

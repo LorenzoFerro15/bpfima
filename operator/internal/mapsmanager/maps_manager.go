@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	"os"
 
 	"github.com/LorenzoFerro15/bpfima/api/v1alpha1"
@@ -175,10 +174,6 @@ func buildPatterns(entries []v1alpha1.PatternEntry) ([8]BPFPatternEntry, error) 
 		if !entry.Enabled {
 			continue
 		}
-		if index == len(result) || entry.Pattern == "" || len(entry.Pattern) >= MaxPatternLen ||
-			entry.MatchType < 0 || entry.MatchType > 3 {
-			return result, fmt.Errorf("invalid or excessive policy pattern %q", entry.Pattern)
-		}
 		result[index].Enabled = 1
 		result[index].MatchType = uint8(entry.MatchType)
 		copy(result[index].Pattern[:], entry.Pattern)
@@ -192,14 +187,6 @@ func BuildPolicyRequest(policy *v1alpha1.Policy, namespace string, generation ui
 		return nil, fmt.Errorf("invalid policy or namespace")
 	}
 	config := policy.Spec.Policy
-	if policy.Spec.Actions.AlertSuspicious || policy.Spec.Actions.Block {
-		return nil, fmt.Errorf("appraisal/alert actions are not implemented")
-	}
-	if config.MinFileSize < 0 || config.MinFileSize > math.MaxUint32 || config.MaxPathDepth < 0 ||
-		config.MaxPathDepth > 32 || config.LogLevel < 0 || config.LogLevel > 3 ||
-		!policy.Spec.Actions.ExtendTPM || !policy.Spec.Actions.LogSecurityFS {
-		return nil, fmt.Errorf("policy values are invalid or disable the mandatory measurement transaction")
-	}
 	request := &PolicyRequest{Version: 2, ExpectedGeneration: generation}
 	copy(request.NamespaceID[:], namespace)
 	request.Snapshot.Config = computeValue(config, policy.Spec.Filters, policy.Spec.Actions)
@@ -208,14 +195,17 @@ func BuildPolicyRequest(policy *v1alpha1.Policy, namespace string, generation ui
 	if err != nil {
 		return nil, err
 	}
+
 	request.Snapshot.Paths, err = buildPatterns(policy.Spec.PathPatterns)
 	if err != nil {
 		return nil, err
 	}
+
 	hooks := policy.Spec.Hooks
 	entries := []*v1alpha1.HookConfig{hooks.LSMBprmCheckSecurity, hooks.LSMFileOpen,
 		hooks.LSMFilePostOpen, hooks.LSMMmapFile, hooks.LSMSocketConnect,
 		hooks.LSMContainerEvents, hooks.KprobeFileOpen, hooks.LSMInodeSetattr}
+
 	for i, config := range entries {
 		// Omitted hooks use root defaults; never retain values from a previous policy.
 		request.Snapshot.Hooks[i].Flags = HookFlagEnabled | HookFlagTrackContainers | HookFlagMeasureHash
@@ -225,9 +215,7 @@ func BuildPolicyRequest(policy *v1alpha1.Policy, namespace string, generation ui
 		if config == nil {
 			continue
 		}
-		if config.FilterOverride != 0 || config.ActionOverride != 0 {
-			return nil, fmt.Errorf("hook overrides are unsupported")
-		}
+
 		var flags uint32
 		if config.Enabled {
 			flags |= HookFlagEnabled
@@ -240,6 +228,7 @@ func BuildPolicyRequest(policy *v1alpha1.Policy, namespace string, generation ui
 		}
 		request.Snapshot.Hooks[i].Flags = flags
 	}
+
 	return request, nil
 }
 

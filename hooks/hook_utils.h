@@ -67,7 +67,7 @@ static __attribute__((noinline, unused)) const char *bpfima_current_namespace(vo
 /* --------------------------------------------------------- */
 
 /* Measure file access and extend IMA measurement
-    * 
+    *
     * @param file: pointer to struct file representing the accessed file
     * @param event_name: name of the event for measurement
     * @param cgroup_name: name of the cgroup (namespace) if in container context
@@ -76,7 +76,7 @@ static __attribute__((noinline, unused)) const char *bpfima_current_namespace(vo
     * @param deps_actual: actual length of dependencies string
     * @param deps_max: maximum length of dependencies string buffer
     * @param out_hash: output buffer to store the computed file hash
-    * 
+    *
     * @returns
     * - 0 on success, -1 on failure
 */
@@ -157,12 +157,16 @@ static __attribute__((noinline, unused)) int bpfima_submit_measurement(struct me
         request->flags = BPFIMA_MEASUREMENT_HAS_DEPENDENCIES;
     }
 
-    if (ctx->additional_data_len &&
-        bpf_probe_read_kernel(request->additional_data, ctx->additional_data_len,
-                              ctx->additional_data))
+    int data_len = ctx->additional_data_len;
+    const char *data = ctx->additional_data;
+    if (data_len < 0 || data_len >= sizeof(request->additional_data) ||
+        (!data && data_len))
         return -1;
 
-    request->additional_data_len = ctx->additional_data_len;
+    if (data_len && bpf_probe_read_kernel(request->additional_data, data_len, data))
+        return -1;
+
+    request->additional_data_len = data_len;
     return bpfima_measurement_extend(request, sizeof(*request));
 }
 
