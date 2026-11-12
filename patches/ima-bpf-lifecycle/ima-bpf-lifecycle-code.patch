@@ -1,0 +1,676 @@
+From b90b514a19f87c53dad8c8f6ba34cf541c08da60 Mon Sep 17 00:00:00 2001
+From: Lorenzo Ferro <lorenzo.ferro@polito.it>
+Date: Wed, 11 Nov 2026 11:22:00 +0100
+Subject: [PATCH] ima,bpf: measure BPF program contents and link lifecycle
+
+Add the BPF_CHECK IMA policy hook, unify canonical BPF program payload
+SHA-256 hashing in the verifier with upstream signature verification, and
+record BPF program load/unload and BPF link lifecycle events (attach,
+update, detach, release) in a compact 56-byte ima-buf record.
+---
+ include/linux/bpf.h                 |  12 ++
+ include/linux/ima.h                 |  13 +++
+ kernel/bpf/Makefile                 |   3 +
+ kernel/bpf/ima.c                    | 105 ++++++++++++++++++++++
+ kernel/bpf/ima.h                    |  37 ++++++++
+ kernel/bpf/syscall.c                |  11 ++
+ kernel/bpf/verifier.c               | 173 +++++++++++++++++++++++------------
+ security/integrity/ima/ima.h        |   1 +
+ security/integrity/ima/ima_main.c   |  40 ++++++++
+ security/integrity/ima/ima_policy.c |  18 ++++
+ 10 files changed, 353 insertions(+), 60 deletions(-)
+ create mode 100644 kernel/bpf/ima.c
+ create mode 100644 kernel/bpf/ima.h
+
+diff --git a/include/linux/bpf.h b/include/linux/bpf.h
+index 0ecb9418d..df6962a3d 100644
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -1822,6 +1822,8 @@ struct bpf_prog_aux {
+ 		s32 keyring_serial;
+ 		u8 keyring_type;
+ 		u8 verdict;
++		bool has_digest;
++		u8 digest[SHA256_DIGEST_SIZE];
+ 	} sig;
+ 	u64 prog_array_member_cnt; /* counts how many times as member of prog_array */
+ 	struct mutex ext_mutex; /* mutex for is_extended and prog_array_member_cnt */
+@@ -1940,6 +1942,16 @@ struct bpf_prog {
+ 	};
+ };
+ 
++static inline bool bpf_prog_get_sig_digest(const struct bpf_prog *prog,
++					   const u8 **digest)
++{
++	if (!prog || !prog->aux->sig.has_digest)
++		return false;
++	if (digest)
++		*digest = prog->aux->sig.digest;
++	return true;
++}
++
+ struct bpf_array_aux {
+ 	/* Programs with direct jumps into programs part of this array. */
+ 	struct list_head poke_progs;
+diff --git a/include/linux/ima.h b/include/linux/ima.h
+index 8e08baf16..2252de12f 100644
+--- a/include/linux/ima.h
++++ b/include/linux/ima.h
+@@ -24,6 +24,9 @@ extern int ima_measure_critical_data(const char *event_label,
+ 				     const char *event_name,
+ 				     const void *buf, size_t buf_len,
+ 				     bool hash, u8 *digest, size_t digest_len);
++bool ima_bpf_check_enabled(void);
++void ima_measure_bpf_event(const char *event_name, const void *buf,
++			   size_t buf_len);
+ 
+ #ifdef CONFIG_IMA_APPRAISE_BOOTPARAM
+ extern void ima_appraise_parse_cmdline(void);
+@@ -39,6 +42,16 @@ static inline void ima_kexec_post_load(struct kimage *image) {}
+ #endif
+ 
+ #else
++static inline bool ima_bpf_check_enabled(void)
++{
++	return false;
++}
++
++static inline void ima_measure_bpf_event(const char *event_name, const void *buf,
++					 size_t buf_len)
++{
++}
++
+ static inline enum hash_algo ima_get_current_hash_algo(void)
+ {
+ 	return HASH_ALGO__LAST;
+diff --git a/kernel/bpf/Makefile b/kernel/bpf/Makefile
+index 90255d80e..cc04f41d7 100644
+--- a/kernel/bpf/Makefile
++++ b/kernel/bpf/Makefile
+@@ -1,5 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0
+ obj-y := core.o
++ifeq ($(CONFIG_IMA),y)
++obj-$(CONFIG_BPF_SYSCALL) += ima.o
++endif
+ ifneq ($(CONFIG_BPF_JIT_ALWAYS_ON),y)
+ # ___bpf_prog_run() needs GCSE disabled on x86; see 3193c0836f203 for details
+ cflags-nogcse-$(CONFIG_X86)$(CONFIG_CC_IS_GCC) := -fno-gcse
+diff --git a/kernel/bpf/ima.c b/kernel/bpf/ima.c
+new file mode 100644
+index 000000000..f769ac891
+--- /dev/null
++++ b/kernel/bpf/ima.c
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Policy-controlled IMA measurements of BPF lifecycle operations. */
++#include <linux/bpf.h>
++#include <linux/ima.h>
++#include <linux/rcupdate.h>
++#include <crypto/sha2.h>
++
++#include "ima.h"
++
++static void bpf_ima_set_prog(struct bpf_ima_event *event,
++			     const struct bpf_prog *prog)
++{
++	const u8 *digest = NULL;
++
++	if (!prog)
++		return;
++	event->prog_id = cpu_to_le32(prog->aux->id);
++	event->prog_type = cpu_to_le32(prog->type);
++	event->attach_btf_id = cpu_to_le32(prog->aux->attach_btf_id);
++
++	if (bpf_prog_get_sig_digest(prog, &digest))
++		memcpy(event->prog_digest, digest, SHA256_DIGEST_SIZE);
++}
++
++static void bpf_ima_snapshot_prog(struct bpf_ima_event *event,
++				  const struct bpf_prog *prog)
++{
++	memset(event, 0, sizeof(*event));
++	event->attach_type = cpu_to_le32(prog->expected_attach_type);
++	bpf_ima_set_prog(event, prog);
++}
++
++static void bpf_ima_snapshot_link(struct bpf_ima_event *event,
++				  const struct bpf_link *link)
++{
++	memset(event, 0, sizeof(*event));
++	event->link_id = cpu_to_le32(link->id);
++	event->link_type = cpu_to_le32(link->type);
++	event->attach_type = cpu_to_le32(link->attach_type);
++	/* A concurrent link update may replace and put the old program. */
++	rcu_read_lock();
++	bpf_ima_set_prog(event, READ_ONCE(link->prog));
++	rcu_read_unlock();
++}
++
++void bpf_ima_prog_load(const struct bpf_prog *prog)
++{
++	struct bpf_ima_event event;
++
++	if (!prog || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_prog(&event, prog);
++	ima_measure_bpf_event("bpf_prog_load", &event, sizeof(event));
++}
++
++void bpf_ima_prog_unload(const struct bpf_prog *prog)
++{
++	struct bpf_ima_event event;
++
++	if (!prog || !prog->aux->sig.has_digest || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_prog(&event, prog);
++	ima_measure_bpf_event("bpf_prog_unload", &event, sizeof(event));
++}
++
++void bpf_ima_link_attach(const struct bpf_link *link, u32 id)
++{
++	struct bpf_ima_event event;
++
++	if (!link || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_link(&event, link);
++	event.link_id = cpu_to_le32(id);
++	ima_measure_bpf_event("bpf_link_attach", &event, sizeof(event));
++}
++
++void bpf_ima_link_update(const struct bpf_link *link)
++{
++	struct bpf_ima_event event;
++
++	if (!link || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_link(&event, link);
++	ima_measure_bpf_event("bpf_link_update_prog", &event, sizeof(event));
++}
++
++void bpf_ima_link_detach(const struct bpf_link *link)
++{
++	struct bpf_ima_event event;
++
++	if (!link || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_link(&event, link);
++	ima_measure_bpf_event("bpf_link_detach", &event, sizeof(event));
++}
++
++void bpf_ima_link_release(const struct bpf_link *link)
++{
++	struct bpf_ima_event event;
++
++	if (!link || !link->id || !ima_bpf_check_enabled())
++		return;
++	bpf_ima_snapshot_link(&event, link);
++	ima_measure_bpf_event("bpf_link_release", &event, sizeof(event));
++}
+diff --git a/kernel/bpf/ima.h b/kernel/bpf/ima.h
+new file mode 100644
+index 000000000..f1f4082dc
+--- /dev/null
++++ b/kernel/bpf/ima.h
+@@ -0,0 +1,37 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _BPF_IMA_H
++#define _BPF_IMA_H
++
++#include <linux/bpf.h>
++#include <crypto/sha2.h>
++
++/* Little-endian fields, no pointers or implicit padding. */
++struct bpf_ima_event {
++	__le32 prog_id;
++	__le32 prog_type;
++	__le32 attach_btf_id;
++	__le32 link_id;
++	__le32 link_type;
++	__le32 attach_type;
++	u8 prog_digest[SHA256_DIGEST_SIZE];
++};
++
++static_assert(sizeof(struct bpf_ima_event) == 56);
++
++#ifdef CONFIG_IMA
++void bpf_ima_prog_load(const struct bpf_prog *prog);
++void bpf_ima_prog_unload(const struct bpf_prog *prog);
++void bpf_ima_link_attach(const struct bpf_link *link, u32 id);
++void bpf_ima_link_update(const struct bpf_link *link);
++void bpf_ima_link_detach(const struct bpf_link *link);
++void bpf_ima_link_release(const struct bpf_link *link);
++#else
++static inline void bpf_ima_prog_load(const struct bpf_prog *prog) {}
++static inline void bpf_ima_prog_unload(const struct bpf_prog *prog) {}
++static inline void bpf_ima_link_attach(const struct bpf_link *link, u32 id) {}
++static inline void bpf_ima_link_update(const struct bpf_link *link) {}
++static inline void bpf_ima_link_detach(const struct bpf_link *link) {}
++static inline void bpf_ima_link_release(const struct bpf_link *link) {}
++#endif
++
++#endif /* _BPF_IMA_H */
+diff --git a/kernel/bpf/syscall.c b/kernel/bpf/syscall.c
+index 96217b993..5e6a40b32 100644
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -46,6 +46,8 @@
+ #include <net/netkit.h>
+ #include <net/tcx.h>
+ 
++#include "ima.h"
++
+ #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
+ 			  (map)->map_type == BPF_MAP_TYPE_CGROUP_ARRAY || \
+ 			  (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
+@@ -2496,6 +2498,7 @@ static void bpf_prog_put_deferred(struct work_struct *work)
+ 	prog = aux->prog;
+ 	perf_event_bpf_event(prog, PERF_BPF_EVENT_PROG_UNLOAD, 0);
+ 	bpf_audit_prog(prog, BPF_AUDIT_UNLOAD);
++	bpf_ima_prog_unload(prog);
+ 	bpf_prog_free_id(prog);
+ 	__bpf_prog_put_noref(prog, true);
+ }
+@@ -3176,6 +3179,7 @@ static int bpf_prog_load(union bpf_attr *attr, bpfptr_t uattr, struct bpf_log_at
+ 	bpf_prog_kallsyms_add(prog);
+ 	perf_event_bpf_event(prog, PERF_BPF_EVENT_PROG_LOAD, 0);
+ 	bpf_audit_prog(prog, BPF_AUDIT_LOAD);
++	bpf_ima_prog_load(prog);
+ 
+ 	err = bpf_prog_new_fd(prog);
+ 	if (err < 0)
+@@ -3341,7 +3345,8 @@ static bool bpf_link_is_tracepoint(struct bpf_link *link)
+ static void bpf_link_free(struct bpf_link *link)
+ {
+ 	const struct bpf_link_ops *ops = link->ops;
+ 
++	bpf_ima_link_release(link);
+ 	bpf_link_free_id(link->id);
+ 	/* detach BPF program, clean up used resources */
+ 	if (link->prog)
+@@ -3549,6 +3554,8 @@ int bpf_link_prime(struct bpf_link *link, struct bpf_link_primer *primer)
+ 
+ int bpf_link_settle(struct bpf_link_primer *primer)
+ {
++	bpf_ima_link_attach(primer->link, primer->id);
++
+ 	/* make bpf_link fetchable by ID */
+ 	spin_lock_bh(&link_idr_lock);
+ 	primer->link->id = primer->id;
+@@ -5985,10 +5992,12 @@ static int link_update(union bpf_attr *attr)
+ 		goto out_put_progs;
+ 	}
+ 
+ 	if (link->ops->update_prog)
+ 		ret = link->ops->update_prog(link, new_prog, old_prog);
+ 	else
+ 		ret = -EINVAL;
++	if (!ret)
++		bpf_ima_link_update(link);
+ 
+ out_put_progs:
+ 	if (old_prog)
+@@ -6018,6 +6027,8 @@ static int link_detach(union bpf_attr *attr)
+ 		ret = link->ops->detach(link);
+ 	else
+ 		ret = -EOPNOTSUPP;
++	if (!ret)
++		bpf_ima_link_detach(link);
+ 
+ 	bpf_link_put_direct(link);
+ 	return ret;
+diff --git a/kernel/bpf/verifier.c b/kernel/bpf/verifier.c
+index 5f874979b..29df50420 100644
+--- a/kernel/bpf/verifier.c
++++ b/kernel/bpf/verifier.c
+@@ -33,6 +33,8 @@
+ #include <net/xdp.h>
+ #include <linux/trace_events.h>
+ #include <linux/kallsyms.h>
++#include <linux/ima.h>
++#include <crypto/sha2.h>
+ 
+ #include "diagnostics.h"
+ #include "disasm.h"
+@@ -21086,101 +21088,150 @@ static enum bpf_sig_keyring bpf_classify_keyring(s32 keyring_id)
+  * each map, in @maps order: insns || map_0 || map_1 || [...]. On success the
+  * verdict and keyring info are recorded on prog->aux.
+  */
++static int bpf_map_check_canonical_rodata(struct bpf_verifier_env *env,
++					  struct bpf_map *map, bool strict)
++{
++	if (map->map_type != BPF_MAP_TYPE_ARRAY ||
++	    !map->ops->map_direct_value_addr) {
++		if (strict)
++			verbose(env, "signed program metadata map '%s' must be an array\n",
++				map->name);
++		return -EINVAL;
++	}
++	if (!READ_ONCE(map->frozen)) {
++		if (strict)
++			verbose(env, "signed program metadata map '%s' must be frozen\n",
++				map->name);
++		return -EPERM;
++	}
++	if (bpf_map_write_active(map)) {
++		if (strict)
++			verbose(env, "signed program metadata map '%s' has active writers\n",
++				map->name);
++		return -EBUSY;
++	}
++	if (strict && !map->excl_prog_sha) {
++		verbose(env, "signed program metadata map '%s' must be exclusive\n",
++			map->name);
++		return -EPERM;
++	}
++	return 0;
++}
++
++static int bpf_prog_calc_canonical_payload(struct bpf_verifier_env *env,
++					   void **out_data, u64 *out_sz)
++{
++	struct bpf_prog *prog = env->prog;
++	struct bpf_map **maps = env->used_maps;
++	u32 map_cnt = env->used_map_cnt;
++	u32 i, off, insns_sz;
++	u64 data_sz;
++	void *data;
++	int err;
++
++	if (prog->aux->sig.has_digest)
++		return 0;
++
++	insns_sz = prog->len * sizeof(struct bpf_insn);
++	if (!out_data) {
++		struct sha256_ctx sctx;
++
++		sha256_init(&sctx);
++		sha256_update(&sctx, (const u8 *)prog->insnsi, insns_sz);
++		for (i = 0; i < map_cnt; i++) {
++			struct bpf_map *map = maps[i];
++			u64 addr;
++
++			if (bpf_map_check_canonical_rodata(env, map, false))
++				continue;
++			if (map->ops->map_direct_value_addr(map, &addr, 0))
++				continue;
++			sha256_update(&sctx, (const u8 *)(unsigned long)addr,
++				      map->value_size);
++		}
++		sha256_final(&sctx, prog->aux->sig.digest);
++		prog->aux->sig.has_digest = true;
++		prog->aux->sig.verdict = BPF_SIG_UNSIGNED;
++		return 0;
++	}
++
++	data_sz = insns_sz;
++	for (i = 0; i < map_cnt; i++) {
++		err = bpf_map_check_canonical_rodata(env, maps[i], true);
++		if (err)
++			return err;
++		data_sz += maps[i]->value_size;
++	}
++	if (bpf_dynptr_check_size(data_sz)) {
++		verbose(env, "signed payload too large: %llu bytes\n", data_sz);
++		return -E2BIG;
++	}
++
++	data = kvmalloc(data_sz, GFP_KERNEL_ACCOUNT | __GFP_ZERO);
++	if (!data)
++		return -ENOMEM;
++
++	memcpy(data, prog->insnsi, insns_sz);
++	off = insns_sz;
++	for (i = 0; i < map_cnt; i++) {
++		struct bpf_map *map = maps[i];
++		u64 addr;
++
++		err = map->ops->map_direct_value_addr(map, &addr, 0);
++		if (err) {
++			verbose(env, "failed to read signed metadata map '%s': %d\n",
++				map->name, err);
++			kvfree(data);
++			return err;
++		}
++		memcpy(data + off, (void *)(unsigned long)addr, map->value_size);
++		off += map->value_size;
++	}
++
++	sha256(data, data_sz, prog->aux->sig.digest);
++	prog->aux->sig.has_digest = true;
++	*out_data = data;
++	*out_sz = data_sz;
++	return 0;
++}
++
+ static int bpf_prog_verify_signature(struct bpf_verifier_env *env,
+ 				     union bpf_attr *attr, bool is_kernel)
+ {
+ 	bpfptr_t usig = make_bpfptr(attr->signature, is_kernel);
+ 	struct bpf_dynptr_kern sig_ptr, data_ptr;
+ 	struct bpf_prog *prog = env->prog;
+-	struct bpf_map **maps = env->used_maps;
+ 	struct bpf_key *key = NULL;
+ 	void *sig, *data = NULL;
+-	u32 map_cnt = env->used_map_cnt;
+-	u32 i, off, insns_sz;
+ 	u64 data_sz;
+ 	int err = 0;
+ 
+ 	/*
+ 	 * Don't attempt to use kmalloc_large or vmalloc for signatures.
+ 	 * Practical signature for BPF program should be below this limit.
+ 	 */
+ 	if (!attr->signature_size ||
+ 	    attr->signature_size > KMALLOC_MAX_CACHE_SIZE)
+ 		return -EINVAL;
+ 	if (system_keyring_id_check(attr->keyring_id) == 0)
+ 		key = bpf_lookup_system_key(attr->keyring_id);
+ 	else
+ 		key = bpf_lookup_user_key(attr->keyring_id, 0);
+ 	if (!key) {
+ 		verbose(env, "cannot resolve signing keyring with keyring_id %d\n",
+ 			attr->keyring_id);
+ 		return -EINVAL;
+ 	}
+ 
+ 	sig = kvmemdup_bpfptr(usig, attr->signature_size);
+ 	if (IS_ERR(sig)) {
+ 		bpf_key_put(key);
+ 		return PTR_ERR(sig);
+ 	}
+ 
+-	insns_sz = prog->len * sizeof(struct bpf_insn);
+-	data_sz = insns_sz;
+-	for (i = 0; i < map_cnt; i++) {
+-		struct bpf_map *map = maps[i];
+-
+-		if (map->map_type != BPF_MAP_TYPE_ARRAY ||
+-		    !map->ops->map_direct_value_addr) {
+-			verbose(env, "signed program metadata map '%s' must be an array\n",
+-				map->name);
+-			err = -EINVAL;
+-			goto out;
+-		}
+-		if (!READ_ONCE(map->frozen)) {
+-			verbose(env, "signed program metadata map '%s' must be frozen\n",
+-				map->name);
+-			err = -EPERM;
+-			goto out;
+-		}
+-		if (bpf_map_write_active(map)) {
+-			verbose(env, "signed program metadata map '%s' has active writers\n",
+-				map->name);
+-			err = -EBUSY;
+-			goto out;
+-		}
+-		if (!map->excl_prog_sha) {
+-			verbose(env, "signed program metadata map '%s' must be exclusive\n",
+-				map->name);
+-			err = -EPERM;
+-			goto out;
+-		}
+-		data_sz += map->value_size;
+-	}
+-	if (bpf_dynptr_check_size(data_sz)) {
+-		verbose(env, "signed payload too large: %llu bytes\n", data_sz);
+-		err = -E2BIG;
+-		goto out;
+-	}
+-	data = kvmalloc(data_sz, GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+-	if (!data) {
+-		err = -ENOMEM;
++	err = bpf_prog_calc_canonical_payload(env, &data, &data_sz);
++	if (err)
+ 		goto out;
+-	}
+-	memcpy(data, prog->insnsi, insns_sz);
+-	off = insns_sz;
+-	for (i = 0; i < map_cnt; i++) {
+-		struct bpf_map *map = maps[i];
+-		u64 addr;
+-
+-		err = map->ops->map_direct_value_addr(map, &addr, 0);
+-		if (err) {
+-			verbose(env, "failed to read signed metadata map '%s': %d\n",
+-				map->name, err);
+-			goto out;
+-		}
+-		memcpy(data + off, (void *)(unsigned long)addr,
+-		       map->value_size);
+-		off += map->value_size;
+-	}
+ 
+ 	bpf_dynptr_init(&data_ptr, data, BPF_DYNPTR_TYPE_LOCAL, 0, data_sz);
+ 	bpf_dynptr_init(&sig_ptr, sig, BPF_DYNPTR_TYPE_LOCAL, 0,
+@@ -21263,6 +21331,8 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr,
+ 		ret = bpf_prog_verify_signature(env, attr, uattr.is_kernel);
+ 		if (ret)
+ 			goto err_prep;
++	} else if (ima_bpf_check_enabled()) {
++		bpf_prog_calc_canonical_payload(env, NULL, NULL);
+ 	}
+ 
+ 	ret = security_bpf_prog_load(env->prog, attr, env->prog->aux->token,
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index 10214f73c..bb5e7f32a 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -371,6 +371,7 @@ static inline unsigned int ima_hash_key(u8 *digest)
+ 	hook(KEY_CHECK, key)				\
+ 	hook(CRITICAL_DATA, critical_data)		\
+ 	hook(SETXATTR_CHECK, setxattr_check)		\
++	hook(BPF_CHECK, bpf)				\
+ 	hook(MAX_CHECK, none)
+ 
+ #define __ima_hook_enumify(ENUM, str)	ENUM,
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index ab1e53b32..328538646 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -1258,6 +1258,46 @@ int ima_measure_critical_data(const char *event_label,
+ }
+ EXPORT_SYMBOL_GPL(ima_measure_critical_data);
+ 
++/**
++ * ima_bpf_check_enabled - Check if BPF_CHECK measurement is enabled by policy
++ *
++ * Return true if IMA policy contains a matching measure rule for BPF_CHECK,
++ * false otherwise.
++ */
++bool ima_bpf_check_enabled(void)
++{
++	struct ima_template_desc *template;
++	struct lsm_prop prop;
++	int action, pcr = 0;
++
++	if (!(READ_ONCE(ima_policy_flag) & IMA_MEASURE))
++		return false;
++
++	template = ima_template_desc_buf();
++	security_current_getlsmprop_subj(&prop);
++	action = ima_get_action(&nop_mnt_idmap, NULL, current_cred(), &prop, 0,
++				BPF_CHECK, &pcr, &template, NULL, NULL);
++	return (action & IMA_MEASURE) != 0;
++}
++
++/**
++ * ima_measure_bpf_event - measure a BPF lifecycle event
++ * @event_name: event name in the IMA measurement list
++ * @buf: serialized event data owned by the caller
++ * @buf_len: size of the event data
++ *
++ * Measure the supplied buffer according to BPF_CHECK policy rules. This is
++ * measurement only: an IMA error must not change the BPF operation's result.
++ * The caller must be in sleepable context and keep the buffer valid until
++ * this function returns. No kernel object pointers may be serialized.
++ */
++void ima_measure_bpf_event(const char *event_name, const void *buf, size_t buf_len)
++{
++	process_buffer_measurement(&nop_mnt_idmap, NULL, buf, buf_len,
++				   event_name, BPF_CHECK, 0, NULL, false,
++				   NULL, 0);
++}
++
+ /**
+  * ima_measure_raw_policy - Measure the raw policy write buffer
+  * @buf: pointer to the buffer containing the raw policy data
+diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
+index 68d9a5e6c..173686f54 100644
+--- a/security/integrity/ima/ima_policy.c
++++ b/security/integrity/ima/ima_policy.c
+@@ -548,6 +548,7 @@ static bool ima_match_rule_data(struct ima_rule_entry *rule,
+ 		opt_list = rule->label;
+ 		break;
+ 	case POLICY_CHECK:
++	case BPF_CHECK:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -601,6 +602,7 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		fallthrough;
+ 	case KEY_CHECK:
+ 	case CRITICAL_DATA:
++	case BPF_CHECK:
+ 		return ((rule->func == func) &&
+ 			ima_match_rule_data(rule, func_data, cred));
+ 	default:
+@@ -810,6 +812,9 @@ int ima_match_policy(struct mnt_idmap *idmap, struct inode *inode,
+ 
+ 		if (template_desc && entry->template)
+ 			*template_desc = entry->template;
++		/* BPF lifecycle records must retain their serialized event data. */
++		if (template_desc && func == BPF_CHECK)
++			*template_desc = ima_template_desc_buf();
+ 
+ 		if (!actmask)
+ 			break;
+@@ -1357,6 +1362,17 @@ static bool ima_validate_rule(struct ima_rule_entry *entry)
+ 			return false;
+ 
+ 		break;
++	case BPF_CHECK:
++		if (entry->action & ~(MEASURE | DONT_MEASURE))
++			return false;
++		if (entry->flags & ~(IMA_FUNC | IMA_UID | IMA_PCR))
++			return false;
++		if (ima_rule_contains_lsm_cond(entry))
++			return false;
++		if (entry->template &&
++		    strcmp(entry->template->name, "ima-buf"))
++			return false;
++		break;
+ 	case CRITICAL_DATA:
+ 		if (entry->action & ~(MEASURE | DONT_MEASURE))
+ 			return false;
+@@ -1575,6 +1591,8 @@ static int ima_parse_rule(char *rule, struct ima_rule_entry *entry)
+ 				entry->func = CRITICAL_DATA;
+ 			else if (strcmp(args[0].from, "SETXATTR_CHECK") == 0)
+ 				entry->func = SETXATTR_CHECK;
++			else if (strcmp(args[0].from, "BPF_CHECK") == 0)
++				entry->func = BPF_CHECK;
+ 			else
+ 				result = -EINVAL;
+ 			if (!result)
+-- 
+2.56.0
